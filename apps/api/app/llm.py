@@ -40,27 +40,29 @@ def complete(system: str, user: str, max_tokens: int = 600) -> tuple[str, int]:
 
 def stub_complete(user: str) -> str:
     u = user.lower()
+    if "evidence:" in u:
+        ev = user.split("Evidence:", 1)[-1].strip()[:1800]
+        needs = any(k in u for k in ("price", "trade", "scotland", "hinge", "moq", "account"))
+        enquiry = (
+            "\n\nEnquiry draft (do not send until Lee approves):\n"
+            "Hello — we are a joinery workshop in Scotland seeking trade supply of internal doors, "
+            "including non-standard hinge positions. Please confirm trade pricing, MOQ, lead times and delivery to Scotland."
+            if needs else ""
+        )
+        return (
+            "Findings from captured sources (stub synthesis; live model not configured):\n"
+            f"{ev[:1400]}\n\n"
+            "Gaps: public pages often omit trade price, MOQ and custom options. Confirm with the manufacturer."
+            f"{enquiry}"
+        )
     if "ticket" in u or "dortmund" in u or "ajax" in u:
         return (
             "Findings (stub, no live LLM key):\n"
-            "- Clubs typically sell via official ticketing sites and authorised resellers, not bulk inventory to unknown operators.\n"
-            "- Authorised sports travel organisers (ATOL/package-travel regulated in some markets) package official allocations.\n"
-            "- Feasible model: agency / package-travel partnership, not speculative ticket inventory.\n"
-            "- Next: contact authorised wholesalers; do not scrape or tout unofficial resale."
-        )
-    if "compliance" in u or "package" in u:
-        return (
-            "Compliance notes (stub):\n"
-            "- Ticket touting / unauthorised resale is restricted in several EU jurisdictions.\n"
-            "- Package Travel regulations may apply if transport+ticket+accommodation are bundled.\n"
-            "- Do not send supplier emails until Lee approves outreach copy."
+            "- Clubs typically sell via official ticketing sites and authorised resellers.\n"
+            "- Authorised sports travel organisers package official allocations.\n"
+            "- Feasible model: agency / package-travel partnership, not inventory speculation.\n"
+            "- Next: contact authorised wholesalers; do not scrape unofficial resale."
         )
     if "synthes" in u or "consolidat" in u or "milo" in u:
-        return (
-            "Milo synthesis (stub):\n"
-            "A European football-trips offer around Dortmund, Ajax, Sparta Prague and Rosenborg can be explored "
-            "without buying inventory if Ayven partners with authorised ticket/package wholesalers and stays off "
-            "secondary tout markets. Economics are margin-on-package, not inventory speculation. "
-            "Outreach to named authorised suppliers requires Lee approval."
-        )
-    return "Working notes recorded. Sources should be verified against official club and authorised-seller pages."
+        return "Milo: Research Lab findings are ready for Lee."
+    return "Working notes recorded. Verify claims against primary manufacturer or official pages."
