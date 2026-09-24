@@ -5,7 +5,6 @@ import os
 
 DB_PATH = Path(os.environ.get("AYVEN_DB", "/tmp/ayven-campus.db"))
 
-
 _initialized = False
 
 
@@ -91,6 +90,34 @@ def init_db(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS work_packages (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            task_id TEXT,
+            title TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            agent_id TEXT,
+            department_id TEXT,
+            stage TEXT NOT NULL,
+            status TEXT NOT NULL,
+            findings TEXT,
+            next_action TEXT,
+            requires_approval INTEGER DEFAULT 0,
+            destination TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sources (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            url TEXT NOT NULL,
+            title TEXT,
+            snippet TEXT,
+            note TEXT,
+            created_at TEXT NOT NULL
+        );
         """
     )
     conn.commit()
@@ -102,7 +129,7 @@ SEED_AGENTS = [
     ("web-researcher", "Ivy Chen", "Web Researcher", "research"),
     ("verifier", "Noah Hale", "Verification Agent", "research"),
     ("travel-researcher", "Sofia Berg", "Travel Researcher", "travel"),
-    ("ticket-researcher", "Jonas Krueger", "Football Ticket Researcher", "travel"),
+    ("ticket-researcher", "Jonas Kruger", "Football Ticket Researcher", "travel"),
     ("supplier-researcher", "Amira Cole", "Supplier Researcher", "travel"),
     ("commercial-analyst", "Eli Park", "Commercial / Package Analyst", "travel"),
     ("compliance", "Priya Shah", "Compliance Agent", "outreach"),
@@ -126,9 +153,7 @@ def seed(conn: sqlite3.Connection) -> None:
     if conn.execute("SELECT COUNT(*) AS c FROM agents").fetchone()["c"] > 0:
         return
     for d in SEED_DEPTS:
-        conn.execute(
-            "INSERT INTO departments(id,name,x,z) VALUES(?,?,?,?)", d
-        )
+        conn.execute("INSERT INTO departments(id,name,x,z) VALUES(?,?,?,?)", d)
     for a in SEED_AGENTS:
         conn.execute(
             """INSERT INTO agents(id,name,role,department_id,status)
