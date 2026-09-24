@@ -1,0 +1,25 @@
+:root { font-family: "Segoe UI", ui-sans-serif, system-ui, sans-serif; color: #e8f0ea; background: #07110c; }
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; overflow: hidden; }
+.overlay { position: absolute; inset: 0; pointer-events: none; }
+.panel { pointer-events: auto; background: rgba(8,18,14,.86); border: 1px solid #1f3d2e; border-radius: 14px; padding: 12px 14px; backdrop-filter: blur(8px); }
+.top { position: absolute; left: 16px; top: 16px; width: 340px; max-height: 48vh; overflow: auto; }
+.right { position: absolute; right: 16px; top: 16px; width: 300px; max-height: 78vh; overflow: auto; }
+.feed { position: absolute; left: 16px; bottom: 16px; width: 430px; max-height: 28vh; overflow: auto; font-size: 12px; }
+.brand { font-size: 15px; letter-spacing: .18em; font-weight: 700; }
+h1 { font-size: 16px; margin: 8px 0; }
+button, textarea { font: inherit; }
+.row { margin-top: 8px; }
+button { background: #1d6b45; color: white; border: 0; border-radius: 8px; padding: 8px 12px; cursor: pointer; margin-right: 6px; }
+button.ghost { background: #22332b; }
+textarea { width: 100%; min-height: 68px; background: #0c1a14; color: #e8f0ea; border: 1px solid #2a4a38; border-radius: 8px; padding: 8px; margin-top: 8px; }
+.muted { color: #8eaa99; font-size: 12px; }
+.approval { margin-top: 10px; border: 1px solid #c4a056; border-radius: 10px; padding: 8px; }
+.cmd-block { margin-top: 10px; font-size: 13px; line-height: 1.45; }
+.dept-line { display: flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: .08em; padding: 4px 0; cursor: pointer; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.inspector { margin-top: 10px; border-top: 1px solid #1f3d2e; padding-top: 8px; font-size: 13px; }
+.inspector p { margin: 4px 0; }
+.bld-label { font-family: ui-sans-serif, system-ui; font-size: 11px; letter-spacing: .14em; color: #e8f0ea; background: rgba(8,18,14,.78); border: 1px solid #2a4a38; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.bld-label[data-hot="1"] { color: #ffd27a; border-color: #c4a056; }
+.agent-chip { font-size: 11px; background: rgba(8,18,14,.85); border: 1px solid #2a4a38; padding: 2px 7px; border-radius: 999px; color: #e8f0ea; }
