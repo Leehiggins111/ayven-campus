@@ -18,7 +18,7 @@ from . import orchestrator
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 
-app = FastAPI(title="Ayven Campus API", version="0.1.0")
+app = FastAPI(title="Ayven Campus API", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -62,7 +62,7 @@ class ObjectiveIn(BaseModel):
 
 
 class ApprovalIn(BaseModel):
-    decision: str  # approved | rejected
+    decision: str
 
 
 def _rows(sql: str, args=()):
@@ -74,7 +74,7 @@ def _rows(sql: str, args=()):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "ayven-api"}
+    return {"ok": True, "service": "ayven-api", "version": "0.3.0"}
 
 
 @app.get("/state")
@@ -87,6 +87,8 @@ def state():
         "approvals": _rows("SELECT * FROM approvals ORDER BY created_at DESC LIMIT 20"),
         "events": _rows("SELECT * FROM events ORDER BY timestamp DESC LIMIT 80"),
         "memories": _rows("SELECT id,namespace,created_at FROM memories ORDER BY created_at DESC LIMIT 20"),
+        "work_packages": _rows("SELECT * FROM work_packages ORDER BY updated_at DESC LIMIT 20"),
+        "sources": _rows("SELECT * FROM sources ORDER BY created_at DESC LIMIT 40"),
     }
 
 
@@ -119,7 +121,8 @@ def get_project(pid: str):
     if not rows:
         raise HTTPException(404)
     tasks = _rows("SELECT * FROM tasks WHERE project_id=?", (pid,))
-    return {**rows[0], "tasks": tasks}
+    packages = _rows("SELECT * FROM work_packages WHERE project_id=?", (pid,))
+    return {**rows[0], "tasks": tasks, "work_packages": packages}
 
 
 @app.post("/approvals/{aid}/resolve")
