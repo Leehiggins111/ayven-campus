@@ -18,9 +18,9 @@ const CAT = Object.fromEntries(CATALOG.map((d) => [d.id, d]));
 
 let state = {
   departments: CATALOG.map((d) => ({ id: d.id, name: d.name, x: d.x, z: d.z })),
-  agents: [], events: [], tasks: [], approvals: [], projects: [],
+  agents: [], events: [], tasks: [], approvals: [], projects: [], work_packages: [], sources: [],
   selectedId: "milo", focus: { kind: "campus" },
-  brief: "Research whether a European football trips business can obtain match tickets for Borussia Dortmund, Ajax, Sparta Prague and Rosenborg without purchasing inventory upfront.",
+  brief: "Find manufacturers who can supply internal doors suitable for joinery work, including custom hinge positions. Compare trade pricing, delivery to Scotland, minimum orders and trade-account requirements.",
 };
 const listeners = new Set();
 function set(partial) {
@@ -47,6 +47,8 @@ useCampus.hydrate = async () => {
     tasks: s.tasks || [],
     approvals: s.approvals || [],
     projects: s.projects || [],
+    work_packages: s.work_packages || [],
+    sources: s.sources || [],
   });
 };
 
@@ -74,11 +76,11 @@ function Building({ department, selected, attention, onClick }) {
       {type === "command" && (<><Mass color={color} args={[8.6, 5.4, 6.4]} position={[0, 2.7, 0]} /><Mass color="#e8d9a0" args={[3.4, 2.6, 3.4]} position={[0, 6.7, 0]} /></>)}
       {type === "research" && (<><Mass color={color} args={[9.4, 2.5, 4.6]} position={[0, 1.25, 0]} /><Mass color="#2b4a58" args={[4.4, 1.8, 4.4]} position={[2.2, 3.4, 0]} /></>)}
       {type === "travel" && (<><Mass color={color} args={[7.6, 2.7, 5.2]} position={[0, 1.35, 0]} /></>)}
-      {type === "outreach" && (<><Mass color={color} args={[6.6, 3.2, 5.4]} position={[0, 1.6, 0]} /><Mass color="#7a4a2c" args={[2.2, 4.6, 2.2]} position={[-2.5, 2.3, 1.5]} /></>)}
-      {type === "labs" && (<><Mass color={color} args={[5.4, 2.3, 5.4]} position={[0, 1.15, 0]} /><Mass color="#7a4aa0" args={[3.5, 2.9, 3.5]} position={[1.2, 3.6, 0.4]} /></>)}
+      {type === "outreach" && (<><Mass color={color} args={[6.6, 3.2, 5.4]} position={[0, 1.6, 0]} /></>)}
+      {type === "labs" && (<><Mass color={color} args={[5.4, 2.3, 5.4]} position={[0, 1.15, 0]} /></>)}
       {type === "trades" && (<><Mass color={color} args={[8.6, 2.9, 5.8]} position={[0, 1.45, 0]} /></>)}
       {type === "procurement" && (<><Mass color={color} args={[7.4, 3.5, 5.0]} position={[0, 1.75, 0]} /></>)}
-      {type === "grassroots" && (<><mesh position={[0, 0.08, 0]} rotation={[-Math.PI / 2, 0, 0]}><circleGeometry args={[3.6, 28]} /><meshStandardMaterial color="#2f6a3a" /></mesh><Mass color={color} args={[5.8, 2.1, 4.6]} position={[0, 1.05, 0]} /></>)}
+      {type === "grassroots" && (<><Mass color={color} args={[5.8, 2.1, 4.6]} position={[0, 1.05, 0]} /></>)}
     </group>
   );
 }
@@ -96,14 +98,13 @@ function Avatar({ agent, position, selected, onClick }) {
   useFrame(({ clock }) => {
     if (!ref.current) return;
     ref.current.position.y = busy ? 0.02 + Math.sin(clock.elapsedTime * 6) * 0.05 : 0.02;
-    if (agent.status === "needs_approval") ref.current.rotation.y = clock.elapsedTime * 1.4;
   });
   return (
     <group position={position} onClick={(e) => { e.stopPropagation(); onClick(); }}>
       <group ref={ref}>
         <mesh position={[0, 0.55, 0]} castShadow>
           <capsuleGeometry args={[agent.id === "milo" ? 0.28 : 0.22, agent.id === "milo" ? 0.72 : 0.55, 4, 8]} />
-          <meshStandardMaterial color={selected ? "#fff" : color} emissive={color} emissiveIntensity={agent.status === "needs_approval" || agent.status === "error" ? 0.45 : 0.18} />
+          <meshStandardMaterial color={selected ? "#fff" : color} emissive={color} emissiveIntensity={0.2} />
         </mesh>
       </group>
     </group>
@@ -115,7 +116,6 @@ function CameraRig() {
   const { camera } = useThree();
   const focus = useCampus((s) => s.focus);
   const departments = useCampus((s) => s.departments);
-  const agents = useCampus((s) => s.agents);
   const target = useRef(new THREE.Vector3(0, 0, 0));
   const pos = useRef(new THREE.Vector3(38, 30, 38));
   useFrame(() => {
@@ -124,14 +124,6 @@ function CameraRig() {
     if (focus.kind === "building") {
       const d = departments.find((x) => x.id === focus.id);
       if (d) { look.set(d.x, 1.2, d.z); dest.set(d.x + 14, 11, d.z + 14); }
-    } else if (focus.kind === "agent") {
-      const a = agents.find((x) => x.id === focus.id);
-      const d = departments.find((x) => x.id === a?.department_id);
-      if (a && d) {
-        const idx = agents.filter((x) => x.department_id === a.department_id).findIndex((x) => x.id === a.id);
-        const p = agentPos(d, idx, a.id === "milo");
-        look.set(p[0], 0.8, p[2]); dest.set(p[0] + 6, 5.5, p[2] + 6);
-      }
     }
     pos.current.lerp(dest, 0.06); target.current.lerp(look, 0.08);
     camera.position.copy(pos.current);
@@ -140,12 +132,40 @@ function CameraRig() {
   return <OrbitControls ref={controls} makeDefault maxPolarAngle={Math.PI / 2.2} minDistance={8} maxDistance={80} />;
 }
 
+function packagePos(pkg, departments) {
+  const stage = pkg.stage || "command";
+  const research = departments.find((d) => d.id === "research") || { x: -20, z: -12 };
+  const command = departments.find((d) => d.id === "command") || { x: 0, z: 0 };
+  if (stage === "research" || stage === "researching") return [research.x + 3.2, 0.55, research.z + 1.2];
+  if (stage === "distribution" || stage === "routing") return [(research.x + command.x) / 2, 0.7, (research.z + command.z) / 2];
+  if (stage === "approval" || pkg.status === "needs_approval") return [command.x - 4.2, 0.7, command.z + 3.4];
+  if (stage === "results" || stage === "complete") return [command.x + 3.4, 0.7, command.z + 3.2];
+  return [command.x, 0.7, command.z + 2.2];
+}
+
+function WorkCrate({ pkg, departments }) {
+  const ref = useRef();
+  const dest = packagePos(pkg, departments);
+  useFrame(() => {
+    if (!ref.current) return;
+    ref.current.position.lerp(new THREE.Vector3(dest[0], dest[1], dest[2]), 0.08);
+  });
+  const hot = pkg.status === "needs_approval" || pkg.stage === "approval";
+  return (
+    <mesh ref={ref} position={dest} castShadow>
+      <boxGeometry args={[0.7, 0.45, 0.55]} />
+      <meshStandardMaterial color={hot ? "#d4b45a" : "#c4a07a"} emissive={hot ? "#c4a056" : "#000"} emissiveIntensity={hot ? 0.35 : 0} />
+    </mesh>
+  );
+}
+
 function Scene() {
   const departments = useCampus((s) => s.departments);
   const agents = useCampus((s) => s.agents);
   const approvals = useCampus((s) => s.approvals);
   const focus = useCampus((s) => s.focus);
   const selectedId = useCampus((s) => s.selectedId);
+  const work_packages = useCampus((s) => s.work_packages);
   const pending = new Set(approvals.filter((a) => a.status === "pending").map((a) => agents.find((x) => x.id === a.agent_id)?.department_id));
   agents.filter((a) => a.status === "needs_approval" || a.status === "error").forEach((a) => pending.add(a.department_id));
   const cmd = departments.find((d) => d.id === "command") || { x: 0, z: 0 };
@@ -168,6 +188,7 @@ function Scene() {
       {departments.map((d) => agents.filter((a) => a.department_id === d.id).map((a, i) => (
         <Avatar key={a.id} agent={a} position={agentPos(d, i, a.id === "milo")} selected={selectedId === a.id} onClick={() => useCampus.focusAgent(a.id)} />
       )))}
+      {(work_packages || []).map((p) => <WorkCrate key={p.id} pkg={p} departments={departments} />)}
       <CameraRig />
     </>
   );
@@ -175,11 +196,10 @@ function Scene() {
 
 function humanEvent(e) {
   const map = {
-    "project.created": "Project opened", "task.created": "Task created", "task.assigned": "Task assigned",
-    "agent.started_task": "Started work", "agent.using_tool": "Using a tool", "agent.researching": "Researching",
-    "agent.needs_approval": "Needs approval", "agent.completed": "Completed work", "agent.failed": "Failed",
-    "agent.idle": "Idle", "approval.requested": "Approval requested", "approval.resolved": "Approval resolved",
-    "milo.synthesized": "Milo consolidated findings",
+    "project.created": "Project opened", "task.created": "Task created", "package.created": "Work package created",
+    "package.routed": "Distribution routed package", "package.waiting_approval": "Package in approval bay",
+    "agent.using_tool": "Using a tool", "agent.researching": "Researching", "approval.requested": "Approval requested",
+    "approval.resolved": "Approval resolved", "milo.synthesized": "Milo published findings",
   };
   return `${map[e.type] || e.type}${e.summary ? " — " + e.summary : ""}`;
 }
@@ -190,6 +210,7 @@ function App() {
   const tasks = useCampus((s) => s.tasks);
   const approvals = useCampus((s) => s.approvals);
   const projects = useCampus((s) => s.projects);
+  const work_packages = useCampus((s) => s.work_packages);
   const selectedId = useCampus((s) => s.selectedId);
   const brief = useCampus((s) => s.brief);
   const [text, setText] = useState(brief);
@@ -205,6 +226,7 @@ function App() {
   const project = projects[0];
   const currentTask = tasks.filter((t) => t.agent_id === selected?.id)[0];
   const waiting = selected?.status === "needs_approval" ? "Lee approval before any external send" : selected?.status === "error" ? "Recovery / retry" : "—";
+  const pkg = (work_packages || [])[0];
   return (
     <>
       <Canvas shadows camera={{ position: [38, 30, 38], fov: 42 }}>
@@ -235,8 +257,7 @@ function App() {
             <div className="muted">Command</div>
             <div>Working: {agents.filter((a) => ["working", "researching", "using_tool"].includes(a.status)).length}</div>
             <div>Approvals waiting: {pending.length}</div>
-            <div>Errors: {agents.filter((a) => a.status === "error").length}</div>
-            <div>Est. cost: ${agents.reduce((n, a) => n + Number(a.cost_usd || 0), 0).toFixed(4)}</div>
+            <div>Package: {pkg ? `${pkg.stage} / ${pkg.status}` : "none"}</div>
             {project && <p className="muted">{project.result ? String(project.result).slice(0, 280) : project.title}</p>}
           </div>
         </div>
@@ -246,14 +267,9 @@ function App() {
           {selected && (
             <div className="inspector">
               <h1>{selected.name}</h1>
-              <div className="muted">{selected.role} · {CAT[selected.department_id]?.name}</div>
+              <div className="muted">{selected.role}</div>
               <p><b>Status</b> {selected.status}</p>
-              <p><b>Project</b> {project?.title || "—"}</p>
-              <p><b>Task</b> {currentTask?.title || "—"}</p>
-              <p><b>Tool</b> {selected.current_tool || "—"}</p>
-              <p><b>Progress</b> {Math.round((selected.progress || 0) * 100)}%</p>
               <p><b>Waiting for</b> {waiting}</p>
-              <p><b>Approval</b> {selected.status === "needs_approval" ? "YES" : "no"}</p>
               <p className="muted">{selected.last_summary}</p>
             </div>
           )}
