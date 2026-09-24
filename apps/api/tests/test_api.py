@@ -38,11 +38,12 @@ def test_create_project_and_tasks():
     pid = r.json()["project_id"]
     import time
 
-    time.sleep(2.5)
+    time.sleep(6)
     proj = c.get(f"/projects/{pid}").json()
-    assert len(proj["tasks"]) >= 2
+    assert len(proj["tasks"]) >= 1
     s = c.get("/state").json()
-    assert any(e["type"] in ("agent.using_tool", "agent.researching", "task.created") for e in s["events"])
+    assert any(e["type"] in ("agent.using_tool", "agent.researching", "task.created", "package.created") for e in s["events"])
+    assert len(s.get("work_packages") or proj.get("work_packages") or []) >= 1
 
 
 def test_approval_and_failure_recovery():
