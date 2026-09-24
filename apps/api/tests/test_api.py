@@ -17,6 +17,7 @@ def test_campus_page_served():
     jsx = c.get("/r3f/campus-app.jsx")
     assert jsx.status_code == 200
     assert "Ask Milo" in jsx.text
+    assert "WorkCrate" in jsx.text
 
 
 def test_state_seeded():
@@ -30,14 +31,11 @@ def test_create_project_and_tasks():
     c = TestClient(app)
     r = c.post(
         "/projects",
-        json={
-            "objective": "Research whether a European football trips business can obtain match tickets without purchasing inventory upfront."
-        },
+        json={"objective": "Research whether a European football trips business can obtain match tickets without purchasing inventory upfront."},
     )
     assert r.status_code == 200
     pid = r.json()["project_id"]
     import time
-
     time.sleep(6)
     proj = c.get(f"/projects/{pid}").json()
     assert len(proj["tasks"]) >= 1
