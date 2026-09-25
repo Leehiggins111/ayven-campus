@@ -18,7 +18,7 @@ MISSING_FIELDS = [
     "Hinge count, size, finish, and positions — £7 is not a proven per-door or per-hinge price",
     "Whether labour of £95 is per door or per job, and what fitting includes",
     "Architraves, threshold, making good, and waste removal",
-    "Site access, floor, and parking in Livingston",
+    "Site access, floor, and parking",
     "Delivery unloading and who receives it",
     "VAT treatment — not stated, so not applied",
     "Customer confirmation that the provisional prices are the prices to use",
@@ -145,5 +145,4 @@ def quote_internal_doors(objective: str) -> dict | None:
         },
         "pence_check": {"labour_per_door": pence_per_door, "labour_per_job": pence_per_job},
         "missing_fields": list(MISSING_FIELDS),
-        "location": "Livingston" if "livingston" in objective.lower() else "",
     }

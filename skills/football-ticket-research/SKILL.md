@@ -4,10 +4,6 @@ description: Find legitimate ticket routes from official club pages and separate
 version: 1.0.0
 triggers:
   - ticket
-  - dortmund
-  - ajax
-  - sparta
-  - rosenborg
 tools:
   - web_search
   - fetch_page
@@ -24,9 +20,9 @@ permissions:
 
 # Football ticket research
 
-For each named club:
+For each named organisation:
 
-1. Search for the club's own ticket page first.
+1. Search that organisation's own site, in its local language, before any reseller.
 2. Open it. Record the official URL only if the fetch succeeded.
 3. Call that channel official only when the host is the club or its official ticket domain.
 4. A reseller, marketplace, or fan forum is not an authorised partner unless the official page says so. Do not invent a partnership.

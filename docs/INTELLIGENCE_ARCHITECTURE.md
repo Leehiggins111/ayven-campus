@@ -1,6 +1,6 @@
 # Intelligence architecture
 
-Version 1.1.0. Status: **FRANKENSTEIN RUNTIMES. LOCAL INTEGRATION TESTS PASS. NOT YET VERIFIED ON GPU.**
+Version 1.1.1. Status: **FRANKENSTEIN RUNTIMES. LOCAL INTEGRATION TESTS PASS. NOT YET VERIFIED ON GPU.**
 
 Ayven is the product. Qwen-Agent, MCP, Browser Use, and the other projects in `INTELLIGENCE_COMPONENTS.md` are optional components behind Ayven interfaces. The campus, work packages, approvals, and SQLite state are unchanged in role.
 
@@ -66,4 +66,4 @@ Observability on the parent package stores the plan, selected models, skills, qu
 
 ## API
 
-`GET /state` includes `intelligence` (plans, skills, tool calls, claims, verification, quality, model calls). `GET /work-packages/{id}/intelligence` is the full record for one package. `GET /health` reports version `1.1.0`, `validation_status`, and `gpu_validated: false`.
+`GET /state` includes `intelligence` (plans, skills, tool calls, claims, verification, quality, model calls). `GET /work-packages/{id}/intelligence` is the full record for one package. `GET /health` reports version `1.1.1`, `validation_status`, and `gpu_validated: false`.

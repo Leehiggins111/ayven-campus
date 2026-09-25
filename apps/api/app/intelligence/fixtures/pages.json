@@ -50,33 +50,33 @@
   {
     "url": "https://www.edinburghleisure.co.uk/venues/royal-commonwealth-pool/",
     "title": "Royal Commonwealth Pool - Swimming, Gym, Classes",
-    "match": ["leisure centre"],
+    "match": ["leisure centre", "vending"],
     "freshness": "FIXTURE_SNAPSHOT",
     "retrieved_at": "2026-09-25T22:40:00+00:00",
-    "text": "Royal Commonwealth Pool - Swimming, Gym, Classes. Edinburgh Leisure. Now over 50 years old, the Royal Commonwealth Pool is among Scotland's most iconic leisure centres, and plays an integral role in keeping Edinburgh active on a daily basis, whether its in our 50-metre pool, working out in the gym or taking part in a fitness class."
+    "text": "Royal Commonwealth Pool - Swimming, Gym, Classes. Edinburgh Leisure. Now over 50 years old, the Royal Commonwealth Pool is among Scotland's most iconic leisure centres, and plays an integral role in keeping Edinburgh active on a daily basis, whether its in our 50-metre pool, working out in the gym or taking part in a fitness class. Public evidence of the site. No placement decision, contact, or existing machine arrangement is stated."
   },
   {
     "url": "https://www.nationalrail.co.uk/stations/london-kings-cross/",
     "title": "London Kings Cross Station | National Rail",
-    "match": ["railway station"],
+    "match": ["railway station", "vending"],
     "freshness": "FIXTURE_SNAPSHOT",
     "retrieved_at": "2026-09-25T22:40:00+00:00",
-    "text": "London Kings Cross Station | National Rail. London Kings Cross station, Euston Road, London, Greater London, N1 9AL. Station managed by Network Rail. Toilets and baby changing. Staff assistance available Monday to Friday 05:00 - 01:36, Saturday 05:00 - 00:36, Sunday 05:30 - 01:36."
+    "text": "London Kings Cross Station | National Rail. London Kings Cross station, Euston Road, London, Greater London, N1 9AL. Station managed by Network Rail. Toilets and baby changing. Staff assistance available Monday to Friday 05:00 - 01:36, Saturday 05:00 - 00:36, Sunday 05:30 - 01:36. Public evidence of the site. No placement decision, contact, or existing machine arrangement is stated."
   },
   {
     "url": "https://www.nhs.uk/services/hospital/university-college-hospital/RRV03",
     "title": "University College Hospital - NHS",
-    "match": ["nhs hospital"],
+    "match": ["nhs hospital", "vending"],
     "freshness": "FIXTURE_SNAPSHOT",
     "retrieved_at": "2026-09-25T22:40:00+00:00",
-    "text": "University College Hospital - NHS. University College Hospital, 235 Euston Road, London, NW1 2BU. Departments and services. Facilities. Information supplied by University College London Hospitals NHS Foundation Trust."
+    "text": "University College Hospital - NHS. University College Hospital, 235 Euston Road, London, NW1 2BU. Departments and services. Facilities. Information supplied by University College London Hospitals NHS Foundation Trust. Public evidence of the site. No placement decision, contact, or existing machine arrangement is stated."
   },
   {
     "url": "https://sport.ed.ac.uk/",
     "title": "Home | UoE Sport",
-    "match": ["university sport"],
+    "match": ["university sport", "vending"],
     "freshness": "FIXTURE_SNAPSHOT",
     "retrieved_at": "2026-09-25T22:40:00+00:00",
-    "text": "Home | UoE Sport. Edinburgh Sport. Venues. Membership. Classes. Technogym. The community description says: on the pitch, in the gym, and beyond."
+    "text": "Home | UoE Sport. Edinburgh Sport. Venues. Membership. Classes. Technogym. The community description says: on the pitch, in the gym, and beyond. Public evidence of the site. No placement decision, contact, or existing machine arrangement is stated."
   }
 ]

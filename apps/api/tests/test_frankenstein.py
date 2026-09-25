@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import uuid
+from pathlib import Path
+from urllib.parse import urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from app.db import connect
@@ -22,9 +25,9 @@ from app.intelligence.fallbacks import on_http_result, on_mcp_down, on_sandbox_u
 from app.intelligence.mcp_boundary import call_tool, discover, prepare_call
 from app.intelligence.memory import format_for_prompt, remember, retrieve
 from app.intelligence.permissions import EXTERNAL_CONTACT, ROLE_CAPS
-from app.intelligence.qwen_adapter import employee_turn, run_tool_loop
+from app.intelligence.qwen_adapter import choose_qwen_mode, employee_turn, run_tool_loop
 from app.intelligence.registry import route_for
-from app.intelligence.research import research
+from app.intelligence.research import plan_queries, research
 from app.intelligence.resolution import apply_manager_veto, parse_manager_decision
 from app.intelligence.skills import discover as discover_skills
 from app.intelligence.skills import select_skills, skill_prompt
@@ -162,7 +165,7 @@ def test_agentic_review_records_a_gap_and_one_next_query():
         "pkg-review",
         "research-e3",
         queries=["adversarial-stale"],
-        max_rounds=1,
+        max_rounds=2,
         reviewer=reviewer,
     )
     assert any("decision-maker" in gap.lower() or "don't know" in gap.lower() for gap in result["gaps"])
@@ -355,3 +358,241 @@ def test_specialist_boundary_does_not_install_a_coding_host():
     assert rejected["Aider-AI/aider"] == "REJECTED"
     assert rejected["letta-ai/letta"] == "REJECTED"
     assert rejected["mem0ai/mem0"] == "REJECTED"
+
+
+def test_stub_queries_come_from_the_objective_and_review_is_labelled():
+    planned, source = plan_queries("vending_prospects", VENDING)
+    blob = " ".join(planned).lower()
+    assert source == "objective-fallback"
+    assert "vending" in blob
+    for seeded in ("leisure centre", "railway station", "nhs hospital", "university sport", "kaartverkoop"):
+        assert seeded not in blob
+    football, football_source = plan_queries("football_tickets", FOOTBALL)
+    football_blob = " ".join(football).lower()
+    assert football_source == "objective-fallback"
+    assert "dortmund" in football_blob and "ajax" in football_blob
+    assert "kaartverkoop" not in football_blob
+    reviewed = research("general", "find a page", "pkg-stub-review", "research-e3", queries=["adversarial-stale"], max_rounds=1)
+    assert reviewed["review_mode"] == "stub"
+    assert "reviewer: stub" in reviewed["review"].lower()
+
+    def broken(_user):
+        raise RuntimeError("review broke")
+
+    failed = research("general", "find a page", "pkg-review-fail", "research-e3", queries=["adversarial-stale"], max_rounds=1, reviewer=broken)
+    assert failed["review_mode"] == "failed"
+    assert any(item.get("stage") == "review" for item in failed["failures"])
+    assert any("RuntimeError" in gap or "review broke" in gap for gap in failed["gaps"])
+    assert "sufficient" not in failed["review"].lower()
+
+
+def test_engine_source_does_not_name_exam_entities():
+    repo = Path(__file__).resolve().parents[3]
+    common = {
+        "customer", "sizes", "provisional", "check", "find", "legitimate", "facts", "official",
+        "enquiry", "public", "approval", "looking", "black", "handles", "internal", "doors",
+        "hospital", "university", "station", "leisure", "sport", "centre", "center", "pool",
+        "gym", "tickets", "ticket", "search", "home", "national", "rail", "london", "college",
+        "royal", "commonwealth", "classes", "venues", "membership", "information", "company",
+        "register", "results", "service", "finder", "contracts", "house", "companies",
+        "swimming", "shop", "primary", "secondary", "report", "notice", "stale", "follow",
+        "reseller", "recipe", "page", "welcome", "index", "facilities", "facility", "routes",
+        "route", "package", "packages", "without", "speculative", "inventory", "assumptions",
+        "versus", "gaps", "purchases", "purchase", "supplied", "fitted", "wants", "final",
+        "quote", "suppliers", "positions", "trade", "measurement", "unknowns", "invent",
+        "firm", "placement", "prospects", "evidence", "decision", "maker", "suitability",
+        "missing", "outreach", "draft", "only", "before", "contact", "machine", "vending",
+    }
+    generic_labels = common | {
+        "www", "co", "uk", "com", "de", "nl", "cz", "no", "org", "gov", "ac", "nhs", "edu",
+        "mil", "html", "service", "sport",
+    }
+    public_exact = {"nhs.uk", "gov.uk", "ac.uk", "edu", "mil"}
+    banned = set()
+    for path in (repo / "benchmarks" / "exams").glob("*.txt"):
+        for word in re.findall(r"\b[A-Z][a-z]{3,}\b", path.read_text(encoding="utf-8")):
+            if word.lower() not in common:
+                banned.add(word.lower())
+    for path in (repo / "apps/api/app/intelligence/fixtures").glob("*.json"):
+        for page in json.loads(path.read_text(encoding="utf-8")):
+            host = urlparse(page.get("url") or "").netloc.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            if not host or host.endswith("ayven-fixture.uk") or "bbc." in host or "wikipedia.org" in host or "theguardian.com" in host:
+                continue
+            labels = [label for label in host.split(".") if label not in generic_labels and len(label) >= 3]
+            if host not in public_exact and labels:
+                banned.add(host)
+                banned.update(labels)
+            if path.name == "pages.json":
+                for word in re.findall(r"\b[A-Z][A-Za-z]{5,}\b", page.get("title") or ""):
+                    if word.lower() not in common and word.lower() not in generic_labels:
+                        banned.add(word.lower())
+    assert {"livingston", "dortmund", "ajax", "sparta", "rosenborg"} <= banned
+    files = list((repo / "apps/api/app/intelligence").rglob("*.py"))
+    tools = repo / "apps/api/app/tools.py"
+    if tools.exists():
+        files.append(tools)
+    offenders = []
+    for path in files:
+        if path.name == "assertions.py" or "fixtures" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8").lower()
+        for term in sorted(banned):
+            if term in text:
+                offenders.append(f"{path.relative_to(repo)} contains {term}")
+    assert not offenders, "\n".join(offenders)
+
+
+def test_supervisor_independent_confirm_contradict_and_budget():
+    from app.intelligence.supervisor_check import independent_verify, query_from_claim
+
+    claim = {"id": "c1", "claim_text": "The pool is 50 metres.", "status": "SUPPORTED", "claim_type": "FACT", "source_url": ""}
+    seen = []
+
+    def search(query, limit=3):
+        seen.append(query)
+        return [{"url": "https://audit-check.ayven-fixture.uk/pool", "title": "Pool audit"}]
+
+    confirmed = independent_verify([claim], search_fn=search, fetch_fn=lambda url: {"url": url, "text": "The pool is 50 metres.", "error": ""})
+    assert confirmed["checks"][0]["verification"] == "independently_confirmed"
+    assert "pool" in seen[0].lower() and "metres" in seen[0].lower()
+    assert query_from_claim(claim["claim_text"]) == seen[0]
+
+    contradicted = independent_verify(
+        [claim],
+        search_fn=search,
+        fetch_fn=lambda url: {"url": url, "text": "The pool is 25 metres.", "error": ""},
+    )
+    assert contradicted["checks"][0]["verification"] == "independently_contradicted"
+
+    def fail_fetch(url):
+        return {"url": url, "text": "", "error": "http_failed"}
+
+    browsed = independent_verify(
+        [claim],
+        search_fn=search,
+        fetch_fn=fail_fetch,
+        browse_fn=lambda url: {"text": "The pool is 50 metres."},
+        browser_allowed=True,
+    )
+    assert browsed["checks"][0]["verification"] == "independently_confirmed"
+    assert browsed["checks"][0]["note"] == "browser"
+
+    many = [
+        {"id": f"c{i}", "claim_text": f"The pool length is {i}0 metres.", "status": "SUPPORTED", "claim_type": "FACT", "source_url": "https://audit-check.ayven-fixture.uk/stored"}
+        for i in range(1, 4)
+    ]
+    exhausted = independent_verify(many, search_fn=search, fetch_fn=lambda url: {"url": url, "text": "stored page", "error": ""}, max_searches=1, max_fetches=1)
+    assert exhausted["searches"] == 1 and exhausted["fetches"] == 1
+    assert any(row["verification"] == "budget_exhausted" for row in exhausted["checks"])
+    reread = independent_verify(
+        [{**claim, "source_url": "https://audit-check.ayven-fixture.uk/stored"}],
+        search_fn=lambda query, limit=3: [],
+        fetch_fn=lambda url: {"url": url, "text": "stored", "error": ""},
+        max_searches=0,
+        max_fetches=1,
+    )
+    assert reread["checks"][0]["verification"] == "re_read_only"
+
+
+def test_manager_proposal_is_followed_when_safety_allows_it():
+    from app.intelligence.execution import run_objective
+
+    outcomes = {}
+    for proposal in ("SYNTHESISE", "RESEARCH_MORE", "RETURN"):
+        def gen(role, system, user, max_tokens, proposal=proposal):
+            if role == "MANAGER":
+                return f"{proposal}\nRationale: follow the proposal", 3, {"backend": "generator"}
+            if role == "SUPERVISOR":
+                return "ACCEPT", 2, {"backend": "generator"}
+            return "notes", 2, {"backend": "generator"}
+
+        set_role_generator(gen)
+        try:
+            parent = run_objective(_project("Say hello"), "Say hello", None)
+        finally:
+            set_role_generator(None)
+        conn = connect()
+        row = conn.execute("SELECT observability_json FROM work_packages WHERE id=?", (parent,)).fetchone()
+        conn.close()
+        outcomes[proposal] = json.loads(row["observability_json"])["resolution"]
+    assert outcomes["SYNTHESISE"]["decision"] == "SYNTHESISE"
+    assert outcomes["RESEARCH_MORE"]["decision"] == "RESEARCH_MORE"
+    assert outcomes["RETURN"]["decision"] == "RETURN"
+    assert all(item["decision_source"] == "model-proposed" and item["veto"] is False for item in outcomes.values())
+    safety = {"decision": "CLARIFY", "reason": "A person must approve.", "resolution_method": "customer_clarification"}
+    assert apply_manager_veto("SYNTHESISE", safety)["decision_source"] == "veto-forced"
+    assert apply_manager_veto("CLARIFY", safety)["decision_source"] == "model-proposed"
+
+
+def test_qwen_live_mode_is_distinct_from_replay(monkeypatch):
+    replay = employee_turn(
+        system="sys",
+        user="Ayven tool runtime",
+        agent_id="research-e1",
+        package_id="pkg-replay",
+        preset_text='TOOL ayven_tool {"tool":"record_review","payload":"replay"}\nWorking notes recorded.',
+        handler=lambda tool, payload: "noted",
+    )
+    assert replay["qwen_mode"] == "replay"
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, system, user):
+            self.calls += 1
+            if self.calls == 1:
+                return 'TOOL ayven_tool {"tool":"record_review","payload":"live"}\n', {}
+            return "Done live.", {}
+
+    live = employee_turn(
+        system="sys",
+        user="hello",
+        agent_id="research-e1",
+        package_id="pkg-live",
+        preset_text=None,
+        session=Session(),
+        handler=lambda tool, payload: "noted",
+    )
+    assert live["qwen_mode"] == "live"
+    assert live["runtime"] == "qwen-agent"
+    assert any(item["tool"] == "record_review" for item in live["tools"])
+    monkeypatch.setenv("AYVEN_LLM_STUB", "0")
+    monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:9/v1")
+    assert choose_qwen_mode(preset_text=None) == "live"
+    monkeypatch.setenv("AYVEN_LLM_STUB", "1")
+    assert choose_qwen_mode(preset_text=None) == "replay"
+
+
+def test_preflight_continues_when_root_has_no_sudo_and_unshare_is_denied(monkeypatch):
+    import sys
+
+    from app.intelligence import code_sandbox
+
+    repo = Path(__file__).resolve().parents[3]
+    sys.path.insert(0, str(repo))
+    from validation.preflight import chrome_commands, continue_after_preflight, use_sudo
+
+    monkeypatch.setattr(code_sandbox, "_unshare_works", lambda: False)
+    monkeypatch.setattr(code_sandbox, "_bwrap_works", lambda: False)
+    assert code_sandbox.isolation_level() == "rlimit-subprocess-no-network-unverified"
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+    blocked = run_code("research-e3", "print('should-not-run')\n", approved=True)
+    assert blocked.status == "disabled"
+    assert blocked.metadata["sandbox"] == "rlimit-subprocess-no-network-unverified"
+    assert "should-not-run" not in (blocked.extracted_content or "")
+    assert use_sudo(0, False) is False
+    assert use_sudo(0, True) is False
+    commands = chrome_commands(euid=0, sudo_on_path=False, apt=True)
+    assert commands and all(command[0] != "sudo" for command in commands)
+    user_commands = chrome_commands(euid=1000, sudo_on_path=True, apt=True)
+    assert user_commands[0][0] == "sudo"
+    caps = frankenstein_status()
+    assert caps["code_sandbox"] == "REPORTED"
+    assert caps["isolation"] == "rlimit-subprocess-no-network-unverified"
+    assert caps["qwen_agent"] == "ACTIVE"
+    assert continue_after_preflight(caps, gpu=True) is True
+    caps["browser"] = "INACTIVE"
+    assert continue_after_preflight(caps, gpu=True) is False

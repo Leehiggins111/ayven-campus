@@ -25,10 +25,39 @@ from .toolkit import ToolResult, now
 _MAX_BYTES = 20_000
 
 
+def isolation_choice(unshare_ok: bool, bwrap_ok: bool) -> tuple[str, bool]:
+    """Level name, and whether that level may execute model code.
+
+    The weakest label is reported only. It does not run code.
+    """
+    if unshare_ok:
+        return "unshare-user-net-pid", True
+    if bwrap_ok:
+        return "bubblewrap-unshare-net", True
+    return "rlimit-subprocess-no-network-unverified", False
+
+
 def isolation_level() -> str:
-    if shutil.which("unshare") and shutil.which("timeout") and _unshare_works():
-        return "unshare-user-net-pid"
-    return "subprocess-timeout-no-namespace"
+    return isolation_choice(_unshare_works(), _bwrap_works())[0]
+
+
+def isolation_executable() -> bool:
+    return isolation_choice(_unshare_works(), _bwrap_works())[1]
+
+
+def _bwrap_works() -> bool:
+    if not shutil.which("bwrap") or not shutil.which("timeout"):
+        return False
+    try:
+        probe = subprocess.run(
+            ["bwrap", "--unshare-net", "--", "true"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0
 
 
 def _unshare_works() -> bool:
@@ -74,7 +103,16 @@ def run_code(agent_id: str, source: str, approved: bool = False, timeout: int = 
         )
     if not source or len(source) > _MAX_BYTES:
         return ToolResult(tool="code_exec", status="error", error="empty_or_oversized_source", timestamp=now())
-    level = isolation_level()
+    level, executable = isolation_choice(_unshare_works(), _bwrap_works())
+    if not executable:
+        return ToolResult(
+            tool="code_exec",
+            status="disabled",
+            query=(source or "")[:200],
+            error=f"{level} is reported only and is not used for code execution. Use the calculator for arithmetic.",
+            timestamp=now(),
+            metadata={"sandbox": level, "executable": False},
+        )
     try:
         stdout, stderr, code = _execute(source, timeout=timeout, level=level)
     except Exception as exc:
@@ -99,6 +137,8 @@ def _execute(source: str, timeout: int, level: str) -> tuple[str, str, int]:
         cmd = [python, "-I", str(path)]
         if level == "unshare-user-net-pid":
             cmd = ["timeout", str(timeout), "unshare", "--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc", *cmd]
+        elif level == "bubblewrap-unshare-net":
+            cmd = ["timeout", str(timeout), "bwrap", "--unshare-net", "--unshare-pid", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib", "--proc", "/proc", "--dev", "/dev", "--", *cmd]
         else:
             cmd = ["timeout", str(timeout), *cmd]
         env = {

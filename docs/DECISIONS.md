@@ -22,4 +22,4 @@ v1.0.0 adds planning, skills, tools, a claim ledger, critic, verifier, and indep
 
 ## ADR-009 — Integrate capabilities, not hosts
 
-v1.1.0 runs Qwen-Agent, Browser Use, and the MCP SDK inside Ayven. They do not become the orchestrator. A library is installed only when it adds a capability Ayven does not already have at the same quality. Overlapping hosts (OpenHands, Aider, SWE-agent, LangGraph, Microsoft Agent Framework, LiteLLM, Letta, Mem0) stay out. The code sandbox is `unshare` user/net/pid because Docker is not on the cloud VM and is not required on a RunPod pod.
+v1.1.1 runs Qwen-Agent, Browser Use, and the MCP SDK inside Ayven. They do not become the orchestrator. A library is installed only when it adds a capability Ayven does not already have at the same quality. Overlapping hosts (OpenHands, Aider, SWE-agent, LangGraph, Microsoft Agent Framework, LiteLLM, Letta, Mem0) stay out. Code execution prefers `unshare` user/net/pid, then bubblewrap. If neither is available the weak level is reported and does not run code, and it does not abort a GPU validation. Docker is not required.

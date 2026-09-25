@@ -62,6 +62,39 @@ def _set_agent(agent_id: str, **fields) -> None:
 def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = ""):
     from ..models import complete_role
 
+    session = getattr(programme, "employee_session", None) if programme is not None else None
+    live_employee = (
+        role == "EMPLOYEE"
+        and programme is not None
+        and qwen_adapter.runtime_mode() == "qwen-agent"
+        and qwen_adapter.choose_qwen_mode(session=session, preset_text=None) == "live"
+    )
+    if live_employee:
+        child = next((item for item in programme.children if item["id"] == package_id), None)
+        agent_id = child["agent_id"] if child else "research-e1"
+        turned = qwen_adapter.employee_turn(
+            system=system, user=user, agent_id=agent_id, package_id=package_id or programme.parent_id,
+            preset_text=None, session=session,
+        )
+        meta = dict(turned.get("meta") or {})
+        meta.update({
+            "backend": "qwen-agent",
+            "execution": "real",
+            "runtime": turned.get("runtime"),
+            "qwen_mode": turned.get("qwen_mode") or "live",
+            "tools_invoked": turned.get("tools") or [],
+            "completion_tokens": int(meta.get("completion_tokens") or 0),
+        })
+        if turned.get("fallback"):
+            meta["qwen_fallback"] = turned["fallback"]
+        programme.runtime_notes.append({
+            "package_id": package_id,
+            "runtime": turned.get("runtime"),
+            "qwen_mode": meta["qwen_mode"],
+            "tools": meta["tools_invoked"],
+            "fallback": turned.get("fallback") or "",
+        })
+        return turned.get("text") or "", meta["completion_tokens"], meta
     try:
         text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens)
     except Exception as exc:
@@ -74,12 +107,21 @@ def _complete(role: str, system: str, user: str, max_tokens: int = 400, programm
     if role == "EMPLOYEE" and programme is not None and qwen_adapter.runtime_mode() == "qwen-agent":
         child = next((item for item in programme.children if item["id"] == package_id), None)
         agent_id = child["agent_id"] if child else "research-e1"
-        turned = qwen_adapter.employee_turn(system=system, user=user, agent_id=agent_id, package_id=package_id or programme.parent_id, preset_text=text)
+        turned = qwen_adapter.employee_turn(
+            system=system, user=user, agent_id=agent_id, package_id=package_id or programme.parent_id, preset_text=text,
+        )
         meta["runtime"] = turned.get("runtime")
+        meta["qwen_mode"] = turned.get("qwen_mode") or "replay"
         meta["tools_invoked"] = turned.get("tools") or []
         if turned.get("fallback"):
             meta["qwen_fallback"] = turned["fallback"]
-        programme.runtime_notes.append({"package_id": package_id, "runtime": turned.get("runtime"), "tools": meta["tools_invoked"], "fallback": turned.get("fallback") or ""})
+        programme.runtime_notes.append({
+            "package_id": package_id,
+            "runtime": turned.get("runtime"),
+            "qwen_mode": meta["qwen_mode"],
+            "tools": meta["tools_invoked"],
+            "fallback": turned.get("fallback") or "",
+        })
         text = turned.get("text") or ""
     return text, tokens, meta
 
@@ -106,7 +148,8 @@ class Programme:
         self.supervisor_tools: list[dict] = []
         self.memory_rows: list[dict] = []
         self.runtime_notes: list[dict] = []
-        self._supervisor_checked = False
+        self._supervisor_checked: set[str] = set()
+        self.employee_session = None
 
     def prepare_all(self) -> str:
         _set_agent(MANAGER, status="working", last_summary="Planning the work package", progress=0.2, current_tool=None)
@@ -128,7 +171,7 @@ class Programme:
         )
         if "research" in self.plan["stages"]:
             _set_agent("research-e3", status="researching", current_tool="web_search", last_summary="Collecting evidence", progress=0.35)
-            self.research = research(self.task_class, self.objective, self.parent_id, "research-e3", project_id=self.project_id)
+            self.research = research(self.task_class, self.objective, self.parent_id, "research-e3", project_id=self.project_id, skills=self.skills)
             for item in self.research.get("evidence") or []:
                 save_source(self.parent_id, item.get("source_url") or "", item.get("source_title") or "", item.get("extracted_content") or "", "opened_page")
         self.plan["unknowns"] = list(self.research.get("gaps") or [])
@@ -328,10 +371,10 @@ class Programme:
         _set_agent(SUPERVISOR, status="working", last_summary=f"{decision} {child['focus']}", progress=0.8)
 
     def _supervisor_independent(self, package_id: str) -> None:
-        """One independent tool check. The prompt never includes employee reasoning."""
-        if self._supervisor_checked:
+        """Calculator for a quote, then a bounded search the supervisor writes from the claim."""
+        if package_id in self._supervisor_checked:
             return
-        self._supervisor_checked = True
+        self._supervisor_checked.add(package_id)
         if self.quote and self.quote.get("prices"):
             prices = self.quote["prices"]
             expr = "+".join(str(prices[key]) for key in ("door", "handle", "hinges", "consumables", "labour") if prices.get(key))
@@ -344,27 +387,32 @@ class Programme:
                 return ToolResult(tool="calculator", status="ok", query=expression, extracted_content=value, timestamp=tool_now(), metadata={"independent": True, "role": "supervisor"})
 
             result = invoke(SUPERVISOR, "calculator", package_id, _calc)
-            self.supervisor_tools.append({"tool": "calculator", "status": result.status, "output": result.extracted_content})
-            return
-        evidence = self.research.get("evidence") or []
-        if not evidence:
-            return
-        item = evidence[0]
-        url = item.get("source_url") or ""
+            self.supervisor_tools.append({"tool": "calculator", "status": result.status, "output": result.extracted_content, "verification": "independently_confirmed" if result.status == "ok" else "independently_unconfirmed"})
+        from .research import fetch_provider, research_mode, search_provider
+        from .supervisor_check import independent_verify
 
-        def _fetch() -> ToolResult:
-            return ToolResult(
-                tool="fetch_page",
-                status="ok",
-                query=url,
-                source_url=url,
-                extracted_content=(item.get("extracted_content") or "")[:500],
-                timestamp=tool_now(),
-                metadata={"independent": True, "role": "supervisor", "source": "re-read stored evidence"},
-            )
+        claims = claim_ledger.list_claims(package_id)
+        browser_allowed = research_mode() == "live"
 
-        result = invoke(SUPERVISOR, "fetch_page", package_id, _fetch)
-        self.supervisor_tools.append({"tool": "fetch_page", "status": result.status, "url": url})
+        def _browse(url: str):
+            from .browser_adapter import available, open_page
+
+            if not available():
+                return {"text": "", "error": "browser_unavailable"}
+            opened = open_page(SUPERVISOR, package_id, url)
+            return {"text": opened.extracted_content or "", "error": opened.error or ""}
+
+        report = independent_verify(
+            claims,
+            search_fn=search_provider,
+            fetch_fn=fetch_provider,
+            browse_fn=_browse if browser_allowed else None,
+            browser_allowed=browser_allowed,
+        )
+        self.supervisor_tools.append({"tool": "independent_verification", **report})
+        for row in report["checks"]:
+            if row["verification"] == "independently_contradicted" and row.get("claim_id"):
+                claim_ledger.challenge(row["claim_id"], SUPERVISOR, "Independent page contradicted the claim.", "CONTRADICTED")
 
     def _bind_manager(self, text: str, meta: dict) -> None:
         save_model_call(self.parent_id, "MANAGER", self.task_class, meta, text)

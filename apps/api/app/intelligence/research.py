@@ -18,30 +18,20 @@ from .toolkit import ToolResult, invoke, now, valid_http_url
 _FIXTURES = Path(__file__).resolve().parent / "fixtures" / "pages.json"
 _ADVERSARIAL = Path(__file__).resolve().parent / "fixtures" / "adversarial.json"
 
-OFFICIAL_HOSTS = (
-    "bvb.de",
-    "ajax.nl",
-    "sparta.cz",
-    "rbk.no",
-    "gov.uk",
-    "service.gov.uk",
-    "companieshouse.gov.uk",
-    "nhs.uk",
-    "nationalrail.co.uk",
-    "edinburghleisure.co.uk",
-    "ed.ac.uk",
-)
 COMMUNITY_HOSTS = ("reddit.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "youtube.com")
 HIGH_QUALITY = ("wikipedia.org", "bbc.co.uk", "bbc.com", "theguardian.com")
-AVAILABILITY_PHRASES = (
-    "on sale",
-    "tickets available",
-    "in stock",
-    "buy now",
-    "sold out",
-    "vstupenky jsou v prodeji",
-    "kjøp kampbilletter",
-)
+# Longer suffixes first so .gov.uk wins over .gov.
+PUBLIC_SECTOR_SUFFIXES = (".nhs.uk", ".gov.uk", ".ac.uk", ".edu.au", ".gov.au", ".gc.ca", ".gov", ".edu", ".mil")
+RESELLER_HOST_SIGNALS = ("ticketmaster", "stubhub", "viagogo", "seatgeek", "ebay", "reseller", "resale", "aggregator", "marketplace")
+SELF_ID_STEMS = ("official", "offiziell", "oficiální", "oficjalny", "officiell", "officiel", "oficial")
+AVAILABILITY_PHRASES = ("on sale", "tickets available", "in stock", "buy now", "sold out")
+_QUERY_STOP = {
+    "about", "after", "also", "approval", "before", "black", "check", "customer", "draft",
+    "enquiry", "facts", "find", "from", "handles", "have", "into", "legitimate", "looking",
+    "official", "only", "page", "pages", "provisional", "public", "site", "sizes", "that",
+    "their", "this", "with", "your",
+}
+_PLANNER = None
 
 
 def research_mode() -> str:
@@ -53,19 +43,53 @@ def research_mode() -> str:
     return "live"
 
 
-def rank_source(url: str) -> str:
+def _host(url: str) -> str:
     host = urlparse(url or "").netloc.lower().split(":")[0]
-    if host.startswith("www."):
-        host = host[4:]
+    return host[4:] if host.startswith("www.") else host
+
+
+def _registrable_label(host: str) -> str:
+    labels = [part for part in host.split(".") if part]
+    if len(labels) >= 3 and labels[-2] in {"co", "com", "org", "ac", "gov", "nhs"}:
+        return labels[-3]
+    if len(labels) >= 2:
+        return labels[-2]
+    return host
+
+
+def set_query_planner(fn) -> None:
+    """Harness hook. The callable receives (objective, skill_guidance) and returns queries."""
+    global _PLANNER
+    _PLANNER = fn
+
+
+def clear_query_planner() -> None:
+    global _PLANNER
+    _PLANNER = None
+
+
+def rank_source(url: str, text: str = "", query: str = "", title: str = "") -> str:
+    """Official means the entity's own site or a public-sector host, never a named exam list."""
+    host = _host(url)
     if not host:
         return "UNKNOWN"
-    for official in OFFICIAL_HOSTS:
-        if host == official or host.endswith("." + official):
-            return "PRIMARY_OFFICIAL"
+    if any(host == item or host.endswith("." + item) for item in HIGH_QUALITY):
+        return "HIGH_QUALITY_SECONDARY"
     if any(host == item or host.endswith("." + item) for item in COMMUNITY_HOSTS):
         return "COMMUNITY"
-    if any(item in host for item in HIGH_QUALITY):
-        return "HIGH_QUALITY_SECONDARY"
+    if any(signal in host for signal in RESELLER_HOST_SIGNALS):
+        return "OTHER_SECONDARY"
+    if any(host.endswith(suffix) or host == suffix.lstrip(".") for suffix in PUBLIC_SECTOR_SUFFIXES):
+        return "PRIMARY_OFFICIAL"
+    tokens = [tok for tok in re.findall(r"[a-z0-9]{4,}", (query or "").lower()) if tok not in _QUERY_STOP]
+    label = _registrable_label(host)
+    if any(tok in label for tok in tokens):
+        return "PRIMARY_OFFICIAL"
+    blob = f"{title}\n{text}".lower()
+    if any(stem in blob for stem in SELF_ID_STEMS):
+        return "PRIMARY_OFFICIAL"
+    if any(len(tok) >= 5 and tok in blob for tok in tokens):
+        return "PRIMARY_OFFICIAL"
     return "OTHER_SECONDARY"
 
 
@@ -77,36 +101,84 @@ def load_fixtures() -> list[dict]:
     return pages
 
 
-def queries_for(task_class: str, objective: str) -> list[str]:
-    text = objective.lower()
-    if task_class == "football_tickets":
-        queries = []
-        named = (
-            ("borussia" in text or "dortmund" in text, "Borussia Dortmund official tickets"),
-            ("ajax" in text, "AFC Ajax official kaartverkoop"),
-            ("sparta" in text, "AC Sparta Praha official website"),
-            ("rosenborg" in text, "Rosenborg BK official billetter"),
-        )
-        for present, query in named:
-            if present:
-                queries.append(query)
-        if not queries:
-            queries.append("official football club ticket sales versus unofficial resale")
-        return queries
-    if task_class == "vending_prospects":
-        return [
-            "UK public leisure centre swimming pool and gym",
-            "UK railway station passenger facilities",
-            "UK NHS hospital address and facilities",
-            "UK university sport venues and gym membership",
-            "UK Contracts Finder vending machine notices",
-            "Companies House register is not a vending prospect list",
-        ]
-    if task_class == "internal_door_quote":
-        return ["UK internal door trade supplier Scotland delivery"]
-    if task_class in ("trivial", "calculation"):
+def generic_from_objective(objective: str) -> list[str]:
+    """Queries from the brief only. No task-class table and no exam seed list."""
+    entities: list[str] = []
+    for match in re.finditer(r"\b([A-Z][A-Za-z0-9'’\-]+(?:\s+[A-Z][A-Za-z0-9'’\-]+){0,3})\b", objective or ""):
+        name = match.group(1).strip(" -")
+        if len(name) < 3 or name.lower() in _QUERY_STOP:
+            continue
+        if name not in entities:
+            entities.append(name)
+    queries = [f"{name} official site" for name in entities[:6]]
+    words: list[str] = []
+    for word in re.findall(r"[A-Za-z]{4,}", (objective or "").lower()):
+        if word in _QUERY_STOP or word in words:
+            continue
+        words.append(word)
+    if words:
+        queries.append(" ".join(words[:10]))
+    if not queries and (objective or "").strip():
+        queries.append(objective.strip()[:160])
+    return queries[:8]
+
+
+def _normalise_queries(raw) -> list[str]:
+    if isinstance(raw, str):
+        lines = raw.splitlines()
+    elif isinstance(raw, (list, tuple)):
+        lines = []
+        for item in raw:
+            lines.extend(str(item).splitlines())
+    else:
         return []
-    return [objective.strip()[:160]]
+    cleaned = []
+    for line in lines:
+        text = line.strip().lstrip("-*0123456789.) ").strip()
+        if not text or text.lower().startswith(("query", "objective", "skill")):
+            continue
+        if text not in cleaned:
+            cleaned.append(text[:180])
+    return cleaned[:8]
+
+
+def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str], str]:
+    """Model plans when one is actually available. Stub and no-model runs stay generic."""
+    if task_class in ("trivial", "calculation"):
+        return [], "skipped"
+    guidance = ""
+    if skills:
+        from .skills import skill_prompt
+
+        guidance = skill_prompt(skills)[:1500]
+    stub = os.environ.get("AYVEN_LLM_STUB", "1") != "0"
+    if not stub and _PLANNER is not None:
+        try:
+            planned = _normalise_queries(_PLANNER(objective, guidance))
+            if planned:
+                return planned, "model"
+        except Exception:
+            pass
+    if not stub:
+        from .. import models as model_mod
+        from ..models import complete_role, local_base
+
+        if local_base() or model_mod._GENERATOR is not None:
+            user = (
+                "Plan the first web searches for this objective. "
+                "Use the objective and the skill guidance. "
+                "One query per line, each starting with '- '. "
+                "Do not invent entities that are not in the objective.\n\n"
+                f"Objective:\n{(objective or '')[:1200]}\n\nSkill guidance:\n{guidance}"
+            )
+            try:
+                text, _tokens, _meta = complete_role("EMPLOYEE", "You plan searches. You do not answer the task.", user, max_tokens=180)
+                planned = _normalise_queries(text)
+                if planned:
+                    return planned, "model"
+            except Exception:
+                pass
+    return generic_from_objective(objective), "objective-fallback"
 
 
 def _fixture_search(query: str, limit: int) -> list[dict]:
@@ -127,6 +199,18 @@ def _fixture_search(query: str, limit: int) -> list[dict]:
         if len(hits) >= limit:
             break
     return hits
+
+
+def search_provider(query: str, limit: int = 8) -> list[dict]:
+    if research_mode() == "fixtures":
+        return _fixture_search(query, limit)
+    return _live_search(query, limit)
+
+
+def fetch_provider(url: str) -> dict:
+    if research_mode() == "fixtures":
+        return _open_fixture(url)
+    return _open_live(url)
 
 
 def _live_search(query: str, limit: int) -> list[dict]:
@@ -179,7 +263,7 @@ def _open_live(url: str) -> dict:
     return page
 
 
-_SIGNALS = ("zwarthandel", "niet-offici", "unofficial", "reseller", "ticketshop", "billet", "kaart", "offici", "official", "ticket")
+_SIGNALS = ("unofficial", "reseller", "resale", "offici", "official", "ticket")
 
 
 def _relevant(text: str, query: str) -> str:
@@ -212,8 +296,8 @@ def _js_wall(text: str) -> bool:
     return not useful
 
 
-def _channel(url: str, text: str) -> str:
-    rank = rank_source(url)
+def _channel(url: str, text: str, query: str = "", title: str = "") -> str:
+    rank = rank_source(url, text=text, query=query, title=title)
     if rank == "PRIMARY_OFFICIAL":
         return "official"
     lowered = (text or "").lower()
@@ -231,8 +315,8 @@ def snippet_contradicts(snippet: str, page: str) -> bool:
     return False
 
 
-def unsupported_reseller_claim(url: str, text: str) -> bool:
-    if rank_source(url) == "PRIMARY_OFFICIAL":
+def unsupported_reseller_claim(url: str, text: str, query: str = "", title: str = "") -> bool:
+    if rank_source(url, text=text, query=query, title=title) == "PRIMARY_OFFICIAL":
         return False
     lowered = (text or "").lower()
     return "authorised reseller" in lowered or "authorized reseller" in lowered or ("official partner" in lowered and "reseller" in lowered)
@@ -272,6 +356,7 @@ def research(
     fetch_fn=None,
     reviewer=None,
     browse_fn=None,
+    skills=None,
 ) -> dict:
     mode = research_mode()
     rounds = max_rounds if max_rounds is not None else int(os.environ.get("AYVEN_MAX_RESEARCH_ROUNDS", "2"))
@@ -280,7 +365,10 @@ def research(
     max_browser = int(os.environ.get("AYVEN_MAX_BROWSER_ACTIONS", "2"))
     deadline = time.monotonic() + int(os.environ.get("AYVEN_MAX_RESEARCH_SECONDS", "120"))
     browser_left = [max_browser]
-    planned = list(queries) if queries is not None else queries_for(task_class, objective)
+    if queries is not None:
+        planned, query_source = list(queries), "provided"
+    else:
+        planned, query_source = plan_queries(task_class, objective, skills)
     evidence: list[dict] = []
     failures: list[dict] = []
     duplicates: list[str] = []
@@ -298,95 +386,102 @@ def research(
     if browse_fn is None and mode == "live":
         browse_fn = _live_browse
     budget_hit = ""
-    # Every planned query runs at depth 1. Later depths are gap reformulations
-    # and a bounded number of relevant links, not a reason to drop a club.
-    pending = [{"kind": "search", "query": query, "depth": 1} for query in planned]
-    while pending:
-        if len(searched) >= max_searches:
-            budget_hit = "searches"
-            break
-        if len(evidence) >= max_pages:
-            budget_hit = "pages"
-            break
-        if time.monotonic() > deadline:
-            budget_hit = "time"
-            break
-        if browser_left[0] < 0:
-            budget_hit = "browser"
-            break
-        job = pending.pop(0)
-        query = job["query"]
-        depth = job["depth"]
-        if depth > rounds:
-            continue
-        if job["kind"] == "search":
-            if query in searched:
+    review_text = ""
+    review_mode = "not-run"
+    review_gaps: list[str] = []
+    pending = [{"kind": "search", "query": query, "depth": 1, "origin": "seed"} for query in planned]
+    round_no = 0
+    while pending and round_no < rounds and not budget_hit:
+        round_no += 1
+        later: list[dict] = []
+        current = pending
+        for job in current:
+            if len(searched) >= max_searches:
+                budget_hit = "searches"
+                break
+            if len(evidence) >= max_pages:
+                budget_hit = "pages"
+                break
+            if time.monotonic() > deadline:
+                budget_hit = "time"
+                break
+            if browser_left[0] < 0:
+                budget_hit = "browser"
+                break
+            query = job["query"]
+            depth = job["depth"]
+            if depth > rounds:
                 continue
-            searched.append(query)
-            captured: dict = {}
+            if job["kind"] == "search":
+                if query in searched:
+                    continue
+                searched.append(query)
+                captured: dict = {}
 
-            def _search(q=query, d=depth):
-                try:
-                    hits = search_impl(q, limit=5)
-                except Exception as exc:
-                    captured["hits"] = []
-                    return ToolResult(tool="web_search", status="error", query=q, error=str(exc)[:300], timestamp=now(), metadata={"mode": mode, "round": d})
-                captured["hits"] = hits or []
-                if not hits or (len(hits) == 1 and (hits[0].get("title") in ("search_error", "no_results"))):
-                    return ToolResult(tool="web_search", status="empty", query=q, error=(hits[0].get("snippet") if hits else "no_results") or "no_results", timestamp=now(), metadata={"mode": mode, "evidence_level": "none"})
-                return ToolResult(
-                    tool="web_search",
-                    status="ok",
-                    query=q,
-                    timestamp=now(),
-                    extracted_content="\n".join(f"{h.get('title')} {h.get('url')}" for h in hits)[:1500],
-                    metadata={"mode": mode, "evidence_level": "snippet", "hit_count": len(hits), "round": d},
+                def _search(q=query, d=depth):
+                    try:
+                        hits = search_impl(q, limit=8)
+                    except Exception as exc:
+                        captured["hits"] = []
+                        return ToolResult(tool="web_search", status="error", query=q, error=str(exc)[:300], timestamp=now(), metadata={"mode": mode, "round": d})
+                    captured["hits"] = hits or []
+                    if not hits or (len(hits) == 1 and (hits[0].get("title") in ("search_error", "no_results"))):
+                        return ToolResult(tool="web_search", status="empty", query=q, error=(hits[0].get("snippet") if hits else "no_results") or "no_results", timestamp=now(), metadata={"mode": mode, "evidence_level": "none"})
+                    return ToolResult(
+                        tool="web_search",
+                        status="ok",
+                        query=q,
+                        timestamp=now(),
+                        extracted_content="\n".join(f"{h.get('title')} {h.get('url')}" for h in hits)[:1500],
+                        metadata={"mode": mode, "evidence_level": "snippet", "hit_count": len(hits), "round": d},
+                    )
+
+                search_result = invoke(agent_id, "web_search", package_id, _search)
+                _emit_tool(project_id, agent_id, "web_search", f"Searching: {query[:120]}")
+                if search_result.status != "ok":
+                    failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
+                    continue
+                hits = sorted(
+                    captured.get("hits") or [],
+                    key=lambda hit: 0 if rank_source(hit.get("url") or "", text=hit.get("snippet") or "", query=query, title=hit.get("title") or "") == "PRIMARY_OFFICIAL" else 1,
                 )
+                opened_any = False
+                for hit in hits:
+                    opened = _open_hit(
+                        hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence,
+                        browse_fn=browse_fn, browser_left=browser_left,
+                    )
+                    opened_any = opened_any or opened
+                    if opened and followed < 3 and round_no < rounds:
+                        for link in (hit.get("_links") or [])[:1]:
+                            if link not in seen and valid_http_url(link):
+                                followed += 1
+                                later.append({"kind": "open", "query": query, "url": link, "depth": round_no + 1, "title": link, "origin": "link"})
+                if not opened_any and round_no < rounds:
+                    later.append({"kind": "search", "query": query + " primary official source", "depth": round_no + 1, "origin": "retry"})
+            else:
+                hit = {"url": job.get("url") or "", "title": job.get("title") or "", "snippet": ""}
+                _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=browse_fn, browser_left=browser_left)
+        if os.environ.get("AYVEN_AGENTIC_RESEARCH", "1") != "0" and not budget_hit:
+            try:
+                review_text, review_mode = _agentic_review(objective, evidence, review_gaps, searched, reviewer)
+            except Exception as exc:
+                review_mode = "failed"
+                review_text = f"FAILURE\nreviewer exception: {type(exc).__name__}: {exc}"
+                failures.append({"query": "", "stage": "review", "error": f"{type(exc).__name__}: {exc}"[:300]})
+                review_gaps.append(f"Research review failed: {type(exc).__name__}. Not treated as sufficient.")
+            else:
+                unknown = _explicit_unknown(review_text)
+                if unknown and unknown not in review_gaps:
+                    review_gaps.append(unknown)
+                extra = _next_query(review_text)
+                room = round_no < rounds and len(searched) < max_searches and len(evidence) < max_pages and time.monotonic() <= deadline
+                if extra and extra not in searched and room:
+                    later.append({"kind": "search", "query": extra, "depth": round_no + 1, "origin": "review"})
+        pending = later
 
-            search_result = invoke(agent_id, "web_search", package_id, _search)
-            _emit_tool(project_id, agent_id, "web_search", f"Searching: {query[:120]}")
-            if search_result.status != "ok":
-                failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
-                continue
-            hits = sorted(captured.get("hits") or [], key=lambda hit: 0 if rank_source(hit.get("url") or "") == "PRIMARY_OFFICIAL" else 1)
-            opened_any = False
-            for hit in hits:
-                opened = _open_hit(
-                    hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence,
-                    browse_fn=browse_fn, browser_left=browser_left,
-                )
-                opened_any = opened_any or opened
-                if opened and followed < 3 and depth < rounds:
-                    for link in (hit.get("_links") or [])[:1]:
-                        if link not in seen and valid_http_url(link):
-                            followed += 1
-                            pending.append({"kind": "open", "query": query, "url": link, "depth": depth + 1, "title": link})
-            if not opened_any and depth < rounds:
-                pending.append({"kind": "search", "query": query + " primary official source", "depth": depth + 1})
-        else:
-            hit = {"url": job.get("url") or "", "title": job.get("title") or "", "snippet": ""}
-            _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=browse_fn, browser_left=browser_left)
-
-    gaps = []
-    blob = " ".join(item.get("extracted_content", "") + item.get("source_url", "") for item in evidence).lower()
-    if task_class == "football_tickets":
-        for label, needles in (
-            ("Borussia Dortmund", ("dortmund", "bvb.de")),
-            ("Ajax", ("ajax",)),
-            ("Sparta Prague", ("sparta",)),
-            ("Rosenborg", ("rosenborg", "rbk.no")),
-        ):
-            if any(item in objective.lower() for item in needles) and not any(item in blob for item in needles):
-                gaps.append(f"No opened page established an official route for {label}.")
-    if task_class == "vending_prospects":
-        from .prospects import extract_prospects
-
-        if not extract_prospects(evidence):
-            gaps.append("No opened page established a real organisation that is plausibly relevant to vending placement.")
-        else:
-            gaps.append("Decision-maker, acceptance, footfall, and existing vending arrangements remain unknown unless a page stated them.")
-    if task_class == "internal_door_quote" and not evidence:
-        gaps.append("No supplier page was retrieved. No supplier is named.")
+    gaps = list(review_gaps)
+    gaps.extend(_unsupported_requirements(skills, evidence))
     if not evidence:
         gaps.append("Research produced no opened page. No model-memory fallback was used.")
     elif mode == "live" and failures:
@@ -395,27 +490,10 @@ def research(
         gaps.append("A page needed a browser. The browser was not launched. No model-memory fallback was used.")
     if budget_hit:
         gaps.append(f"Research stopped because the {budget_hit} budget was exhausted. No model-memory fallback was used.")
-    review_text = ""
-    if os.environ.get("AYVEN_AGENTIC_RESEARCH", "1") != "0":
-        review_text = _agentic_review(objective, evidence, gaps, searched, reviewer)
-        unknown = _explicit_unknown(review_text)
-        if unknown:
-            gaps.append(unknown)
-        extra = _next_query(review_text)
-        if extra and extra not in searched and not budget_hit and len(searched) < max_searches and len(evidence) < max_pages and time.monotonic() <= deadline:
-            searched.append(extra)
-            try:
-                hits = search_impl(extra, limit=5) or []
-            except Exception as exc:
-                hits = []
-                failures.append({"query": extra, "stage": "search", "error": str(exc)[:300]})
-            for hit in hits:
-                if len(evidence) >= max_pages:
-                    break
-                _open_hit(hit, extra, rounds, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=browse_fn, browser_left=browser_left)
     return {
         "mode": mode,
         "queries": searched,
+        "query_source": query_source,
         "evidence": evidence,
         "failures": failures,
         "duplicates": duplicates,
@@ -423,10 +501,12 @@ def research(
         "gaps": gaps,
         "skipped": False,
         "rounds": rounds,
+        "rounds_used": round_no,
         "rounds_exhausted": True,
         "followed_links": followed,
         "memory_fallback_used": False,
         "review": review_text,
+        "review_mode": review_mode,
         "budget": {"max_rounds": rounds, "max_searches": max_searches, "max_pages": max_pages, "max_browser_actions": max_browser, "hit": budget_hit},
         "browser_actions": max_browser - browser_left[0],
     }
@@ -485,7 +565,7 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                         source_title=page.get("title") or "",
                         timestamp=now(),
                         extracted_content=browsed.extracted_content,
-                        metadata={"mode": mode, "evidence_level": "page", "via": "browser", "http_error": "js_wall", "source_rank": rank_source(page.get("url") or u), "freshness": "LIVE", "relevant": True, "round": depth},
+                        metadata={"mode": mode, "evidence_level": "page", "via": "browser", "http_error": "js_wall", "source_rank": rank_source(page.get("url") or u, text=browsed.extracted_content or "", query=query, title=page.get("title") or ""), "freshness": "LIVE", "relevant": True, "round": depth},
                     )
             return ToolResult(
                 tool="fetch_page", status="error", query=query, source_url=page.get("url") or u,
@@ -501,20 +581,21 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
             if isinstance(link, dict) and _link_relevant(link.get("url") or "", link.get("anchor") or "")
         ]
         final_url = page.get("url") or u
+        page_title = page.get("title") or h.get("title") or ""
         return ToolResult(
             tool="fetch_page",
             status="ok",
             query=query,
             source_url=final_url,
-            source_title=page.get("title") or h.get("title") or "",
+            source_title=page_title,
             timestamp=page.get("retrieved_at") or now(),
             extracted_content=extract,
             metadata={
                 "mode": mode,
                 "evidence_level": "page",
-                "source_rank": rank_source(final_url),
+                "source_rank": rank_source(final_url, text=text, query=query, title=page_title),
                 "freshness": page.get("freshness") or ("FIXTURE_SNAPSHOT" if mode == "fixtures" else "LIVE"),
-                "channel": _channel(final_url, extract),
+                "channel": _channel(final_url, text, query=query, title=page_title),
                 "snippet_was_not_final_evidence": True,
                 "snippet_contradicts_page": snippet_contradicts(h.get("snippet") or "", text),
                 "redirected_from": page.get("redirect_from") or "",
@@ -524,7 +605,7 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 "conflict_value": page.get("conflict_value") or "",
                 "relevant": relevant,
                 "round": depth,
-                "unsupported_reseller": unsupported_reseller_claim(final_url, text),
+                "unsupported_reseller": unsupported_reseller_claim(final_url, text, query=query, title=page_title),
             },
         )
 
@@ -554,7 +635,20 @@ def _live_browse(agent_id: str, package_id: str, url: str):
     return open_page(agent_id, package_id, url)
 
 
-def _agentic_review(objective: str, evidence: list, gaps: list, searched: list, reviewer) -> str:
+def _unsupported_requirements(skills, evidence: list[dict]) -> list[str]:
+    """A required-evidence line from the skill contract becomes a gap until a page supports it."""
+    blob = " ".join((item.get("extracted_content") or "") + " " + (item.get("source_title") or "") for item in evidence).lower()
+    gaps = []
+    for skill in skills or []:
+        for requirement in getattr(skill, "evidence", []) or []:
+            tokens = [tok for tok in re.findall(r"[a-z]{5,}", requirement.lower()) if tok not in {"opened", "pages"}]
+            if tokens and not any(tok in blob for tok in tokens):
+                gaps.append(f"Required evidence not supported: {requirement}")
+    return gaps
+
+
+def _agentic_review(objective: str, evidence: list, gaps: list, searched: list, reviewer) -> tuple[str, str]:
+    """Returns (text, mode). Exceptions propagate so the caller can record a failure."""
     user = (
         "research review\n"
         f"Objective: {(objective or '')[:400]}\n"
@@ -562,18 +656,28 @@ def _agentic_review(objective: str, evidence: list, gaps: list, searched: list, 
         f"Pages opened: {len(evidence)}\n"
         f"Gaps so far: {gaps[:6]}\n"
         "Say SUFFICIENT if the opened pages are enough. "
-        "Or start with NEXT: and one new query. "
+        "Or start a line with NEXT: and one new query. "
         "Or say I still don't know X."
     )
-    try:
-        if reviewer is not None:
-            return reviewer(user) or "SUFFICIENT"
-        from ..models import complete_role
+    if reviewer is not None:
+        text = reviewer(user)
+        if not text:
+            raise RuntimeError("reviewer returned nothing")
+        if "reviewer: stub" in text.lower():
+            return text, "stub"
+        return text, "model"
+    if os.environ.get("AYVEN_LLM_STUB", "1") != "0":
+        return "SUFFICIENT\nreviewer: stub", "stub"
+    from ..models import complete_role
 
-        text, _tokens, _meta = complete_role("EMPLOYEE", "You are reviewing research coverage.", user, max_tokens=120)
-        return text or "SUFFICIENT"
-    except Exception:
-        return "SUFFICIENT"
+    text, _tokens, meta = complete_role("EMPLOYEE", "You are reviewing research coverage.", user, max_tokens=120)
+    if not text:
+        raise RuntimeError("reviewer returned nothing")
+    if (meta or {}).get("backend") == "stub" or "reviewer: stub" in text.lower():
+        if "reviewer: stub" not in text.lower():
+            text += "\nreviewer: stub"
+        return text, "stub"
+    return text, "model"
 
 
 def _explicit_unknown(text: str) -> str:

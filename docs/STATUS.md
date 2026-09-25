@@ -1,6 +1,6 @@
 # STATUS
 
-CURRENT PHASE: v1.1.0 Frankenstein runtimes — local integration tests. GPU validation still pending.
+CURRENT PHASE: v1.1.1 Frankenstein repair — local integration tests. GPU validation still pending.
 
 WHAT WORKS
 - FastAPI campus at /campus

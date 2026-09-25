@@ -251,6 +251,23 @@ def run(rate=None):
     calls = []
     assertion_rows = {}
     t0 = time.time()
+    employee_session = None
+    if not dry_run():
+        employee_session = open_session("EMPLOYEE", weights)
+        if employee_session is not None:
+            from app.intelligence.research import set_query_planner
+
+            def _plan(objective, guidance, session=employee_session):
+                system = (
+                    "Plan web search queries from the objective and the skill guidance. "
+                    "Search each named entity on its own site, in its local language, before aggregators. "
+                    "One query per line, each starting with '- '. Do not invent entities."
+                )
+                user = f"Objective:\n{(objective or '')[:1500]}\n\nSkill guidance:\n{(guidance or '')[:1500]}"
+                text, _meta = session.generate(system, user)
+                return text or ""
+
+            set_query_planner(_plan)
     conn = connect()
     for name, (_kind, objective) in objectives.items():
         project_id = f"val-{name}-{run_dir.name}"
@@ -265,9 +282,12 @@ def run(rate=None):
         programme.prepare_all()
         programmes.append((name, kind, programme))
     for role, folder in (("EMPLOYEE", "employee"), ("SUPERVISOR", "supervisor"), ("MANAGER", "manager")):
-        session = open_session(role, weights)
+        reused = role == "EMPLOYEE" and employee_session is not None
+        session = employee_session if reused else open_session(role, weights)
         try:
             for name, _kind, programme in programmes:
+                if role == "EMPLOYEE" and session is not None:
+                    programme.employee_session = session
                 for prompt in programme.prompts(role):
                     try:
                         if role == "EMPLOYEE":
@@ -282,8 +302,10 @@ def run(rate=None):
                     programme.bind(role, prompt["id"], text, meta)
                     (run_dir / folder / f"{name}-{prompt['id'][:8]}.md").write_text(text or "")
         finally:
-            if session:
+            if session and not reused:
                 session.close()
+    if employee_session is not None:
+        employee_session.close()
     for name, kind, programme in programmes:
         results = evaluate_project(programme.project_id, kind)
         assertion_rows[name] = results
@@ -412,6 +434,7 @@ def _card(kind: str, assertions: list, programme) -> dict:
         "calculation": calculation,
         "supervisor_effectiveness": supervisor,
         "manager_effectiveness": manager,
+        "manager_decision_source": resolution.get("decision_source") or "safety-only",
         "unsupported_claims": rejected,
         "final_verdict": final,
         "tool_calls": tools,
@@ -435,13 +458,14 @@ def _employee_runtime(session, programme, prompt):
         meta = dict(turned.get("meta") or {})
         meta.setdefault("execution", "stub")
         meta["runtime"] = turned.get("runtime")
+        meta["qwen_mode"] = turned.get("qwen_mode") or "replay"
         meta["tools_invoked"] = turned.get("tools") or []
         if turned.get("fallback"):
             meta["qwen_fallback"] = turned["fallback"]
         programme.runtime_notes.append({"package_id": prompt["id"], "runtime": turned.get("runtime"), "tools": meta["tools_invoked"]})
         return turned.get("text") or "", meta
     turned = qwen_adapter.employee_turn(system=prompt["system"], user=prompt["user"], agent_id=child["agent_id"], package_id=prompt["id"], session=session)
-    meta = {"execution": "real", "runtime": turned.get("runtime"), "tools_invoked": turned.get("tools") or [], "backend": "qwen-agent"}
+    meta = {"execution": "real", "runtime": turned.get("runtime"), "qwen_mode": turned.get("qwen_mode") or "live", "tools_invoked": turned.get("tools") or [], "backend": "qwen-agent"}
     if turned.get("fallback"):
         meta["qwen_fallback"] = turned["fallback"]
         meta["execution"] = "real" if session is not None else "stub"
@@ -464,6 +488,7 @@ def _scorecard(verdict, cards, totals, elapsed, hourly, est, dry, assertions_ok,
         if name == "all_core_active":
             continue
         lines.append(f"- {name}: {state}")
+    lines.append(f"- code sandbox isolation: {caps.get('isolation', 'unreported')}")
     lines.append("")
     for key, label in names.items():
         card = cards[key]
@@ -474,6 +499,7 @@ def _scorecard(verdict, cards, totals, elapsed, hourly, est, dry, assertions_ok,
             f"- Calculation: {card['calculation']}",
             f"- Supervisor effectiveness: {card['supervisor_effectiveness']}",
             f"- Manager effectiveness: {card['manager_effectiveness']}",
+            f"- Manager decision: {card.get('manager_decision_source', 'unreported')}",
             f"- Unsupported claims: {card['unsupported_claims']}",
             f"- Final verdict: {card['final_verdict']}",
             "",

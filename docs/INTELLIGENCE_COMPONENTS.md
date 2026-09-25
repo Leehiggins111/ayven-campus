@@ -1,6 +1,6 @@
 # Open-source component audit
 
-Updated 2026-09-25 for v1.1.0. Nothing was vendored. AGPL and source-available trees were not copied.
+Updated 2026-09-25 for v1.1.1. Nothing was vendored. AGPL and source-available trees were not copied.
 
 Core install: `apps/api/requirements.txt` (FastAPI, Uvicorn, HTTPX, Pydantic, pytest).
 Frankenstein install: `apps/api/requirements-frankenstein.txt`. The GPU script installs both.
@@ -16,7 +16,7 @@ Frankenstein install: `apps/api/requirements-frankenstein.txt`. The GPU script i
 | pytest | 8.3.4 | MIT | Tests | Local suite | Required for tests | local | — |
 | Starlette | 0.41.3 | BSD | FastAPI base | Kept below 0.42 so FastAPI 0.115.6 still constructs | Required | local | Do not let MCP's newer SSE extra upgrade it |
 | sse-starlette | 3.0.2 | BSD | MCP extra | Pinned so it does not demand Starlette >=0.49 | Required by MCP | local | Stdio does not use SSE |
-| QwenLM/Qwen-Agent | 0.0.34 | Apache-2.0 (upstream; PyPI licence field empty) | Function-calling loop | `FnCallAgent` inside the employee boundary | Optional extra, on for validation | local | `AYVEN_AGENT_RUNTIME=native` |
+| QwenLM/Qwen-Agent | 0.0.34 | Apache-2.0 (upstream; PyPI licence field empty) | Function-calling loop | `FnCallAgent` inside the employee boundary. Live when a session or local base URL is set; otherwise replay, labelled in metadata | Optional extra, on for validation | local | `AYVEN_AGENT_RUNTIME=native` |
 | modelcontextprotocol/python-sdk | 2.1.1 | MIT | MCP client | stdio connect, list, call. browser-use 0.13.10 requires this exact MCP version | Optional extra | local | Empty `AYVEN_MCP_SERVERS` |
 | browser-use/browser-use | 0.13.10 | MIT (upstream; PyPI licence field empty) | JS and navigation | Read-only `BrowserSession` | Optional extra | local Chrome | HTTP fetch when the page is static |
 | python-soundfile | 0.14.0 | BSD-3-Clause | Import side effect | qwen-agent imports it at startup. Ayven does not transcribe audio | Optional extra | local | Remove if a future qwen-agent stops importing it |
@@ -48,6 +48,9 @@ Qwen weights are not installed in this checkout. The harness downloads them on a
 - Agent loop: `AYVEN_AGENT_RUNTIME=native` skips Qwen-Agent.
 - Browser: `browser_adapter.py`. HTTP fetch does not import it when the page opens.
 - MCP: `AYVEN_MCP_SERVERS` JSON. The client does not hard-code a server.
-- Sandbox: `code_sandbox.py`. Arithmetic stays on the calculator.
+- Sandbox: `code_sandbox.py`. Arithmetic stays on the calculator. Unshare, then bubblewrap, then a reported-only weak level that does not run code. The weak level is not a GPU-run gate.
+- Research queries: planned from the objective and skill guidance. The fixture index can match a generic token such as the word in the brief. Exam names are not stored in the engine.
+- Supervisor verification: `supervisor_check.py`. The query is derived from the claim.
+- Preflight: `validation/preflight.py` and `scripts/run_ayven_validation.sh --preflight-only`.
 - Memory: `memory.py`. A future local embedder would sit behind `retrieve()`.
 - Models: `AYVEN_EMPLOYEE_MODEL`, `AYVEN_SUPERVISOR_MODEL`, `AYVEN_MANAGER_MODEL`, `AYVEN_CODING_MODEL`.

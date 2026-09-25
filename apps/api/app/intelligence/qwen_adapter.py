@@ -168,9 +168,9 @@ def run_tool_loop(
 
 
 def _chat_model(BaseChatModel, Message, FunctionCall, ASSISTANT, FUNCTION, calls, prose, session, system, user):
-    live = session is not None
     local = os.environ.get("AYVEN_LOCAL_LLM_BASE_URL", "")
-    if live or (local and not calls and not prose):
+    stub = os.environ.get("AYVEN_LLM_STUB", "1") != "0"
+    if session is not None or (local and not stub and not calls and not prose):
         return _LiveChat(BaseChatModel, Message, FunctionCall, ASSISTANT, FUNCTION, session, system)
 
     class Scripted(BaseChatModel):
@@ -305,6 +305,17 @@ def _default_handler(agent_id: str, package_id: str, tool_name: str, payload: st
     return f"no handler for {tool_name}"
 
 
+def choose_qwen_mode(*, session: Any = None, preset_text: str | None = None, scripted_calls: list | None = None) -> str:
+    """Live multi-turn when a session or a local model server is actually available. Otherwise replay."""
+    stub = os.environ.get("AYVEN_LLM_STUB", "1") != "0"
+    local = bool(os.environ.get("AYVEN_LOCAL_LLM_BASE_URL", ""))
+    if session is not None:
+        return "live"
+    if local and not stub and preset_text is None and not scripted_calls:
+        return "live"
+    return "replay"
+
+
 def employee_turn(
     *,
     system: str,
@@ -319,34 +330,37 @@ def employee_turn(
 ) -> dict:
     """Best-effort employee turn. Falls back to native text when Qwen-Agent fails."""
     meta: dict = {}
+    mode = choose_qwen_mode(session=session, preset_text=preset_text, scripted_calls=scripted_calls)
     text = preset_text
-    if text is None and session is None and not scripted_calls:
+    if mode != "live" and text is None and not scripted_calls:
         from ..models import complete_role
 
         text, tokens, meta = complete_role("EMPLOYEE", system, user, max_tokens=320)
         meta = dict(meta)
         meta["completion_tokens"] = tokens
     if runtime_mode() != "qwen-agent":
-        return {"text": strip_tool_lines(text or ""), "tools": [], "runtime": "native", "system_seen": system, "fallback": "runtime native", "meta": meta}
+        return {"text": strip_tool_lines(text or ""), "tools": [], "runtime": "native", "qwen_mode": "native", "system_seen": system, "fallback": "runtime native", "meta": meta}
     try:
         result = run_tool_loop(
             system=system,
             user=user,
             agent_id=agent_id,
             package_id=package_id,
-            preset_text=text or "",
+            preset_text="" if mode == "live" else (text or ""),
             session=session,
             handler=handler,
             approved=approved,
-            scripted_calls=scripted_calls,
+            scripted_calls=None if mode == "live" else scripted_calls,
         )
         result["meta"] = meta
+        result["qwen_mode"] = mode
         return result
     except Exception as exc:
         return {
             "text": strip_tool_lines(text or ""),
             "tools": [],
             "runtime": "native",
+            "qwen_mode": mode,
             "system_seen": system,
             "fallback": f"{type(exc).__name__}: {exc}",
             "meta": meta,

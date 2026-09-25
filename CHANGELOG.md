@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 — 2026-09-25
+
+Repair after the v1.1.0 review. The frozen exams are unchanged.
+
+- Research no longer lists exam domains or exam seed queries. Official sources are detected from the entity name, site self-identification, and public-sector suffixes. Stub runs build queries from the objective text. A review runs after each round, and a reviewer exception is a recorded failure.
+- The supervisor searches from the claim itself, within two searches and three fetches, and records independent confirmation, contradiction, re-read, or an exhausted budget.
+- The manager decision records whether it was model-proposed or veto-forced. A more cautious proposal stands.
+- A loaded session or `AYVEN_LOCAL_LLM_BASE_URL` drives Qwen-Agent live. Replay of one completion is labelled replay.
+- The GPU script does not require sudo, falls back to Playwright Chromium, runs preflight before model download, and accepts `--preflight-only`. A weak code sandbox is reported and does not abort the run.
+
 ## 1.1.0 — 2026-09-25
 
 Frankenstein runtimes. Ayven still owns work packages, permissions, evidence, and approvals.

@@ -12,7 +12,7 @@ triggers:
 
 Use this process. Do not replace a failed search with memory.
 
-1. Split the objective into separate questions. One club, one supplier, or one statistic is one question.
+1. Split the objective into separate questions. One named entity, one supplier, or one statistic is one question. Search the entity's own site in its local language before aggregators.
 2. Search, then triage. Drop social-video results unless the question is about that community.
 3. Open the page. A snippet is a lead, not evidence, once the page can be opened.
 4. Keep a short passage that contains the fact. Record the URL, title, retrieval time, and source rank.

@@ -6,7 +6,6 @@ triggers:
   - internal door
   - hinges
   - labour
-  - livingston
 tools:
   - calculator
   - web_search

@@ -119,18 +119,22 @@ def apply_manager_veto(proposal: str, safety: dict) -> dict:
     if proposal not in DECISIONS:
         result["decision"] = safe
         result["veto"] = bool(proposal)
+        result["decision_source"] = "veto-forced" if result["veto"] else "safety-only"
         return result
     if _RANK[proposal] < _RANK.get(safe, 3):
         result["decision"] = safe
         result["veto"] = True
+        result["decision_source"] = "veto-forced"
         result["reason"] = safety.get("reason", "") + " The model proposal was more permissive than the safety decision, so safety won."
         return result
     if proposal == "RETURN" and safe == "CLARIFY":
         result["decision"] = "CLARIFY"
         result["veto"] = True
+        result["decision_source"] = "veto-forced"
         result["reason"] = safety.get("reason", "") + " A return does not remove the approval."
         return result
     result["decision"] = proposal
+    result["decision_source"] = "model-proposed"
     if proposal != safe:
         result["reason"] = safety.get("reason", "") + f" The model was more cautious ({proposal})."
     return result

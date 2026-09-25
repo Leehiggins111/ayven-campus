@@ -9,7 +9,6 @@ _FACILITY = re.compile(
     r"\b(leisure centres?|swimming|gym|hospital|railway station|\bstation\b|university|sport|pool|toilets|facilities)\b",
     re.I,
 )
-_REGISTER = ("contractsfinder.service.gov.uk", "company-information.service.gov.uk", "companieshouse.gov.uk")
 _GENERIC = {"home", "search", "welcome", "index"}
 
 
@@ -36,7 +35,7 @@ def extract_prospects(evidence: list[dict]) -> list[dict]:
             continue
         url = item.get("source_url") or ""
         host = _host(url)
-        if not url or any(host == item or host.endswith("." + item) for item in _REGISTER):
+        if not url:
             continue
         if host in seen:
             continue

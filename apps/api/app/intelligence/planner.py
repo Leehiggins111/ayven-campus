@@ -7,11 +7,11 @@ import os
 
 def classify(objective: str) -> str:
     text = objective.lower().strip()
-    if any(key in text for key in ("internal door", "hinges", "livingston")):
+    if any(key in text for key in ("internal door", "hinges")):
         return "internal_door_quote"
     if "vending" in text:
         return "vending_prospects"
-    if any(key in text for key in ("dortmund", "ajax", "sparta", "rosenborg", "ticket")):
+    if "ticket" in text:
         return "football_tickets"
     if any(key in text for key in ("calculate", "what is the sum", "arithmetic")):
         return "calculation"

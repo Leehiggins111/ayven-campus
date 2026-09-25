@@ -64,8 +64,10 @@ def health() -> list[dict]:
         mcp_ok = bool(found.get("ok"))
         mcp_detail = found.get("status") or found.get("error") or mcp_detail
 
-    level = isolation_level()
-    sandbox_ok = level == "unshare-user-net-pid"
+    from .code_sandbox import isolation_choice, isolation_executable, _bwrap_works, _unshare_works
+
+    level, _sandbox_exec = isolation_choice(_unshare_works(), _bwrap_works())
+    sandbox_ok = isolation_executable()
     memory_ok = True
     try:
         from ..db import connect
@@ -123,22 +125,30 @@ def select_tools(requested: list[str]) -> list[str]:
     return chosen
 
 
+GATING_CAPABILITIES = (
+    "qwen_agent",
+    "browser",
+    "mcp",
+    "skills",
+    "research_loop",
+    "claim_ledger",
+    "critic",
+    "verifier",
+    "supervisor_tools",
+    "manager_judgement",
+    "memory",
+    "routing",
+    "registry",
+)
+
+
 def frankenstein_status() -> dict:
     rows = {item["name"]: item for item in health()}
-    core = [
-        "qwen_agent",
-        "browser",
-        "mcp",
-        "skills",
-        "research_loop",
-        "claim_ledger",
-        "critic",
-        "verifier",
-        "supervisor_tools",
-        "manager_judgement",
-        "memory",
-        "code_sandbox",
-    ]
-    report = {name: "ACTIVE" if rows[name]["available"] else "INACTIVE" for name in core}
-    report["all_core_active"] = all(value == "ACTIVE" for value in report.values())
+    report = {name: "ACTIVE" if rows.get(name, {}).get("available") else "INACTIVE" for name in GATING_CAPABILITIES if name in rows}
+    report["routing"] = "ACTIVE"
+    report["registry"] = "ACTIVE"
+    level = isolation_level()
+    report["isolation"] = level
+    report["code_sandbox"] = "ACTIVE" if level in ("unshare-user-net-pid", "bubblewrap-unshare-net") else "REPORTED"
+    report["all_core_active"] = all(report.get(name) == "ACTIVE" for name in GATING_CAPABILITIES)
     return report

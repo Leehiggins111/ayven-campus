@@ -77,6 +77,12 @@ Each scenario from the pre-GPU list maps to a test. Several checks share one fun
 | Stale page, primary vs secondary, JS wall, irrelevant page, unsupported reseller, bounded link follow, numeric conflict | `test_research_stale_primary_secondary_js_irrelevant_reseller_and_follow` |
 | HTTP success does not launch the browser; JS wall can; missing browser is a gap | `test_http_success_does_not_launch_the_browser_and_js_wall_can` |
 | Agentic review records an explicit unknown and one next query | `test_agentic_review_records_a_gap_and_one_next_query` |
+| Stub queries come from the objective; a reviewer exception is a failure, not SUFFICIENT | `test_stub_queries_come_from_the_objective_and_review_is_labelled` |
+| Engine source does not name exam entities or fixture domains | `test_engine_source_does_not_name_exam_entities` |
+| Supervisor independent check confirms, contradicts, exhausts budget, or only re-reads | `test_supervisor_independent_confirm_contradict_and_budget` |
+| Manager SYNTHESISE, RESEARCH_MORE, and RETURN follow the proposal when safety allows; veto is labelled | `test_manager_proposal_is_followed_when_safety_allows_it` |
+| Qwen-Agent live session is not labelled replay | `test_qwen_live_mode_is_distinct_from_replay` |
+| Root without sudo, and unshare denied, does not abort a GPU preflight | `test_preflight_continues_when_root_has_no_sudo_and_unshare_is_denied` |
 | Claims supported, partial, unverified, stale, entailment, supersession, footfall disproved | `test_claims_support_partial_unverified_contradicted_stale_and_entailment` |
 | Calculation per-door, per-job, ambiguous labour, VAT unknown, VAT included, VAT excluded, decimals, invalid input, model disagreement | `test_calculation_units_vat_decimals_invalid_and_model_disagreement` |
 | Permissions block email, purchase, contact, and code until the role and approval allow it | `test_permissions_block_external_actions_until_approval`, `test_permissions_block_contact_and_purchase` |

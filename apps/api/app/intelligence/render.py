@@ -211,8 +211,8 @@ def _prospects(facts: dict) -> str:
                 "- UNKNOWN: whether management accepts vending proposals. Footfall, existing vending arrangements, the decision-maker, and any contact email are unknown.",
             ]
     for item in facts["research"].get("evidence") or []:
-        host = (item.get("source_url") or "").lower()
-        if "contractsfinder" in host or "company-information" in host:
+        blob = f"{item.get('source_title') or ''} {item.get('extracted_content') or ''}".lower()
+        if "register" in blob or ("search results" in blob and "notice" not in blob):
             lines.append(f"- Reviewed {item.get('source_url')}. It is a register or a notice search, not a placement prospect.")
     for gap in facts["research"].get("gaps") or []:
         lines.append(f"- {gap}")

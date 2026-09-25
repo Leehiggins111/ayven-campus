@@ -22,14 +22,20 @@ def available() -> bool:
 
 
 def chrome_path() -> str:
-    for candidate in (
+    candidates = [
         os.environ.get("AYVEN_CHROME_PATH", ""),
         "/usr/local/bin/google-chrome",
         "/usr/bin/google-chrome",
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
-    ):
-        if candidate and os.path.isfile(candidate):
+    ]
+    cache = os.path.expanduser("~/.cache/ms-playwright")
+    if os.path.isdir(cache):
+        for root, _dirs, files in os.walk(cache):
+            if "chrome" in files and "chromium" in root:
+                candidates.append(os.path.join(root, "chrome"))
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return ""
 
