@@ -22,7 +22,12 @@ def _cuda():
     except Exception:
         return False
 
+def require_real():
+    return os.environ.get("AYVEN_REQUIRE_REAL", "0") == "1" or (_cuda() and os.environ.get("AYVEN_VALIDATION_DRY_RUN", "0") != "1")
+
 def dry_run():
+    if require_real():
+        return False
     return os.environ.get("AYVEN_VALIDATION_DRY_RUN", "0") == "1" or not _cuda()
 
 def _gpu():
@@ -78,7 +83,7 @@ def stub_complete(role, system, user):
         sys.path.insert(0, str(api))
     from app.models import complete_role
     text, tokens, meta = complete_role(role, system, user, max_tokens=700)
-    meta.update({"prompt_tokens": max(1, len(user)//4), "completion_tokens": tokens, "quantization": "stub"})
+    meta.update({"prompt_tokens": max(1, len(user)//4), "completion_tokens": tokens, "quantization": "stub", "execution": "stub"})
     return text, meta
 
 def _free():
@@ -96,11 +101,10 @@ class HfSession:
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.model_id = model_id
         self.tok = AutoTokenizer.from_pretrained(model_id)
-        kw = {"device_map": "auto"}
         try:
-            self.model = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.bfloat16, **kw)
+            self.model = AutoModelForCausalLM.from_pretrained(model_id, dtype=torch.bfloat16, device_map="auto")
         except TypeError:
-            self.model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, **kw)
+            self.model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto")
         if self.tok.pad_token_id is None and self.tok.eos_token_id is not None:
             self.tok.pad_token = self.tok.eos_token
         self.device = _device_of(self.model)
@@ -112,7 +116,7 @@ class HfSession:
         text = self.tok.decode(out[0][plen:], skip_special_tokens=True)
         dt = time.time()-t0
         n = max(1, int(out.shape[-1]-plen))
-        return text, {"model": self.model_id, "quantization": "bf16", "prompt_tokens": int(plen), "completion_tokens": n, "generation_s": round(dt,2), "tok_s": round(n/dt,2) if dt else 0, "peak_vram_gb": _vram()}
+        return text, {"model": self.model_id, "quantization": "bf16", "execution": "real", "prompt_tokens": int(plen), "completion_tokens": n, "generation_s": round(dt,2), "tok_s": round(n/dt,2) if dt else 0, "peak_vram_gb": _vram()}
     def close(self):
         try:
             del self.model; del self.tok
@@ -132,7 +136,7 @@ class GgufSession:
         u=resp.get("usage") or {}
         dt=time.time()-t0
         n=int(u.get("completion_tokens") or max(1,len(text)//4))
-        return text, {"model": Path(self.path).name, "quantization": "gguf-q4_k_m", "prompt_tokens": int(u.get("prompt_tokens") or 0), "completion_tokens": n, "generation_s": round(dt,2), "tok_s": round(n/dt,2) if dt else 0, "peak_vram_gb": _vram()}
+        return text, {"model": Path(self.path).name, "quantization": "gguf-q4_k_m", "execution": "real", "prompt_tokens": int(u.get("prompt_tokens") or 0), "completion_tokens": n, "generation_s": round(dt,2), "tok_s": round(n/dt,2) if dt else 0, "peak_vram_gb": _vram(), "n_gpu_layers": -1}
     def close(self):
         try:
             del self.llm
@@ -167,8 +171,12 @@ def open_session(role, weights):
 
 def infer(session, role, system, user):
     if session is None:
+        if require_real():
+            raise RuntimeError(f"{role} real weights missing; refusing stub on CUDA validation")
         return stub_complete(role, system, user)
-    return session.generate(system, user)
+    text, meta = session.generate(system, user)
+    meta.setdefault("execution", "real")
+    return text, meta
 
 def run(rate=0.26):
     run_dir = RUNS / _now()
@@ -187,7 +195,7 @@ def run(rate=0.26):
             try:
                 emp, em = infer(emp_sess, "EMPLOYEE", "Ayven Employee. Facts only. Flag unknowns. Do not treat £214/£1533 as a final quote unless sizes, VAT and spec are proven.", obj+"\nSources:\n"+(ev or "none"))
             except Exception as exc:
-                emp, em = f"EMPLOYEE_ERROR: {exc}\n{traceback.format_exc()[-1200:]}", {"error": str(exc)}
+                emp, em = f"EMPLOYEE_ERROR: {exc}\n{traceback.format_exc()[-1200:]}", {"error": str(exc), "execution": "fail"}
             em.update({"role":"EMPLOYEE","benchmark":name,"gpu":_gpu()}); calls.append(em)
             (run_dir/"employee"/f"{name}.md").write_text(emp)
             (run_dir/"employee"/f"{name}.json").write_text(json.dumps({"sources":sources,"meta":em}, indent=2, default=str))
@@ -200,7 +208,7 @@ def run(rate=0.26):
             try:
                 sup, sm = infer(sup_sess, "SUPERVISOR", "Ayven Supervisor. First line ACCEPT|RETURN|TAKE OVER|ESCALATE TO MANAGER. Catch weak quotes.", benches[name]["employee"][:4000])
             except Exception as exc:
-                sup, sm = f"SUPERVISOR_ERROR: {exc}", {"error": str(exc)}
+                sup, sm = f"SUPERVISOR_ERROR: {exc}", {"error": str(exc), "execution": "fail"}
             sm.update({"role":"SUPERVISOR","benchmark":name}); calls.append(sm)
             (run_dir/"supervisor"/f"{name}.md").write_text(sup)
             decision="ACCEPT"
@@ -219,7 +227,7 @@ def run(rate=0.26):
                 try:
                     emp2, em2 = infer(emp_sess, "EMPLOYEE", "Retry with supervisor feedback. Facts only.", OBJECTIVES[name]+"\nFeedback:\n"+benches[name]["supervisor"])
                 except Exception as exc:
-                    emp2, em2 = f"EMPLOYEE_RETRY_ERROR: {exc}", {"error": str(exc)}
+                    emp2, em2 = f"EMPLOYEE_RETRY_ERROR: {exc}", {"error": str(exc), "execution": "fail"}
                 em2.update({"role":"EMPLOYEE","retry":True,"benchmark":name}); calls.append(em2)
                 benches[name]["employee"]=emp2
                 (run_dir/"employee"/f"{name}-retry.md").write_text(emp2)
@@ -232,7 +240,7 @@ def run(rate=0.26):
             try:
                 mgr, mm = infer(mgr_sess, "MANAGER", "Ayven Manager. Do not redo trivial search. Completeness, contradictions, enquiry/approval. No frontier call.", f"Employee:\n{b['employee'][:2500]}\nSupervisor ({b.get('supervisor_decision')}):\n{(b.get('supervisor') or '')[:1500]}")
             except Exception as exc:
-                mgr, mm = f"MANAGER_ERROR: {exc}", {"error": str(exc)}
+                mgr, mm = f"MANAGER_ERROR: {exc}", {"error": str(exc), "execution": "fail"}
             mm.update({"role":"MANAGER","benchmark":name}); calls.append(mm)
             (run_dir/"manager"/f"{name}.md").write_text(mgr)
             b["manager"]=mgr
@@ -241,13 +249,26 @@ def run(rate=0.26):
     finally:
         if mgr_sess: mgr_sess.close()
     elapsed=time.time()-t0
-    (run_dir/"metrics.json").write_text(json.dumps({"gpu":_gpu(),"cuda":_cuda(),"dry_run":dry_run(),"elapsed_s":round(elapsed,2),"calls":calls}, indent=2, default=str))
-    lines=["# AYVEN LOCAL WORKFORCE VALIDATION", f"GPU: {_gpu()}", f"Dry run: {dry_run()}", f"Elapsed s: {round(elapsed,2)}", f"Est £: {round((elapsed/3600)*rate,3)}", "", "Employee Qwen/Qwen3-8B BF16", "Supervisor Qwen/Qwen3-32B-GGUF Q4_K_M", "Manager Qwen/Qwen3-30B-A3B-GGUF Q4_K_M", ""]
+    real_roles=sorted({c.get("role") for c in calls if c.get("execution")=="real"})
+    stub_roles=sorted({c.get("role") for c in calls if c.get("execution")=="stub"})
+    errors=[c for c in calls if c.get("error")]
+    if require_real() and (stub_roles or errors):
+        verdict="FAIL"
+    elif errors:
+        verdict="PARTIAL"
+    elif require_real() and {"EMPLOYEE","SUPERVISOR","MANAGER"} <= set(real_roles):
+        verdict="PASS"
+    elif not require_real():
+        verdict="DRY-RUN"
+    else:
+        verdict="PARTIAL"
+    (run_dir/"metrics.json").write_text(json.dumps({"gpu":_gpu(),"cuda":_cuda(),"dry_run":dry_run(),"require_real":require_real(),"verdict":verdict,"real_roles":real_roles,"stub_roles":stub_roles,"elapsed_s":round(elapsed,2),"calls":calls}, indent=2, default=str))
+    lines=["# AYVEN LOCAL WORKFORCE VALIDATION", f"GPU: {_gpu()}", f"Dry run: {dry_run()}", f"Elapsed s: {round(elapsed,2)}", f"Est £: {round((elapsed/3600)*rate,3)}", f"VERDICT: {verdict}", f"real_roles: {real_roles}", f"stub_roles: {stub_roles}", ""]
     for name,b in benches.items():
         lines += [f"## {name}", f"decision: {b.get('supervisor_decision')}", f"sources: {b.get('source_count')}", "```", (b.get("employee") or "")[:800], "```", ""]
     lines += ["VALIDATION FINISHED", "STOP THE RUNPOD POD NOW if this ran on rented GPU."]
     (run_dir/"final-report.md").write_text("\n".join(lines))
-    print((run_dir/"final-report.md").read_text()[-600:])
+    print((run_dir/"final-report.md").read_text()[-700:])
     print("Results:", run_dir)
     return run_dir
 
