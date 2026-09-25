@@ -29,24 +29,38 @@ def web_search(query: str, limit: int = 6) -> list[dict]:
     except Exception as exc:
         return [{"title": "search_error", "url": "", "snippet": str(exc)}]
 
+    def _clean(raw: str) -> str:
+        return re.sub(r"\s+", " ", re.sub("<.*?>", "", unescape(raw or ""))).strip()
+
+    def _url(raw: str) -> str:
+        url = unescape(raw or "").strip()
+        if "uddg=" in url:
+            match = re.search(r"uddg=([^&]+)", url)
+            url = unquote(match.group(1)) if match else url
+        if url.startswith("//"):
+            url = "https:" + url
+        return url
+
     results = []
-    for m in re.finditer(
-        r'uddg=([^"&]+).*?class="result__a"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</',
-        html,
+    pattern = re.compile(
+        r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</',
         re.I | re.S,
-    ):
-        url = unquote(unescape(m.group(1)))
-        title = re.sub("<.*?>", "", unescape(m.group(2)))
-        snippet = re.sub("<.*?>", "", unescape(m.group(3)))
-        results.append({"title": title.strip(), "url": url, "snippet": snippet.strip()[:400]})
+    )
+    legacy = re.compile(
+        r'uddg=([^"&]+).*?class="result__a"[^>]*>(.*?)</a>.*?class="result__snippet"[^>]*>(.*?)</',
+        re.I | re.S,
+    )
+    matches = list(pattern.finditer(html)) or list(legacy.finditer(html))
+    for match in matches:
+        url = _url(match.group(1))
+        results.append({"title": _clean(match.group(2)), "url": url, "snippet": _clean(match.group(3))[:400]})
         if len(results) >= limit:
             break
     if not results:
-        titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', html, re.I | re.S)
-        hrefs = re.findall(r'uddg=([^"&]+)', html)
-        for i, t in enumerate(titles[:limit]):
-            url = unquote(unescape(hrefs[i])) if i < len(hrefs) else ""
-            results.append({"title": re.sub("<.*?>", "", unescape(t)).strip(), "url": url, "snippet": ""})
+        for match in re.finditer(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.I | re.S):
+            results.append({"title": _clean(match.group(2)), "url": _url(match.group(1)), "snippet": ""})
+            if len(results) >= limit:
+                break
     return results or [{"title": "no_results", "url": "", "snippet": query}]
 
 
@@ -69,4 +83,27 @@ def fetch_page(url: str, max_chars: int = 6000) -> dict:
     text = re.sub("<.*?>", " ", unescape(cleaned))
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return {"url": str(r.url), "title": title[:180], "text": text[:max_chars], "error": ""}
+    links = []
+    for match in re.finditer(r'href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, re.I | re.S):
+        href = unescape(match.group(1)).strip()
+        anchor = re.sub("<.*?>", " ", unescape(match.group(2)))
+        anchor = re.sub(r"\s+", " ", anchor).strip()
+        if href.startswith("//"):
+            href = f"{parsed.scheme}:{href}"
+        elif href.startswith("/"):
+            href = f"{parsed.scheme}://{parsed.netloc}{href}"
+        host = urlparse(href).netloc.lower()
+        if host and host != parsed.netloc.lower():
+            continue
+        if href.startswith("http"):
+            links.append({"url": href.split("#")[0], "anchor": anchor[:80]})
+        if len(links) >= 6:
+            break
+    return {
+        "url": str(r.url),
+        "title": title[:180],
+        "text": text[:max_chars],
+        "error": "",
+        "links": links,
+        "requested_url": url,
+    }

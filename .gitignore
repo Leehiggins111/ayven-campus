@@ -10,6 +10,7 @@ apps/api/data
 .pytest_cache
 validation/runs/
 validation/.last_archive_path
+validation/.report_ready
 validation/.prepared.env
 validation/.last_prepare.json
 ayven-results/

@@ -1,0 +1,130 @@
+[
+  {
+    "url": "https://jswall.ayven-fixture.uk/app",
+    "title": "JS wall",
+    "match": ["adversarial-js-wall"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "Please enable JavaScript to continue."
+  },
+  {
+    "url": "http://bad url",
+    "title": "Malformed",
+    "match": ["adversarial-malformed"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "This hit is not a usable URL."
+  },
+  {
+    "url": "https://fetchfail.ayven-fixture.uk/down",
+    "title": "Fetch fail",
+    "match": ["adversarial-fetch-fail"],
+    "error": "connection timed out",
+    "freshness": "UNKNOWN",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": ""
+  },
+  {
+    "url": "https://redirect.ayven-fixture.uk/start",
+    "title": "Redirect start",
+    "match": ["adversarial-redirect"],
+    "redirect_to": "https://redirect.ayven-fixture.uk/landed",
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": ""
+  },
+  {
+    "url": "https://redirect.ayven-fixture.uk/landed",
+    "title": "Redirect landed",
+    "match": ["adversarial-redirect-landed-only"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "Landed page after redirect. A leisure centre with a swimming pool and a gym."
+  },
+  {
+    "url": "https://snippet.ayven-fixture.uk/page",
+    "title": "Snippet trap",
+    "match": ["adversarial-snippet"],
+    "snippet": "Footfall is 90000 visitors and tickets are available",
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "This page describes a leisure centre swimming pool and does not state visitor counts."
+  },
+  {
+    "url": "https://conflict-a.ayven-fixture.uk/a",
+    "title": "Conflict A",
+    "match": ["adversarial-conflict"],
+    "conflict_key": "sku-alpha",
+    "conflict_value": "100",
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "Primary notice. The stated price is 100 for SKU alpha."
+  },
+  {
+    "url": "https://conflict-b.ayven-fixture.uk/b",
+    "title": "Conflict B",
+    "match": ["adversarial-conflict"],
+    "conflict_key": "sku-alpha",
+    "conflict_value": "250",
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "Secondary notice. The stated price is 250 for SKU alpha."
+  },
+  {
+    "url": "https://stale.ayven-fixture.uk/old",
+    "title": "Stale notice",
+    "match": ["adversarial-stale"],
+    "freshness": "STALE",
+    "retrieved_at": "2020-01-01T00:00:00+00:00",
+    "text": "Old notice. Tickets available last season."
+  },
+  {
+    "url": "https://www.bvb.de/adversarial-primary",
+    "title": "Official primary",
+    "match": ["adversarial-primary-secondary"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "Official club ticket page for the adversarial primary check."
+  },
+  {
+    "url": "https://www.bbc.co.uk/adversarial-secondary",
+    "title": "Secondary report",
+    "match": ["adversarial-primary-secondary"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "Secondary report of the same club ticket page."
+  },
+  {
+    "url": "https://irrelevant.ayven-fixture.uk/cooking",
+    "title": "Recipe page",
+    "match": ["adversarial-irrelevant"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "Recipe for tomato soup with basil and pasta."
+  },
+  {
+    "url": "https://reseller.ayven-fixture.uk/shop",
+    "title": "Reseller shop",
+    "match": ["adversarial-reseller"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "We are the authorised reseller and official partner for match tickets. Buy now."
+  },
+  {
+    "url": "https://follow.ayven-fixture.uk/start",
+    "title": "Follow start",
+    "match": ["adversarial-follow"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "links": [{"url": "https://follow.ayven-fixture.uk/facilities", "anchor": "facilities"}],
+    "text": "Index page for a leisure centre. See facilities."
+  },
+  {
+    "url": "https://follow.ayven-fixture.uk/facilities",
+    "title": "Follow facilities",
+    "match": ["adversarial-follow-child-only"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:40:00+00:00",
+    "text": "Facilities page. Swimming pool and gym inside the leisure centre."
+  }
+]

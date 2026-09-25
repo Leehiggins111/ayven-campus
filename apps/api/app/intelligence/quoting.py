@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from decimal import Decimal
 
-from .calc import eval_arithmetic, money, sum_pence, to_pence
+from .calc import CalcError, eval_arithmetic, money, sum_pence, to_pence
 
 MISSING_FIELDS = [
     "Whether each size is the door leaf or the structural opening",
@@ -59,10 +59,28 @@ def _line(label: str, qty: int, unit: str) -> dict:
     return {"label": label, "qty": qty, "unit": unit, "total": total, "expression": f"{qty}*{unit}"}
 
 
+def vat_treatment(text: str) -> str:
+    """Honour an explicit VAT statement. Silence stays unknown."""
+    if re.search(r"\b(including\s+vat|vat\s+included|inc\.?\s*vat)\b", text or "", re.I):
+        return "INCLUDED_AS_STATED"
+    if re.search(r"\b(excluding\s+vat|vat\s+excluded|ex\.?\s*vat|plus\s+vat|before\s+vat)\b", text or "", re.I):
+        return "EXCLUDED_AS_STATED"
+    return "UNKNOWN_NOT_APPLIED"
+
+
+def require_amount(raw: str) -> str:
+    token = (raw or "").strip().replace(",", "")
+    if not re.fullmatch(r"\d+(?:\.\d+)?", token):
+        raise CalcError("invalid numeric input")
+    return money(Decimal(token))
+
+
 def quote_internal_doors(objective: str) -> dict | None:
     """Return provisional scenarios, or None when this is not a door quote."""
     if not re.search(r"internal door|labour\s*£|hinges?\s*£", objective, re.I):
         return None
+    if re.search(r"£\s*[A-Za-z]", objective):
+        raise CalcError("invalid numeric input")
     prices = {name: _num(pat, objective) for name, pat in _PRICE.items()}
     if not prices["door"] or not prices["labour"]:
         return None
@@ -108,7 +126,7 @@ def quote_internal_doors(objective: str) -> dict | None:
         "prices": prices,
         "labour_unit": labour_unit,
         "hinges_unit": "ASSUMED_PER_DOOR_NOT_PROVEN",
-        "vat": "UNKNOWN_NOT_APPLIED",
+        "vat": vat_treatment(objective),
         "is_final_quote": False,
         "claimed_final_answered": "NO",
         "per_door_ex_delivery": per_door_ex_delivery,

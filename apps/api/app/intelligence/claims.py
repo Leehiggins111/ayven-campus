@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -67,7 +68,7 @@ def add_claim(
         status = auto
     if status not in STATUSES:
         status = "UNVERIFIED"
-    if not evidence and source_type not in ("DETERMINISTIC", "INPUT") and status == "SUPPORTED":
+    if not evidence and source_type not in ("DETERMINISTIC", "INPUT") and status in ("SUPPORTED", "PARTIALLY_SUPPORTED"):
         status = "UNVERIFIED"
         conf = min(conf, 0.2)
     claim_id = str(uuid.uuid4())
@@ -256,6 +257,21 @@ def claims_from_quote(package_id: str, agent_id: str, quote: dict) -> list[dict]
             status="SUPPORTED",
         ))
     return created
+
+
+def evidence_entails(claim_text: str, evidence_text: str) -> bool:
+    """A passage supports a claim only when its figures and wording are actually there."""
+    evidence = evidence_text or ""
+    if not evidence.strip():
+        return False
+    numbers = re.findall(r"\d+(?:\.\d+)?", claim_text or "")
+    if any(number not in evidence for number in numbers):
+        return False
+    words = set(re.findall(r"[a-z]{5,}", (claim_text or "").lower()))
+    have = set(re.findall(r"[a-z]{5,}", evidence.lower()))
+    if not words:
+        return True
+    return len(words & have) / len(words) >= 0.3
 
 
 def material_supported(claims: list[dict]) -> list[dict]:

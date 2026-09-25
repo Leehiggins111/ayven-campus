@@ -1,6 +1,6 @@
 # STATUS
 
-CURRENT PHASE: v1.0.0 intelligence engine — architecture and local tests. GPU validation pending.
+CURRENT PHASE: v1.0.1 pre-GPU hardening — local tests. GPU validation still pending.
 
 WHAT WORKS
 - FastAPI campus at /campus

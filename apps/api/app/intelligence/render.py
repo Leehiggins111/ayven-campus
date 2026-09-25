@@ -33,7 +33,7 @@ def render_focus(focus: str, facts: dict) -> str:
     return _gaps(facts)
 
 
-def render_parent(facts: dict, audits: list[dict], manager_decision: str) -> str:
+def render_parent(facts: dict, audits: list[dict], manager_decision: str, completion: dict | None = None) -> str:
     parts = [
         "# Ayven briefing",
         f"Task class: {facts['task_class']}",
@@ -51,7 +51,19 @@ def render_parent(facts: dict, audits: list[dict], manager_decision: str) -> str
         parts.append(
             f"- {audit['focus']}: {audit['decision']} (model suggested {audit.get('advisory') or 'n/a'}; authoritative check wins)"
         )
-    parts += ["", "## Manager", f"Decision: {manager_decision}", ""]
+    parts += ["", "## Manager", f"Decision: {manager_decision}"]
+    resolution = facts.get("resolution") or {}
+    if resolution:
+        parts.append(f"Resolution method: {resolution.get('resolution_method')}. {resolution.get('reason')}")
+    parts.append("")
+    synthesis = (facts.get("synthesis") or "").strip()
+    if synthesis:
+        parts += ["## Reasoning within the evidence", synthesis, ""]
+    if completion:
+        parts.append(
+            f"Task completion: {completion.get('outcome')}. Safety: {completion.get('safety_outcome')}."
+        )
+        parts.append("")
     if facts["task_class"] == "internal_door_quote":
         parts.append("Human clarification is required before any figure is treated as a customer quote. Nothing was sent.")
     elif facts["task_class"] == "football_tickets":
@@ -61,6 +73,15 @@ def render_parent(facts: dict, audits: list[dict], manager_decision: str) -> str
     else:
         parts.append("Nothing was sent.")
     return "\n".join(parts).strip() + "\n"
+
+
+def _vat_line(quote: dict) -> str:
+    status = quote.get("vat") or "UNKNOWN_NOT_APPLIED"
+    if status == "INCLUDED_AS_STATED":
+        return "VAT: INCLUDED_AS_STATED. The input says VAT is included, so the totals were not grossed up again."
+    if status == "EXCLUDED_AS_STATED":
+        return "VAT: EXCLUDED_AS_STATED. Totals stay ex-VAT. No VAT amount was added."
+    return f"VAT: {status}. VAT was not applied."
 
 
 def _mode_label(mode: str | None) -> str:
@@ -82,7 +103,7 @@ def _scenarios(facts: dict) -> str:
         f"Door count: {quote['door_count']}. Sizes: {quote['size_counts'] or 'not parsed'}.",
         f"Labour unit: {quote['labour_unit']}. The input does not prove per-door or per-job, so both scenarios are shown and neither is selected.",
         f"Hinges: {quote['hinges_unit']}.",
-        f"VAT: {quote['vat']}. VAT was not applied.",
+        _vat_line(quote),
         "",
         "### Scenario labour_per_door",
         *_money_lines(door["lines"]),
@@ -162,14 +183,37 @@ def _channels(facts: dict) -> str:
 
 
 def _prospects(facts: dict) -> str:
+    prospects = facts.get("prospects") or []
     lines = [
-        "Prospects are listed only when an opened page supports a real organisation and a placement opportunity.",
-        "Prospects: none evidenced.",
+        "A prospect needs an opened page that shows a real organisation or location and a plausible reason to investigate placement.",
+        "Footfall, contacts, emails, existing arrangements, and decision-makers are stated only when that page states them.",
         "Statistics: none recorded. No sourced vending count was retrieved.",
         "Sent: no. Nothing was sent.",
     ]
+    mode = (facts.get("research") or {}).get("mode")
+    failures = (facts.get("research") or {}).get("failures") or []
+    if mode == "live" and (failures or not prospects):
+        lines.append("Live research did not silently fall back to model memory. Failures below are retrieval failures.")
+    for failure in failures:
+        lines.append(
+            f"- Retrieval failure ({failure.get('stage')}): {failure.get('url') or failure.get('query')} ({failure.get('error')})"
+        )
+    if not prospects:
+        lines.append("Prospects: none evidenced. Task completion is not met.")
+    else:
+        lines.append(f"Prospects evidenced: {len(prospects)}.")
+        for prospect in prospects:
+            lines += [
+                f"### {prospect['organisation']}",
+                f"- URL: {prospect['url']}",
+                f"- FACT: {prospect['fact']}",
+                "- INFERENCE: worth investigating as a vending placement prospect because the opened page documents a public facility.",
+                "- UNKNOWN: whether management accepts vending proposals. Footfall, existing vending arrangements, the decision-maker, and any contact email are unknown.",
+            ]
     for item in facts["research"].get("evidence") or []:
-        lines.append(f"- Reviewed {item.get('source_url')} ({(item.get('metadata') or {}).get('source_rank')}). It did not establish a placement prospect.")
+        host = (item.get("source_url") or "").lower()
+        if "contractsfinder" in host or "company-information" in host:
+            lines.append(f"- Reviewed {item.get('source_url')}. It is a register or a notice search, not a placement prospect.")
     for gap in facts["research"].get("gaps") or []:
         lines.append(f"- {gap}")
     return "\n".join(lines)
@@ -177,10 +221,14 @@ def _prospects(facts: dict) -> str:
 
 def _draft(facts: dict) -> str:
     if facts["task_class"] == "vending_prospects":
+        prospects = facts.get("prospects") or []
+        addressed = "not addressed. No evidenced prospect." if not prospects else (
+            "not addressed to a decision-maker. Candidates were found, and no opened page named who accepts vending proposals."
+        )
         return "\n".join([
             "Outreach status: DRAFT_ONLY",
-            "To: not addressed. No evidenced prospect.",
-            "Body: Hello — we place vending machines and would like to ask who manages on-site catering. This draft names nobody and must not be sent until a real prospect is sourced and Lee approves contact.",
+            f"To: {addressed}",
+            "Body: Hello — we place vending machines and would like to ask who manages on-site catering. This draft names nobody and must not be sent until Lee approves contact.",
             "Sent: no",
             "Nothing was sent.",
             "Approval: required before any contact.",

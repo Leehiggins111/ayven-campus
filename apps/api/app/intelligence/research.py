@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from .toolkit import ToolResult, invoke, now, valid_http_url
 
 _FIXTURES = Path(__file__).resolve().parent / "fixtures" / "pages.json"
+_ADVERSARIAL = Path(__file__).resolve().parent / "fixtures" / "adversarial.json"
 
 OFFICIAL_HOSTS = (
     "bvb.de",
@@ -24,6 +25,10 @@ OFFICIAL_HOSTS = (
     "gov.uk",
     "service.gov.uk",
     "companieshouse.gov.uk",
+    "nhs.uk",
+    "nationalrail.co.uk",
+    "edinburghleisure.co.uk",
+    "ed.ac.uk",
 )
 COMMUNITY_HOSTS = ("reddit.com", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "youtube.com")
 HIGH_QUALITY = ("wikipedia.org", "bbc.co.uk", "bbc.com", "theguardian.com")
@@ -64,9 +69,11 @@ def rank_source(url: str) -> str:
 
 
 def load_fixtures() -> list[dict]:
-    if not _FIXTURES.exists():
-        return []
-    return json.loads(_FIXTURES.read_text(encoding="utf-8"))
+    pages = []
+    for path in (_FIXTURES, _ADVERSARIAL):
+        if path.exists():
+            pages.extend(json.loads(path.read_text(encoding="utf-8")))
+    return pages
 
 
 def queries_for(task_class: str, objective: str) -> list[str]:
@@ -87,6 +94,10 @@ def queries_for(task_class: str, objective: str) -> list[str]:
         return queries
     if task_class == "vending_prospects":
         return [
+            "UK public leisure centre swimming pool and gym",
+            "UK railway station passenger facilities",
+            "UK NHS hospital address and facilities",
+            "UK university sport venues and gym membership",
             "UK Contracts Finder vending machine notices",
             "Companies House register is not a vending prospect list",
         ]
@@ -101,12 +112,17 @@ def _fixture_search(query: str, limit: int) -> list[dict]:
     needle = query.lower()
     hits = []
     for page in load_fixtures():
-        if page.get("error"):
+        if page.get("error") and not page.get("url"):
             continue
         terms = [term.lower() for term in page.get("match") or []]
         if not any(term in needle for term in terms):
             continue
-        hits.append({"title": page.get("title") or "", "url": page["url"], "snippet": (page.get("text") or "")[:240], "fixture": True})
+        hits.append({
+            "title": page.get("title") or "",
+            "url": page["url"],
+            "snippet": page.get("snippet") or (page.get("text") or "")[:240],
+            "fixture": True,
+        })
         if len(hits) >= limit:
             break
     return hits
@@ -118,20 +134,36 @@ def _live_search(query: str, limit: int) -> list[dict]:
     return web_search(query, limit=limit)
 
 
+def _page_payload(page: dict, redirect_from: str = "") -> dict:
+    return {
+        "url": page.get("url") or "",
+        "title": page.get("title") or "",
+        "text": page.get("text") or "",
+        "error": page.get("error") or "",
+        "freshness": page.get("freshness") or "FIXTURE_SNAPSHOT",
+        "retrieved_at": page.get("retrieved_at") or "",
+        "redirect_from": redirect_from,
+        "links": page.get("links") or [],
+        "conflict_key": page.get("conflict_key") or "",
+        "conflict_value": page.get("conflict_value") or "",
+    }
+
+
 def _open_fixture(url: str) -> dict:
-    for page in load_fixtures():
-        if page.get("url") == url:
-            if page.get("error"):
-                return {"url": url, "title": page.get("title") or "", "text": "", "error": page["error"]}
-            return {
-                "url": url,
-                "title": page.get("title") or "",
-                "text": page.get("text") or "",
-                "error": "",
-                "freshness": page.get("freshness") or "FIXTURE_SNAPSHOT",
-                "retrieved_at": page.get("retrieved_at") or "",
-            }
-    return {"url": url, "title": "", "text": "", "error": "not_in_fixtures"}
+    pages = load_fixtures()
+    page = next((item for item in pages if item.get("url") == url), None)
+    if not page:
+        return {"url": url, "title": "", "text": "", "error": "not_in_fixtures", "links": []}
+    if page.get("error"):
+        return _page_payload(page)
+    target = page.get("redirect_to")
+    if target:
+        landed = next((item for item in pages if item.get("url") == target), None)
+        if not landed:
+            return {"url": url, "title": "", "text": "", "error": "redirect_target_missing", "redirect_from": url, "links": []}
+        payload = _page_payload(landed, redirect_from=url)
+        return payload
+    return _page_payload(page)
 
 
 def _open_live(url: str) -> dict:
@@ -140,6 +172,9 @@ def _open_live(url: str) -> dict:
     page = fetch_page(url)
     page["freshness"] = "LIVE" if not page.get("error") else "UNKNOWN"
     page["retrieved_at"] = now()
+    page.setdefault("links", [])
+    if page.get("url") and page.get("url") != url:
+        page["redirect_from"] = url
     return page
 
 
@@ -163,7 +198,13 @@ def _relevant(text: str, query: str) -> str:
 
 def _js_wall(text: str) -> bool:
     lowered = (text or "").lower()
-    warning = "javascript is disabled" in lowered or "javascript ist deaktiviert" in lowered or "please enable js" in lowered
+    warning = (
+        "javascript is disabled" in lowered
+        or "javascript ist deaktiviert" in lowered
+        or "please enable js" in lowered
+        or "please enable javascript" in lowered
+        or "enable javascript and cookies" in lowered
+    )
     if not warning:
         return False
     useful = len(lowered) > 400 and any(word in lowered for word in ("ticket", "kaart", "billet", "vending", "contract", "shop"))
@@ -180,99 +221,128 @@ def _channel(url: str, text: str) -> str:
     return "unspecified"
 
 
-def research(task_class: str, objective: str, package_id: str, agent_id: str, *, project_id: str | None = None, max_rounds: int | None = None) -> dict:
+def snippet_contradicts(snippet: str, page: str) -> bool:
+    nums = re.findall(r"\d{3,}", snippet or "")
+    if any(num not in (page or "") for num in nums):
+        return True
+    if "available" in (snippet or "").lower() and "available" not in (page or "").lower():
+        return True
+    return False
+
+
+def unsupported_reseller_claim(url: str, text: str) -> bool:
+    if rank_source(url) == "PRIMARY_OFFICIAL":
+        return False
+    lowered = (text or "").lower()
+    return "authorised reseller" in lowered or "authorized reseller" in lowered or ("official partner" in lowered and "reseller" in lowered)
+
+
+def detect_conflicts(evidence: list[dict]) -> list[dict]:
+    groups: dict[str, list] = {}
+    for item in evidence:
+        meta = item.get("metadata") or {}
+        key = meta.get("conflict_key") or ""
+        if not key:
+            continue
+        groups.setdefault(key, []).append({"url": item.get("source_url"), "value": meta.get("conflict_value")})
+    conflicts = []
+    for key, rows in groups.items():
+        values = {row["value"] for row in rows}
+        if len(values) > 1:
+            conflicts.append({"key": key, "values": sorted(values), "sources": rows})
+    return conflicts
+
+
+def _link_relevant(url: str, anchor: str) -> bool:
+    blob = f"{url} {anchor}".lower()
+    return any(word in blob for word in ("facilit", "ticket", "leisure", "vending", "pool", "gym", "hospital", "station", "billet", "kaart"))
+
+
+def research(
+    task_class: str,
+    objective: str,
+    package_id: str,
+    agent_id: str,
+    *,
+    project_id: str | None = None,
+    max_rounds: int | None = None,
+    queries: list[str] | None = None,
+    search_fn=None,
+    fetch_fn=None,
+) -> dict:
     mode = research_mode()
     rounds = max_rounds if max_rounds is not None else int(os.environ.get("AYVEN_MAX_RESEARCH_ROUNDS", "2"))
-    queries = queries_for(task_class, objective)
+    planned = list(queries) if queries is not None else queries_for(task_class, objective)
     evidence: list[dict] = []
     failures: list[dict] = []
+    duplicates: list[str] = []
     seen: set[str] = set()
     searched: list[str] = []
-    if task_class in ("trivial", "calculation") or not queries:
-        return {"mode": mode, "queries": [], "evidence": [], "failures": [], "skipped": True}
+    followed = 0
+    if task_class in ("trivial", "calculation") or not planned:
+        return {
+            "mode": mode, "queries": [], "evidence": [], "failures": [], "duplicates": [],
+            "conflicts": [], "skipped": True, "rounds_exhausted": True, "memory_fallback_used": False,
+        }
 
-    search_fn = _fixture_search if mode == "fixtures" else _live_search
-    open_fn = _open_fixture if mode == "fixtures" else _open_live
-    # Every planned query runs. Extra rounds are only for gaps, so four clubs
-    # are not cut off by a two-round budget.
-    pending = [(query, 1) for query in queries]
+    search_impl = search_fn or (_fixture_search if mode == "fixtures" else _live_search)
+    open_fn = fetch_fn or (_open_fixture if mode == "fixtures" else _open_live)
+    # Every planned query runs at depth 1. Later depths are gap reformulations
+    # and a bounded number of relevant links, not a reason to drop a club.
+    pending = [{"kind": "search", "query": query, "depth": 1} for query in planned]
     while pending:
-        query, depth = pending.pop(0)
-        if query in searched or depth > rounds:
+        job = pending.pop(0)
+        query = job["query"]
+        depth = job["depth"]
+        if depth > rounds:
             continue
-        searched.append(query)
-
-        captured: dict = {}
-
-        def _search(q=query):
-            try:
-                hits = search_fn(q, limit=5)
-            except Exception as exc:
-                captured["hits"] = []
-                return ToolResult(tool="web_search", status="error", query=q, error=str(exc)[:300], timestamp=now(), metadata={"mode": mode, "round": depth})
-            captured["hits"] = hits
-            if not hits or (len(hits) == 1 and (hits[0].get("title") in ("search_error", "no_results"))):
-                return ToolResult(tool="web_search", status="empty", query=q, error=(hits[0].get("snippet") if hits else "no_results") or "no_results", timestamp=now(), metadata={"mode": mode, "evidence_level": "none"})
-            return ToolResult(
-                tool="web_search",
-                status="ok",
-                query=q,
-                timestamp=now(),
-                extracted_content="\n".join(f"{h.get('title')} {h.get('url')}" for h in hits)[:1500],
-                metadata={"mode": mode, "evidence_level": "snippet", "hit_count": len(hits), "round": depth},
-            )
-
-        search_result = invoke(agent_id, "web_search", package_id, _search)
-        _emit_tool(project_id, agent_id, "web_search", f"Searching: {query[:120]}")
-        if search_result.status != "ok":
-            failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
-            continue
-        hits = captured.get("hits") or []
-        opened_any = False
-        for hit in hits:
-            url = hit.get("url") or ""
-            if url in seen or not valid_http_url(url):
-                if url and not valid_http_url(url):
-                    failures.append({"query": query, "stage": "url", "error": "malformed_or_rejected_url", "url": url})
+        if job["kind"] == "search":
+            if query in searched:
                 continue
-            seen.add(url)
+            searched.append(query)
+            captured: dict = {}
 
-            def _fetch(u=url, h=hit):
-                page = open_fn(u)
-                if page.get("error"):
-                    return ToolResult(tool="fetch_page", status="error", query=query, source_url=u, source_title=h.get("title") or "", error=str(page.get("error"))[:300], timestamp=now(), metadata={"mode": mode})
-                text = page.get("text") or ""
-                if _js_wall(text):
-                    return ToolResult(tool="fetch_page", status="error", query=query, source_url=page.get("url") or u, source_title=page.get("title") or "", error="js_wall", extracted_content="", timestamp=page.get("retrieved_at") or now(), metadata={"mode": mode, "evidence_level": "unusable"})
-                extract = _relevant(text, query)
+            def _search(q=query, d=depth):
+                try:
+                    hits = search_impl(q, limit=5)
+                except Exception as exc:
+                    captured["hits"] = []
+                    return ToolResult(tool="web_search", status="error", query=q, error=str(exc)[:300], timestamp=now(), metadata={"mode": mode, "round": d})
+                captured["hits"] = hits or []
+                if not hits or (len(hits) == 1 and (hits[0].get("title") in ("search_error", "no_results"))):
+                    return ToolResult(tool="web_search", status="empty", query=q, error=(hits[0].get("snippet") if hits else "no_results") or "no_results", timestamp=now(), metadata={"mode": mode, "evidence_level": "none"})
                 return ToolResult(
-                    tool="fetch_page",
+                    tool="web_search",
                     status="ok",
-                    query=query,
-                    source_url=page.get("url") or u,
-                    source_title=page.get("title") or h.get("title") or "",
-                    timestamp=page.get("retrieved_at") or now(),
-                    extracted_content=extract,
-                    metadata={
-                        "mode": mode,
-                        "evidence_level": "page",
-                        "source_rank": rank_source(page.get("url") or u),
-                        "freshness": page.get("freshness") or ("FIXTURE_SNAPSHOT" if mode == "fixtures" else "LIVE"),
-                        "channel": _channel(page.get("url") or u, extract),
-                        "snippet_was_not_final_evidence": True,
-                    },
+                    query=q,
+                    timestamp=now(),
+                    extracted_content="\n".join(f"{h.get('title')} {h.get('url')}" for h in hits)[:1500],
+                    metadata={"mode": mode, "evidence_level": "snippet", "hit_count": len(hits), "round": d},
                 )
 
-            fetched = invoke(agent_id, "fetch_page", package_id, _fetch)
-            _emit_tool(project_id, agent_id, "fetch_page", f"Opening: {(hit.get('title') or url)[:120]}")
-            if fetched.status != "ok":
-                failures.append({"query": query, "stage": "fetch", "url": url, "error": fetched.error or fetched.status})
+            search_result = invoke(agent_id, "web_search", package_id, _search)
+            _emit_tool(project_id, agent_id, "web_search", f"Searching: {query[:120]}")
+            if search_result.status != "ok":
+                failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
                 continue
-            opened_any = True
-            evidence.append(fetched.as_dict())
-        if not opened_any and depth < rounds:
-            pending.append((query + " primary official source", depth + 1))
-    # Clubs or topics with no opened page stay explicit gaps.
+            hits = sorted(captured.get("hits") or [], key=lambda hit: 0 if rank_source(hit.get("url") or "") == "PRIMARY_OFFICIAL" else 1)
+            opened_any = False
+            for hit in hits:
+                opened = _open_hit(
+                    hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence,
+                )
+                opened_any = opened_any or opened
+                if opened and followed < 3 and depth < rounds:
+                    for link in (hit.get("_links") or [])[:1]:
+                        if link not in seen and valid_http_url(link):
+                            followed += 1
+                            pending.append({"kind": "open", "query": query, "url": link, "depth": depth + 1, "title": link})
+            if not opened_any and depth < rounds:
+                pending.append({"kind": "search", "query": query + " primary official source", "depth": depth + 1})
+        else:
+            hit = {"url": job.get("url") or "", "title": job.get("title") or "", "snippet": ""}
+            _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence)
+
     gaps = []
     blob = " ".join(item.get("extracted_content", "") + item.get("source_url", "") for item in evidence).lower()
     if task_class == "football_tickets":
@@ -284,11 +354,115 @@ def research(task_class: str, objective: str, package_id: str, agent_id: str, *,
         ):
             if any(item in objective.lower() for item in needles) and not any(item in blob for item in needles):
                 gaps.append(f"No opened page established an official route for {label}.")
-    if task_class == "vending_prospects" and not any("vending" in (item.get("extracted_content") or "").lower() and "prospect" in (item.get("extracted_content") or "").lower() for item in evidence):
-        gaps.append("No opened page named a vending placement prospect.")
+    if task_class == "vending_prospects":
+        from .prospects import extract_prospects
+
+        if not extract_prospects(evidence):
+            gaps.append("No opened page established a real organisation that is plausibly relevant to vending placement.")
+        else:
+            gaps.append("Decision-maker, acceptance, footfall, and existing vending arrangements remain unknown unless a page stated them.")
     if task_class == "internal_door_quote" and not evidence:
         gaps.append("No supplier page was retrieved. No supplier is named.")
-    return {"mode": mode, "queries": searched, "evidence": evidence, "failures": failures, "gaps": gaps, "skipped": False, "rounds": rounds}
+    if not evidence:
+        gaps.append("Research produced no opened page. No model-memory fallback was used.")
+    elif mode == "live" and failures:
+        gaps.append("Some live retrievals failed. No model-memory fallback was used.")
+    return {
+        "mode": mode,
+        "queries": searched,
+        "evidence": evidence,
+        "failures": failures,
+        "duplicates": duplicates,
+        "conflicts": detect_conflicts(evidence),
+        "gaps": gaps,
+        "skipped": False,
+        "rounds": rounds,
+        "rounds_exhausted": True,
+        "followed_links": followed,
+        "memory_fallback_used": False,
+    }
+
+
+def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence) -> bool:
+    url = hit.get("url") or ""
+    if url in seen:
+        duplicates.append(url)
+        return False
+    if not valid_http_url(url):
+        failures.append({
+            "query": query,
+            "stage": "url",
+            "error": "malformed_or_rejected_url" if url else "empty_result_url",
+            "url": url,
+        })
+        return False
+    seen.add(url)
+
+    def _fetch(u=url, h=hit):
+        page = open_fn(u)
+        attempts = 1
+        if page.get("error"):
+            retried = open_fn(u)
+            attempts = 2
+            retried = dict(retried)
+            retried["retried"] = True
+            page = retried
+        if page.get("error"):
+            return ToolResult(
+                tool="fetch_page", status="error", query=query, source_url=u, source_title=h.get("title") or "",
+                error=str(page.get("error"))[:300], timestamp=now(),
+                metadata={"mode": mode, "attempts": attempts, "round": depth},
+            )
+        text = page.get("text") or ""
+        if _js_wall(text):
+            return ToolResult(
+                tool="fetch_page", status="error", query=query, source_url=page.get("url") or u,
+                source_title=page.get("title") or "", error="js_wall", extracted_content="",
+                timestamp=page.get("retrieved_at") or now(),
+                metadata={"mode": mode, "evidence_level": "unusable", "attempts": attempts, "js_only": True},
+            )
+        extract = _relevant(text, query)
+        tokens = re.findall(r"[a-z0-9]{4,}", query.lower())
+        relevant = any(tok in (extract + " " + (page.get("title") or "")).lower() for tok in tokens) if tokens else True
+        h["_links"] = [
+            link.get("url") for link in (page.get("links") or [])
+            if isinstance(link, dict) and _link_relevant(link.get("url") or "", link.get("anchor") or "")
+        ]
+        final_url = page.get("url") or u
+        return ToolResult(
+            tool="fetch_page",
+            status="ok",
+            query=query,
+            source_url=final_url,
+            source_title=page.get("title") or h.get("title") or "",
+            timestamp=page.get("retrieved_at") or now(),
+            extracted_content=extract,
+            metadata={
+                "mode": mode,
+                "evidence_level": "page",
+                "source_rank": rank_source(final_url),
+                "freshness": page.get("freshness") or ("FIXTURE_SNAPSHOT" if mode == "fixtures" else "LIVE"),
+                "channel": _channel(final_url, extract),
+                "snippet_was_not_final_evidence": True,
+                "snippet_contradicts_page": snippet_contradicts(h.get("snippet") or "", text),
+                "redirected_from": page.get("redirect_from") or "",
+                "retried": bool(page.get("retried")),
+                "attempts": attempts,
+                "conflict_key": page.get("conflict_key") or "",
+                "conflict_value": page.get("conflict_value") or "",
+                "relevant": relevant,
+                "round": depth,
+                "unsupported_reseller": unsupported_reseller_claim(final_url, text),
+            },
+        )
+
+    fetched = invoke(agent_id, "fetch_page", package_id, _fetch)
+    _emit_tool(project_id, agent_id, "fetch_page", f"Opening: {(hit.get('title') or url)[:120]}")
+    if fetched.status != "ok":
+        failures.append({"query": query, "stage": "fetch", "url": url, "error": fetched.error or fetched.status, "attempts": (fetched.metadata or {}).get("attempts")})
+        return False
+    evidence.append(fetched.as_dict())
+    return True
 
 
 def _emit_tool(project_id: str | None, agent_id: str, tool: str, summary: str) -> None:

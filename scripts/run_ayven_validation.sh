@@ -2,30 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-AYVEN_RESULTS_ARCHIVE=""
-banner() {
-  echo
-  echo "========================================"
-  echo "COPY/SAVE RESULTS BEFORE STOPPING POD"
-  echo "========================================"
-  if [ -f "$ROOT/validation/.last_archive_path" ]; then
-    echo "Archive: $(cat "$ROOT/validation/.last_archive_path")"
-  elif [ -n "${AYVEN_RESULTS_ARCHIVE}" ]; then
-    echo "Archive: $AYVEN_RESULTS_ARCHIVE"
-  else
-    echo "No archive path was recorded. Check validation/runs before you stop."
-  fi
-  echo "Download that archive before you stop the pod."
-  echo "Manual: tar -czf \"\$HOME/ayven-validation-results.tar.gz\" -C \"$ROOT/validation/runs\" ."
-  echo "========================================"
-  echo
-  echo "============================================================"
-  echo "VALIDATION FINISHED OR STOPPED"
-  echo "STOP THE RUNPOD POD NOW if this was a paid GPU."
-  echo "Do not leave billed GPU time idle."
-  echo "============================================================"
-}
-trap banner EXIT
+rm -f "$ROOT/validation/.report_ready"
 echo "============================================================"
 echo "Ayven one-command validation"
 echo "This script does NOT rent a GPU and does NOT call a paid API."
@@ -36,6 +13,7 @@ python3 "$ROOT/validation/prepare.py"
 status=$?
 if [ "$status" -ne 0 ]; then
   echo "PREPARE FAILED ($status). Not starting incomplete real inference."
+  echo "No results archive was created, so this script is not telling you to stop the pod."
   exit "$status"
 fi
 if [ -f "$ROOT/validation/.prepared.env" ]; then
@@ -44,4 +22,19 @@ if [ -f "$ROOT/validation/.prepared.env" ]; then
 fi
 export PYTHONPATH="$ROOT/apps/api:${PYTHONPATH:-}"
 export AYVEN_ALLOW_ESCALATION=0
+set +e
 python3 "$ROOT/validation/harness.py"
+status=$?
+set -e
+if [ ! -f "$ROOT/validation/.report_ready" ]; then
+  echo "No finalized report was written. No STOP POD instruction is printed."
+  exit "$status"
+fi
+echo
+echo "============================================================"
+echo "VALIDATION FINISHED"
+echo "The archive path, the copy command, and the full report were printed above."
+echo "STOP THE RUNPOD POD NOW if this was a paid GPU."
+echo "Do not leave billed GPU time idle."
+echo "============================================================"
+exit "$status"

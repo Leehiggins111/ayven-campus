@@ -18,4 +18,4 @@ Zero ops. Schema is boring SQL.
 
 ## ADR-008 — Intelligence engine stays inside Ayven
 
-v1.0.0 adds planning, skills, tools, a claim ledger, critic, verifier, and independent audit without replacing the orchestrator with LangGraph, CrewAI, Qwen-Agent, or OpenHands. External projects are adapters or patterns. Frontier calls require `AYVEN_ALLOW_ESCALATION=1`. The published briefing is rendered from evidence and deterministic calculations, not from unconstrained model prose.
+v1.0.0 adds planning, skills, tools, a claim ledger, critic, verifier, and independent audit without replacing the orchestrator with LangGraph, CrewAI, Qwen-Agent, or OpenHands. External projects are adapters or patterns. Frontier calls require `AYVEN_ALLOW_ESCALATION=1`. Evidence and the calculator set factual boundaries. Model synthesis can be published after a grounding check removes unsupported facts.

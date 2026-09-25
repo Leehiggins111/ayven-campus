@@ -7,7 +7,7 @@ cd apps/api
 PYTHONPATH=. AYVEN_LLM_STUB=1 AYVEN_RESEARCH_MODE=fixtures AYVEN_ALLOW_ESCALATION=0 pytest -q
 ```
 
-This runs the API tests and the intelligence tests against fixture pages and stub models. At v1.0.0 that suite is 18 passed. It proves the loop, the ledger, the arithmetic, the audits, and the approval gate. It does **not** prove that Qwen became more intelligent.
+This runs the API tests, the intelligence tests, and the adversarial suite against fixture pages and stub models. A green local run proves the loop, the ledger, the arithmetic, the audits, the approval gate, and the task-completion scorer. It does **not** prove that Qwen became more intelligent. Fixture prospects are real public pages captured on 2026-09-25, not live search quality.
 
 ## One command on a GPU pod
 

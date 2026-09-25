@@ -275,18 +275,27 @@ def run(rate=None):
     errors = [c for c in calls if c.get("error")]
     assertion_failures = {name: failed(rows) for name, rows in assertion_rows.items()}
     assertions_ok = not any(assertion_failures.values())
-    if not assertions_ok:
+    cards = {}
+    totals = {"model_calls": len(calls), "tool_calls": 0, "sources_opened": 0, "claims_created": 0, "claims_challenged": 0, "claims_rejected": 0, "retries": 0, "tokens": 0}
+    for name, kind, programme in programmes:
+        card = _card(kind, assertion_rows[name], programme)
+        cards[name] = card
+        totals["tool_calls"] += card["tool_calls"]
+        totals["sources_opened"] += card["sources_opened"]
+        totals["claims_created"] += card["claims_created"]
+        totals["claims_challenged"] += card["claims_challenged"]
+        totals["claims_rejected"] += card["claims_rejected"]
+        totals["retries"] += card["retries"]
+        totals["tokens"] += card["tokens"]
+    content_fail = any(card["final_verdict"] == "FAIL" for card in cards.values()) or not assertions_ok
+    content_partial = any(card["final_verdict"] == "PARTIAL" for card in cards.values())
+    models_real = {"EMPLOYEE", "SUPERVISOR", "MANAGER"} <= set(real_roles) and not stub_roles and not errors
+    if content_fail or (require_real() and not models_real):
         verdict = "FAIL"
-    elif require_real() and (stub_roles or errors or not {"EMPLOYEE", "SUPERVISOR", "MANAGER"} <= set(real_roles)):
-        verdict = "FAIL"
-    elif errors:
+    elif content_partial or not models_real:
         verdict = "PARTIAL"
-    elif require_real():
-        verdict = "PASS"
-    elif not require_real():
-        verdict = "DRY-RUN"
     else:
-        verdict = "PARTIAL"
+        verdict = "PASS"
     est = round((elapsed / 3600) * hourly, 3)
     metrics = {
         "gpu": _gpu(),
@@ -294,6 +303,8 @@ def run(rate=None):
         "dry_run": dry_run(),
         "require_real": require_real(),
         "verdict": verdict,
+        "cards": cards,
+        "totals": totals,
         "assertions_ok": assertions_ok,
         "assertion_failures": {k: v for k, v in assertion_failures.items() if v},
         "real_roles": real_roles,
@@ -307,56 +318,126 @@ def run(rate=None):
         "note": "DRY-RUN uses fixture pages and stub models. It does not prove Qwen quality.",
     }
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
-    lines = [
-        "# AYVEN INTELLIGENCE VALIDATION",
-        f"GPU: {_gpu()}",
-        f"Dry run: {dry_run()}",
-        f"Research mode: {os.environ.get('AYVEN_RESEARCH_MODE')}",
-        f"Elapsed s: {round(elapsed, 2)}",
-        f"Estimated GPU USD at ${hourly:.2f}/hour: {est}",
-        "Previous observed baseline was about $0.75 for a shorter sequential chat run. This run does more tool and audit work.",
-        f"VERDICT: {verdict}",
-        f"Assertions ok: {assertions_ok}",
-        f"real_roles: {real_roles}",
-        f"stub_roles: {stub_roles}",
-        "",
-        "Comparison vs v0.4 qualitative baseline (the numeric run was lost with the pod):",
-        "- v0.4 replaced failed search with model memory, repeated mistakes up the hierarchy, and did not preserve labour ambiguity.",
-        "- This run publishes ledger scenarios, records claims, strips think tags, and keeps escalation off.",
-        "- Model intelligence is NOT proven until VERDICT is PASS on a real GPU.",
-        "",
-    ]
-    for name, rows in assertion_rows.items():
-        bad = failed(rows)
-        lines.append(f"## {name}: {len(rows) - len(bad)}/{len(rows)} assertions passed")
-        for item in bad:
-            lines.append(f"- FAIL {item['id']}: {item['detail']}")
-    lines += [
-        "",
-        "========================================",
-        "COPY/SAVE RESULTS BEFORE STOPPING POD",
-        "========================================",
-    ]
+    lines = _scorecard(verdict, cards, totals, elapsed, hourly, est, dry_run(), assertions_ok, real_roles, stub_roles)
     (run_dir / "final-report.md").write_text("\n".join(lines) + "\n")
     archive = _export(run_dir)
+    report = (run_dir / "final-report.md").read_text()
+    copy_cmd = f'tar -czf "$HOME/ayven-validation-{run_dir.name}.tar.gz" -C "{run_dir.parent}" "{run_dir.name}"'
     banner = "\n".join([
         "========================================",
         "COPY/SAVE RESULTS BEFORE STOPPING POD",
         "========================================",
-        f"VERDICT: {verdict}",
-        f"Assertions ok: {assertions_ok}",
-        f"Run directory: {run_dir}",
         f"Archive: {archive}",
-        f"Report: {run_dir / 'final-report.md'}",
-        f"Metrics: {run_dir / 'metrics.json'}",
-        f"Estimated GPU USD: {est} at ${hourly:.2f}/hour",
-        "Download the archive before you stop the pod.",
-        f"Manual: tar -czf \"$HOME/ayven-validation-{run_dir.name}.tar.gz\" -C \"{run_dir.parent}\" \"{run_dir.name}\"",
+        f"Run directory: {run_dir}",
+        f"Retrieve: {copy_cmd}",
+        "========================================",
+        report.rstrip(),
         "========================================",
     ])
     print(banner)
-    print((run_dir / "final-report.md").read_text()[-1200:])
+    ready = ROOT / "validation" / ".report_ready"
+    ready.write_text(str(archive))
     return run_dir
+
+
+def _card(kind: str, assertions: list, programme) -> dict:
+    from app.db import connect
+    from app.intelligence.assertions import failed
+
+    conn = connect()
+    ids = [programme.parent_id, *[child["id"] for child in programme.children]]
+    marks = ",".join("?" * len(ids))
+    tools = conn.execute(f"SELECT COUNT(*) AS n FROM tool_calls WHERE package_id IN ({marks})", ids).fetchone()["n"]
+    sources = conn.execute(f"SELECT COUNT(*) AS n FROM sources WHERE package_id IN ({marks})", ids).fetchone()["n"]
+    claims = [dict(r) for r in conn.execute(f"SELECT status, challenge_reason FROM claims WHERE package_id IN ({marks})", ids).fetchall()]
+    challenge_rows = conn.execute(
+        f"SELECT payload_json FROM verification_results WHERE package_id IN ({marks}) AND stage='supervisor_challenge'",
+        ids,
+    ).fetchall()
+    challenges = 0
+    for challenge_row in challenge_rows:
+        try:
+            challenges += len(json.loads(challenge_row["payload_json"]).get("challenges") or [])
+        except (TypeError, json.JSONDecodeError):
+            challenges += 1
+    parent = conn.execute("SELECT observability_json, findings FROM work_packages WHERE id=?", (programme.parent_id,)).fetchone()
+    conn.close()
+    obs = json.loads(parent["observability_json"] or "{}")
+    completion = obs.get("completion") or {}
+    resolution = obs.get("resolution") or {}
+    removed = obs.get("unsupported_removed") or []
+    text = parent["findings"] or ""
+    bad_assertions = failed(assertions)
+    grounding = "FAIL" if "UNSUPPORTED FACT:" in text or "<think" in text.lower() else "PASS"
+    if kind == "trades":
+        calculation = "PASS" if "1533.00" in text and "963.00" in text and "ambiguous" in text.lower() else "FAIL"
+    else:
+        calculation = "PASS" if "the final quote is" not in text.lower() else "FAIL"
+    supervisor = "PASS" if challenges and all(a.get("decision") in ("ACCEPT", "RETURN", "TAKE_OVER", "ESCALATE") for a in obs.get("supervisor_decisions") or []) else "FAIL"
+    manager = "PASS" if resolution.get("resolution_method") and resolution.get("decision") in ("SYNTHESISE", "CLARIFY", "ESCALATE") else "FAIL"
+    task = completion.get("outcome") or "FAIL"
+    rejected = sum(1 for c in claims if c["status"] == "CONTRADICTED") + len(removed)
+    final = "PASS"
+    if bad_assertions or task == "FAIL" or grounding == "FAIL" or calculation == "FAIL" or supervisor == "FAIL" or manager == "FAIL":
+        final = "FAIL"
+    elif task == "PARTIAL":
+        final = "PARTIAL"
+    return {
+        "task_completion": task,
+        "factual_grounding": grounding,
+        "calculation": calculation,
+        "supervisor_effectiveness": supervisor,
+        "manager_effectiveness": manager,
+        "unsupported_claims": rejected,
+        "final_verdict": final,
+        "tool_calls": tools,
+        "sources_opened": sources,
+        "claims_created": len(claims),
+        "claims_challenged": challenges,
+        "claims_rejected": rejected,
+        "retries": int(obs.get("retries") or 0),
+        "tokens": int(obs.get("tokens") or 0),
+    }
+
+
+def _scorecard(verdict, cards, totals, elapsed, hourly, est, dry, assertions_ok, real_roles, stub_roles) -> list[str]:
+    names = {"A_trades": "TRADES", "B_football": "FOOTBALL", "C_vending": "VENDING"}
+    lines = [
+        f"OVERALL {verdict}",
+        "A fixture or stub run can pass the exam content and still be PARTIAL overall. That does not prove Qwen.",
+        "",
+    ]
+    for key, label in names.items():
+        card = cards[key]
+        lines += [
+            label,
+            f"- Task completion: {card['task_completion']}",
+            f"- Factual grounding: {card['factual_grounding']}",
+            f"- Calculation: {card['calculation']}",
+            f"- Supervisor effectiveness: {card['supervisor_effectiveness']}",
+            f"- Manager effectiveness: {card['manager_effectiveness']}",
+            f"- Unsupported claims: {card['unsupported_claims']}",
+            f"- Final verdict: {card['final_verdict']}",
+            "",
+        ]
+    lines += [
+        "TOTALS",
+        f"- Model calls: {totals['model_calls']}",
+        f"- Tool calls: {totals['tool_calls']}",
+        f"- Sources opened: {totals['sources_opened']}",
+        f"- Claims created: {totals['claims_created']}",
+        f"- Claims challenged: {totals['claims_challenged']}",
+        f"- Claims rejected: {totals['claims_rejected']}",
+        f"- Retries: {totals['retries']}",
+        f"- Latency seconds: {round(elapsed, 2)}",
+        f"- Tokens: {totals['tokens'] if totals['tokens'] else 'unavailable'}",
+        f"- Estimated GPU USD at ${hourly:.2f}/hour: {est}",
+        f"- Dry run: {dry}",
+        f"- Assertions ok: {assertions_ok}",
+        f"- Real roles: {real_roles}",
+        f"- Stub roles: {stub_roles}",
+    ]
+    return lines
 
 if __name__ == "__main__":
     run()

@@ -20,6 +20,6 @@ cd apps/api
 PYTHONPATH=. AYVEN_LLM_STUB=1 AYVEN_RESEARCH_MODE=fixtures AYVEN_ALLOW_ESCALATION=0 pytest -q
 ```
 
-v1.0.0 adds the intelligence engine under `apps/api/app/intelligence/` and skills under `skills/`. Local tests use fixture pages and stub models. They do not prove Qwen quality. GPU validation is `./scripts/run_ayven_validation.sh` on a pod you already started. See `docs/VALIDATION.md`.
+v1.0.1 hardens the intelligence engine under `apps/api/app/intelligence/` and skills under `skills/`. Local tests use fixture pages and stub models. They do not prove Qwen quality. GPU validation is `./scripts/run_ayven_validation.sh` on a pod you already started. See `docs/VALIDATION.md`.
 
 See `DEPLOY.md` for Render. This revision does not deploy.

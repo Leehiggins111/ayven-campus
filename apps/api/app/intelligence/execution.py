@@ -1,6 +1,6 @@
 """Work-package loop: plan, evidence, claims, critique, audit, manager.
 
-Model calls comment on the ledger. They do not become the ledger.
+Evidence defines the factual boundaries. The model may reason inside them.
 """
 
 from __future__ import annotations
@@ -14,11 +14,15 @@ from ..db import connect
 from ..distribution import route, update_package
 from . import claims as claim_ledger
 from . import memory, qwen_adapter
-from .audit import advisory_decision, authoritative_decision
+from .audit import advisory_decision, authoritative_decision, challenge_material_claims, run_supervisor_attempts
+from .completion import score_task
 from .critic import critique
+from .grounding import ground_text
 from .planner import build_plan, classify
 from .quality import score as quality_score
+from .prospects import extract_prospects
 from .quoting import quote_internal_doors
+from .resolution import resolve_manager
 from .registry import route_for
 from .render import render_focus, render_parent
 from .research import research
@@ -55,7 +59,12 @@ def _set_agent(agent_id: str, **fields) -> None:
 def _complete(role: str, system: str, user: str, max_tokens: int = 400):
     from ..models import complete_role
 
-    text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens)
+    try:
+        text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens)
+    except Exception as exc:
+        return "", 0, {"error": f"{type(exc).__name__}: {exc}", "backend": "unavailable", "completion_tokens": 0, "execution": "fail"}
+    if not isinstance(text, str):
+        return "", 0, {"error": "malformed model response", "backend": "malformed", "completion_tokens": 0, "execution": "fail"}
     meta = dict(meta)
     meta["completion_tokens"] = tokens
     return strip_think(text), tokens, meta
@@ -76,6 +85,10 @@ class Programme:
         self.audits: list[dict] = []
         self.tokens = 0
         self.errors: list[str] = []
+        self.retries = 0
+        self.grounded: dict[str, str] = {}
+        self.removed: list[str] = []
+        self.resolution: dict = {}
 
     def prepare_all(self) -> str:
         _set_agent(MANAGER, status="working", last_summary="Planning the work package", progress=0.2, current_tool=None)
@@ -125,7 +138,18 @@ class Programme:
         return self.parent_id
 
     def _facts(self) -> dict:
-        return {"objective": self.objective, "task_class": self.task_class, "research": self.research, "quote": self.quote, "children": self.children}
+        evidence = self.research.get("evidence") or []
+        prospects = extract_prospects(evidence) if self.task_class == "vending_prospects" else []
+        return {
+            "objective": self.objective,
+            "task_class": self.task_class,
+            "research": self.research,
+            "quote": self.quote,
+            "children": self.children,
+            "prospects": prospects,
+            "synthesis": "\n\n".join(part for part in self.grounded.values() if part),
+            "resolution": self.resolution,
+        }
 
     def _claims_for(self, child_id: str, spec: dict) -> None:
         focus = spec["focus"]
@@ -141,6 +165,22 @@ class Programme:
                 )
         elif focus in ("routes", "evidence", "prospects") and self.research.get("evidence"):
             claim_ledger.claims_from_evidence(child_id, agent, self.research["evidence"])
+            if focus == "prospects":
+                for prospect in extract_prospects(self.research["evidence"]):
+                    claim_ledger.add_claim(
+                        child_id, agent, prospect["fact"], "PROSPECT",
+                        evidence_text=prospect["excerpt"], source_url=prospect["url"],
+                        source_type=prospect["source_rank"], freshness=prospect["freshness"],
+                        evidence_level="page", source_title=prospect["organisation"], status="SUPPORTED",
+                    )
+                    claim_ledger.add_claim(
+                        child_id, agent,
+                        f"INFERENCE: {prospect['organisation']} is worth investigating as a vending placement prospect.",
+                        "INFERENCE",
+                        evidence_text=prospect["excerpt"], source_url=prospect["url"],
+                        source_type=prospect["source_rank"], freshness=prospect["freshness"],
+                        evidence_level="page", status="PARTIALLY_SUPPORTED",
+                    )
         elif focus == "prospects":
             claim_ledger.add_claim(
                 child_id, agent,
@@ -180,11 +220,28 @@ class Programme:
         elif role == "MANAGER":
             self._bind_manager(clean, meta)
 
+    def _corpus(self) -> tuple[str, str]:
+        evidence = "\n".join(
+            f"{item.get('source_url') or ''} {item.get('extracted_content') or ''}"
+            for item in self.research.get("evidence") or []
+        )
+        deterministic = ""
+        if self.quote:
+            door = self.quote["scenarios"]["labour_per_door"]["total_ex_vat"]
+            job = self.quote["scenarios"]["labour_per_job"]["total_ex_vat"]
+            deterministic = f"{door} {job} {self.quote['per_door_ex_delivery']} {self.quote['labour_unit']} {self.quote['vat']}"
+        return evidence, deterministic
+
     def _bind_employee(self, package_id: str, text: str, meta: dict) -> None:
         child = next(item for item in self.children if item["id"] == package_id)
+        if meta.get("error"):
+            self.errors.append(str(meta.get("error")))
         save_model_call(package_id, "EMPLOYEE", self.task_class, meta, text)
         self.tokens += int(meta.get("completion_tokens") or 0)
-        # Commentary is kept off the published findings. The ledger report stands.
+        evidence, deterministic = self._corpus()
+        grounded = ground_text(text, evidence, deterministic)
+        self.grounded[package_id] = grounded["text"]
+        self.removed.extend(grounded["removed"])
         update_package(package_id, selected_model=meta.get("model") or route_for(self.task_class, "draft")["model_id"])
         _set_agent(child["agent_id"], status="idle", last_summary="Ledger draft submitted", progress=0.7, current_tool=None)
 
@@ -192,18 +249,41 @@ class Programme:
         child = next(item for item in self.children if item["id"] == package_id)
         save_model_call(package_id, "SUPERVISOR", self.task_class, meta, text)
         self.tokens += int(meta.get("completion_tokens") or 0)
-        decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=1)
+        if meta.get("error"):
+            self.errors.append(str(meta.get("error")))
+        evidence, _deterministic = self._corpus()
+        challenges = challenge_material_claims(
+            claim_ledger.list_claims(package_id), evidence, self.quote, text,
+        )
+        for item in challenges:
+            if item["result"] == "DISPROVED" and item.get("claim_id"):
+                claim_ledger.challenge(item["claim_id"], SUPERVISOR, item["resolution"], "CONTRADICTED")
+        save_verification(package_id, "supervisor_challenge", SUPERVISOR, "CHALLENGED", {"challenges": challenges})
+        conflicts = list(self.research.get("conflicts") or [])
         advisory = advisory_decision(text)
-        if decision == "TAKE_OVER":
+
+        def _decide(attempt: int, report=child["report"]) -> str:
+            return authoritative_decision(report, self.task_class, child["focus"], attempt, conflicts=conflicts or None)
+
+        first = _decide(1)
+        if first == "RETURN":
+            self.retries += 1
             child["report"] = render_focus(child["focus"], self._facts())
-            decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2)
+            outcome = run_supervisor_attempts(lambda attempt: _decide(attempt, child["report"]) if attempt > 1 else "RETURN", limit=2)
+            decision = outcome["decision"]
+            if decision == "ACCEPT":
+                update_package(package_id, findings=child["report"], attempt_count=outcome["attempts"], return_reason="")
+            else:
+                decision = "TAKE_OVER" if decision == "RETURN" else decision
+                update_package(package_id, findings=child["report"], review_status=decision, attempt_count=outcome["attempts"], return_reason="Retry limit reached" if outcome["limited"] else "")
+        elif first == "TAKE_OVER":
+            child["report"] = render_focus(child["focus"], self._facts())
+            decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2, conflicts=conflicts or None)
             if decision != "ACCEPT":
                 decision = "TAKE_OVER"
             update_package(package_id, findings=child["report"], review_status="TAKE_OVER", return_reason="Supervisor rewrote from the ledger")
-        elif decision == "RETURN":
-            child["report"] = render_focus(child["focus"], self._facts())
-            decision = "TAKE_OVER" if authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2) != "ACCEPT" else "ACCEPT"
-            update_package(package_id, findings=child["report"], attempt_count=2, return_reason="")
+        else:
+            decision = first
         if advisory and advisory != decision:
             save_verification(package_id, "supervisor_disagreement", SUPERVISOR, decision, {"advisory": advisory, "authoritative": decision})
         audit = {
@@ -231,17 +311,28 @@ class Programme:
     def _bind_manager(self, text: str, meta: dict) -> None:
         save_model_call(self.parent_id, "MANAGER", self.task_class, meta, text)
         self.tokens += int(meta.get("completion_tokens") or 0)
+        if meta.get("error"):
+            self.errors.append(str(meta.get("error")))
+        evidence, deterministic = self._corpus()
+        grounded = ground_text(text, evidence, deterministic)
+        if grounded["text"]:
+            self.grounded[self.parent_id] = grounded["text"]
+        self.removed.extend(grounded["removed"])
         advisory = advisory_decision(text)
-        clarification = self.plan["human_approval_required"]
-        if any(audit["decision"] == "ESCALATE" for audit in self.audits):
-            decision = "ESCALATE"
-        elif clarification:
-            decision = "CLARIFY"
-        else:
-            decision = "SYNTHESISE"
-        findings = render_parent(self._facts(), self.audits, decision)
         all_ids = [self.parent_id, *[child["id"] for child in self.children]]
         all_claims = claim_ledger.list_claims(project_package_ids=all_ids)
+        self.resolution = resolve_manager(
+            task_class=self.task_class,
+            audits=self.audits,
+            claims=all_claims,
+            quote=self.quote,
+            research=self.research,
+            advisory=advisory,
+        )
+        decision = self.resolution["decision"]
+        facts = self._facts()
+        completion = score_task(self.task_class, render_parent(facts, self.audits, decision), self.research, self.quote)
+        findings = render_parent(facts, self.audits, decision, completion)
         verification = verify(self.objective, self.task_class, all_claims, self.research)
         quality = quality_score(self.task_class, all_claims, self.research, verification, "ACCEPT", self.quote)
         save_verification(self.parent_id, "manager", MANAGER, decision, {
@@ -250,6 +341,8 @@ class Programme:
             "audits": self.audits,
             "received_supervisor_audits": True,
             "frontier_called": False,
+            "resolution": self.resolution,
+            "completion": completion,
             "qwen_agent": qwen_adapter.status(),
         })
         save_quality(self.parent_id, quality)
@@ -271,7 +364,10 @@ class Programme:
             "failures": self.research.get("failures") or [],
             "supervisor_decisions": [{k: audit[k] for k in ("focus", "decision", "advisory")} for audit in self.audits],
             "manager_decision": decision,
-            "retries": 0,
+            "resolution": self.resolution,
+            "completion": completion,
+            "unsupported_removed": self.removed,
+            "retries": self.retries,
             "tokens": self.tokens,
             "errors": self.errors,
             "research_mode": self.research.get("mode"),
@@ -279,6 +375,7 @@ class Programme:
             "quality": quality,
         }
         save_observability(self.parent_id, observability)
+        clarification = decision == "CLARIFY"
         if decision == "ESCALATE":
             update_package(
                 self.parent_id, findings=findings, stage="escalation_required", status="escalation_required",
@@ -324,8 +421,12 @@ def _skill_block(programme: Programme) -> str:
 
 def _employee_system(programme: Programme) -> str:
     return (
-        "You are an Ayven employee. Comment only on the ledger. Do not add prices, URLs, companies, or availability. "
-        "Do not emit think tags. Arithmetic is already done by the calculator.\n\n" + _skill_block(programme)
+        "Evidence defines the factual boundaries. You provide reasoning and synthesis within them. "
+        "You may explain, compare, prioritise, spot patterns and implications, recommend next research, "
+        "explain uncertainty, and give business reasoning. "
+        "Label sentences FACT, INFERENCE, RECOMMENDATION, or UNKNOWN. "
+        "Do not silently add prices, URLs, companies, contacts, footfall, or availability that the evidence does not state. "
+        "Do not emit think tags. Arithmetic totals come from the calculator.\n\n" + _skill_block(programme)
     )
 
 
@@ -335,8 +436,10 @@ def _employee_user(programme: Programme, child: dict) -> str:
 
 def _supervisor_system() -> str:
     return (
-        "You are the Ayven supervisor. Audit independently. First line is one of ACCEPT, RETURN, TAKE_OVER, ESCALATE. "
-        "Do not repeat the employee if the ledger disagrees. Do not emit think tags. Recompute before you trust a total."
+        "You are the Ayven supervisor. Try to disprove material employee claims before you accept them. "
+        "Check arithmetic, URLs, entailment, and unsupported specificity. "
+        "First line is one of ACCEPT, RETURN, TAKE_OVER, ESCALATE. "
+        "Do not repeat the employee if the evidence disagrees. Do not emit think tags."
     )
 
 
@@ -348,9 +451,9 @@ def _supervisor_user(programme: Programme, child: dict) -> str:
 
 def _manager_system() -> str:
     return (
-        "You are the Ayven manager. Decide whether evidence is sufficient, whether a person must clarify, "
-        "or whether local work is exhausted. Do not call a frontier model. Do not emit think tags. "
-        "First line is one of SYNTHESISE, CLARIFY, RESEARCH_MORE, ESCALATE."
+        "You are the Ayven manager. When the employee and the supervisor disagree, decide whether the evidence, "
+        "another research pass, a deterministic tool, or the customer can resolve it, and only then choose "
+        "SYNTHESISE, CLARIFY, or ESCALATE. Do not call a frontier model. Do not emit think tags."
     )
 
 

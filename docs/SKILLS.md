@@ -12,7 +12,7 @@ Discovery loads name, description, and triggers only. The body is loaded for the
 | calculation | 1.0.0 | Quotes and arithmetic |
 | internal-door-quoting | 1.0.0 | Internal door jobs |
 | football-ticket-research | 1.0.0 | Ticket and club jobs |
-| vending-prospect-research | 1.0.0 | Vending placement |
+| vending-prospect-research | 1.0.1 | Vending placement |
 
 `internal-door-quoting` states the process: per-door versus per-job versus ambiguous labour, VAT unknown unless stated, measurements, thickness, frame, handing, hardware, hinge count, fitting, delivery, consumables, and customer confirmation. It does not contain a customer price. Ambiguous labour is never resolved in silence.
 
