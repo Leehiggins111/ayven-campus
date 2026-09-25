@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
-
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -17,37 +16,25 @@ from . import events
 from . import orchestrator
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
-
-app = FastAPI(title="Ayven Campus API", version="0.3.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app = FastAPI(title="Ayven Campus API", version="0.4.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
-
 
 def _campus_index() -> Path:
     r3f = STATIC / "r3f" / "index.html"
     return r3f if r3f.exists() else STATIC / "campus.html"
 
-
 @app.get("/")
 def campus_root():
     return FileResponse(_campus_index())
-
 
 @app.get("/campus")
 def campus_page():
     return FileResponse(_campus_index())
 
-
 @app.get("/legacy")
 def campus_legacy():
     return FileResponse(STATIC / "campus.html")
-
 
 @app.on_event("startup")
 def startup() -> None:
@@ -55,15 +42,12 @@ def startup() -> None:
     init_db(conn)
     conn.close()
 
-
 class ObjectiveIn(BaseModel):
     objective: str
     title: str | None = None
 
-
 class ApprovalIn(BaseModel):
     decision: str
-
 
 def _rows(sql: str, args=()):
     conn = connect()
@@ -71,11 +55,10 @@ def _rows(sql: str, args=()):
     conn.close()
     return rows
 
-
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "ayven-api", "version": "0.3.0"}
-
+    from .models import DEFAULT_MODELS, escalation_configured, local_configured
+    return {"ok": True, "service": "ayven-api", "version": "0.4.0", "workforce": {"roles": DEFAULT_MODELS, "local_endpoint": local_configured(), "escalation_enabled": escalation_configured()}}
 
 @app.get("/state")
 def state():
@@ -91,39 +74,24 @@ def state():
         "sources": _rows("SELECT * FROM sources ORDER BY created_at DESC LIMIT 40"),
     }
 
-
 @app.post("/projects")
 def create_project(body: ObjectiveIn):
     pid = str(uuid.uuid4())
     title = body.title or body.objective[:80]
     conn = connect()
-    conn.execute(
-        "INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)",
-        (pid, title, body.objective, "running", datetime.now(timezone.utc).isoformat()),
-    )
+    conn.execute("INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)", (pid, title, body.objective, "running", datetime.now(timezone.utc).isoformat()))
     conn.commit()
     conn.close()
-    events.emit(
-        "project.created",
-        project_id=pid,
-        agent_id="milo",
-        department_id="command",
-        status="running",
-        summary=f"Project opened: {title}",
-    )
+    events.emit("project.created", project_id=pid, agent_id="milo", department_id="command", status="running", summary=f"Project opened: {title}")
     orchestrator.run_project(pid)
     return {"project_id": pid}
-
 
 @app.get("/projects/{pid}")
 def get_project(pid: str):
     rows = _rows("SELECT * FROM projects WHERE id=?", (pid,))
     if not rows:
         raise HTTPException(404)
-    tasks = _rows("SELECT * FROM tasks WHERE project_id=?", (pid,))
-    packages = _rows("SELECT * FROM work_packages WHERE project_id=?", (pid,))
-    return {**rows[0], "tasks": tasks, "work_packages": packages}
-
+    return {**rows[0], "tasks": _rows("SELECT * FROM tasks WHERE project_id=?", (pid,)), "work_packages": _rows("SELECT * FROM work_packages WHERE project_id=?", (pid,))}
 
 @app.post("/approvals/{aid}/resolve")
 def resolve(aid: str, body: ApprovalIn):
@@ -135,23 +103,19 @@ def resolve(aid: str, body: ApprovalIn):
         raise HTTPException(404)
     return {"ok": True}
 
-
 @app.post("/demo/fail")
 def demo_fail():
     orchestrator.fail_demo()
     return {"ok": True}
-
 
 @app.post("/demo/retry")
 def demo_retry():
     orchestrator.retry_agent("web-researcher")
     return {"ok": True}
 
-
 @app.get("/events/stream")
 def stream():
     q = events.subscribe()
-
     def gen():
         try:
             yield "retry: 2000\n"
@@ -165,13 +129,4 @@ def stream():
                     yield ": keepalive\n\n"
         finally:
             events.unsubscribe(q)
-
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
