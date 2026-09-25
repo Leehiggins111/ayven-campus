@@ -7,7 +7,9 @@ cd apps/api
 PYTHONPATH=. AYVEN_LLM_STUB=1 AYVEN_RESEARCH_MODE=fixtures AYVEN_ALLOW_ESCALATION=0 pytest -q
 ```
 
-This runs the API tests, the intelligence tests, and the adversarial suite against fixture pages and stub models. A green local run proves the loop, the ledger, the arithmetic, the audits, the approval gate, and the task-completion scorer. It does **not** prove that Qwen became more intelligent. Fixture prospects are real public pages captured on 2026-09-25, not live search quality.
+This runs the API tests, the intelligence tests, the adversarial suite, and the Frankenstein integration tests against fixture pages and stub models. A green local run proves the loop, the ledger, the arithmetic, the audits, the approval gate, the task-completion scorer, and the installed runtimes (Qwen-Agent tool calls, Browser Use on a local page, MCP stdio, the sandbox, skills, memory). It does **not** prove that Qwen became more intelligent. Fixture prospects are real public pages captured on 2026-09-25, not live search quality.
+
+Label: **INTEGRATION TESTED. MODEL INTELLIGENCE UNTESTED.**
 
 ## One command on a GPU pod
 
@@ -21,11 +23,13 @@ cd ayven-campus
 
 What it does:
 
-1. Preflight. On CUDA it discovers or downloads the Q4 GGUFs and checks llama.cpp GPU offload. It refuses to run the 32B and 30B on CPU.
-2. Sets `AYVEN_ALLOW_ESCALATION=0` and `AYVEN_RESEARCH_MODE=live` when CUDA is present.
-3. Runs the intelligence loop: plan, tools, claims, critic, verifier, then employee, supervisor, and manager **one model at a time**.
-4. Writes `validation/runs/<timestamp>/` including `ayven.db`, `final-report.md`, `metrics.json`, and the three briefings.
-5. Archives that directory to `/workspace/ayven-results/ayven-validation-<timestamp>.tar.gz` (and `$HOME/ayven-results` when that path is writable).
+1. Installs `requirements.txt` and `requirements-frankenstein.txt`, and Chrome if it is missing.
+2. If a GPU is visible and a core Frankenstein capability is inactive, it prints that and exits before model download. It does not call that run Frankenstein.
+3. Preflight. On CUDA it discovers or downloads the Q4 GGUFs and checks llama.cpp GPU offload. It refuses to run the 32B and 30B on CPU.
+4. Sets `AYVEN_ALLOW_ESCALATION=0` and `AYVEN_RESEARCH_MODE=live` when CUDA is present. The employee turn goes through Qwen-Agent when that runtime imports.
+5. Runs the intelligence loop: plan, tools, claims, critic, verifier, then employee, supervisor, and manager **one model at a time**.
+6. Writes `validation/runs/<timestamp>/` including `ayven.db`, `final-report.md`, `metrics.json`, and the three briefings.
+7. Archives that directory to `/workspace/ayven-results/ayven-validation-<timestamp>.tar.gz` (and `$HOME/ayven-results` when that path is writable). The scorecard prints ACTIVE or INACTIVE for each core capability.
 
 The log prints this before it tells you to stop:
 

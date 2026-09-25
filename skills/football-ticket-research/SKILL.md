@@ -8,6 +8,18 @@ triggers:
   - ajax
   - sparta
   - rosenborg
+tools:
+  - web_search
+  - fetch_page
+  - browser
+evidence:
+  - opened official club page
+  - reseller page is not treated as authorised
+checks:
+  - live availability is not claimed from a snapshot
+permissions:
+  - READ_WEB
+  - BROWSE_WEB
 ---
 
 # Football ticket research

@@ -46,6 +46,50 @@ def remember(
     return mem_id
 
 
+def _tokens(text: str) -> set[str]:
+    return {part for part in "".join(ch.lower() if ch.isalnum() else " " for ch in text).split() if len(part) > 2}
+
+
+def retrieve(query: str, *, scopes: tuple[str, ...] | list[str] | None = None, subject_id: str | None = None, limit: int = 4) -> list[dict]:
+    """Rank memories by token overlap. Score 0, expired, and superseded rows stay out."""
+    wanted = _tokens(query)
+    if not wanted:
+        return []
+    conn = connect()
+    sql = "SELECT * FROM memories WHERE (superseded_by IS NULL OR superseded_by='')"
+    args: list = []
+    if scopes:
+        marks = ",".join("?" * len(tuple(scopes)))
+        sql += f" AND scope IN ({marks})"
+        args.extend(tuple(scopes))
+    if subject_id:
+        sql += " AND subject_id=?"
+        args.append(subject_id)
+    rows = [dict(row) for row in conn.execute(sql, args).fetchall()]
+    conn.close()
+    ts = now()
+    ranked = []
+    for row in rows:
+        if row.get("expires_at") and row["expires_at"] <= ts:
+            continue
+        overlap = wanted & _tokens(row.get("content") or "")
+        if not overlap:
+            continue
+        row["score"] = len(overlap)
+        ranked.append(row)
+    ranked.sort(key=lambda item: (-item["score"], item.get("created_at") or ""), reverse=False)
+    return ranked[:limit]
+
+
+def format_for_prompt(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+    lines = ["Relevant memory (context only, not evidence):"]
+    for row in rows:
+        lines.append(f"- [{row.get('scope')} {row.get('subject_id')}] {row.get('content')} (provenance={row.get('provenance')})")
+    return "\n".join(lines)
+
+
 def search(scope: str, query: str, subject_id: str | None = None, limit: int = 8) -> list[dict]:
     conn = connect()
     sql = "SELECT * FROM memories WHERE scope=? AND (superseded_by IS NULL OR superseded_by='') AND content LIKE ?"

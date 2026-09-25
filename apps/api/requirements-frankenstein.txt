@@ -1,0 +1,9 @@
+# Optional Frankenstein runtime. The core API install stays in requirements.txt.
+# Pin the packages that are actually imported. Transitive deps resolve from these.
+qwen-agent==0.0.34
+mcp==2.1.1
+browser-use==0.13.10
+soundfile==0.14.0
+# MCP pulls sse-starlette. 3.1+ requires Starlette>=0.49, which breaks FastAPI 0.115.
+starlette==0.41.3
+sse-starlette==3.0.2

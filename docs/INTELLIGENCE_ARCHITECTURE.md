@@ -1,6 +1,6 @@
 # Intelligence architecture
 
-Version 1.0.1. Status: **PRE-GPU HARDENING. LOCAL TESTS PASS. NOT YET VERIFIED ON GPU.**
+Version 1.1.0. Status: **FRANKENSTEIN RUNTIMES. LOCAL INTEGRATION TESTS PASS. NOT YET VERIFIED ON GPU.**
 
 Ayven is the product. Qwen-Agent, MCP, Browser Use, and the other projects in `INTELLIGENCE_COMPONENTS.md` are optional components behind Ayven interfaces. The campus, work packages, approvals, and SQLite state are unchanged in role.
 
@@ -14,7 +14,11 @@ Ayven is the product. Qwen-Agent, MCP, Browser Use, and the other projects in `I
 | Web research in fixture mode (default while `AYVEN_LLM_STUB=1`) | SIMULATED. Frozen excerpts of public pages, labelled `FIXTURE_SNAPSHOT` |
 | Employee / supervisor / manager prose | STUBBED unless a local OpenAI-compatible server or the GPU harness is running |
 | Frontier APIs | OFF. `AYVEN_ALLOW_ESCALATION=0` |
-| Browser Use, Firecrawl, Qwen-Agent import, MCP session, code sandbox | OPTIONAL, not installed, not called |
+| Qwen-Agent employee tool loop | REAL import and `FnCallAgent`. Local tests use a scripted model. GPU uses the same loop around the loaded model. |
+| Browser Use | REAL read-only HTTP navigation when Chrome is present. Not used when plain HTTP succeeds. |
+| MCP client | REAL stdio session when `AYVEN_MCP_SERVERS` is set. |
+| Code sandbox | REAL `unshare` user/net/pid namespace. Off unless `AYVEN_ALLOW_CODE=1` and approved. Not Docker. |
+| Firecrawl | NOT INSTALLED. AGPL, not vendored. |
 | Qwen quality on the three exams | NOT YET VERIFIED ON GPU |
 
 ## Lifecycle
@@ -62,4 +66,4 @@ Observability on the parent package stores the plan, selected models, skills, qu
 
 ## API
 
-`GET /state` includes `intelligence` (plans, skills, tool calls, claims, verification, quality, model calls). `GET /work-packages/{id}/intelligence` is the full record for one package. `GET /health` reports version `1.0.1`, `validation_status`, and `gpu_validated: false`.
+`GET /state` includes `intelligence` (plans, skills, tool calls, claims, verification, quality, model calls). `GET /work-packages/{id}/intelligence` is the full record for one package. `GET /health` reports version `1.1.0`, `validation_status`, and `gpu_validated: false`.

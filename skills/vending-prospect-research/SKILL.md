@@ -5,6 +5,18 @@ version: 1.0.1
 triggers:
   - vending
   - placement
+tools:
+  - web_search
+  - fetch_page
+  - browser
+evidence:
+  - opened page naming a real organisation and a facility
+checks:
+  - fact inference and unknown stay labelled
+  - no outreach is sent
+permissions:
+  - READ_WEB
+  - BROWSE_WEB
 ---
 
 # Vending prospect research

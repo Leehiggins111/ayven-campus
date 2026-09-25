@@ -105,7 +105,7 @@ def test_permissions_block_contact_and_purchase():
             authorize("research-e1", tool)
     denied = prepare_call("research-e1", "send_email")
     assert denied["ok"] is False
-    assert mcp_status()["posture"] in ("OPTIONAL_NOT_INSTALLED", "INSTALLED_NOT_CONNECTED")
+    assert mcp_status()["posture"] in ("OPTIONAL_NOT_INSTALLED", "INSTALLED_NOT_CONNECTED", "INSTALLED_NO_SERVERS", "CONFIGURED")
 
 
 def test_think_tags_do_not_survive():

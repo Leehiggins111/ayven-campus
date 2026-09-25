@@ -84,6 +84,9 @@ def build_plan(objective: str, task_class: str, skill_names: list[str]) -> dict:
         tools.append("calculator")
     if "research" in stages:
         tools.extend(["web_search", "fetch_page"])
+    from .capabilities import select_tools
+
+    tools = select_tools(tools)
     approval = task_class not in ("trivial", "calculation")
     return {
         "objective": objective,

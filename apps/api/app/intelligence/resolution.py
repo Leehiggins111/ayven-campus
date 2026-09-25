@@ -78,3 +78,59 @@ def resolve_manager(
         "reason": reason,
         "research_exhausted": exhausted,
     }
+
+
+DECISIONS = ("SYNTHESISE", "RESEARCH_MORE", "RETURN", "CLARIFY", "ESCALATE")
+# Lower is more permissive. Safety may block a more permissive model proposal.
+_RANK = {"SYNTHESISE": 0, "RESEARCH_MORE": 1, "RETURN": 2, "CLARIFY": 3, "ESCALATE": 4}
+
+
+def parse_manager_decision(text: str) -> tuple[str, str]:
+    """First decision word plus a short rationale. Raw think text is already stripped by the caller."""
+    body = (text or "").strip()
+    proposal = ""
+    rationale = ""
+    for line in body.splitlines():
+        token = line.strip().split()[0].strip(":#").upper() if line.strip() else ""
+        if token in DECISIONS and not proposal:
+            proposal = token
+            rest = line.split(None, 1)
+            if len(rest) > 1:
+                rationale = rest[1].strip()
+            continue
+        if proposal and line.strip() and not rationale:
+            rationale = line.strip()
+            break
+        if proposal and line.strip().lower().startswith("rationale"):
+            rationale = line.split(":", 1)[-1].strip()
+            break
+    if proposal and not rationale:
+        rationale = body[:400]
+    return proposal, rationale[:500]
+
+
+def apply_manager_veto(proposal: str, safety: dict) -> dict:
+    """Deterministic safety stays authoritative. A more cautious ESCALATE may stand."""
+    safe = safety.get("decision") or "CLARIFY"
+    result = dict(safety)
+    result["safety_decision"] = safe
+    result["model_proposal"] = proposal or ""
+    result["veto"] = False
+    if proposal not in DECISIONS:
+        result["decision"] = safe
+        result["veto"] = bool(proposal)
+        return result
+    if _RANK[proposal] < _RANK.get(safe, 3):
+        result["decision"] = safe
+        result["veto"] = True
+        result["reason"] = safety.get("reason", "") + " The model proposal was more permissive than the safety decision, so safety won."
+        return result
+    if proposal == "RETURN" and safe == "CLARIFY":
+        result["decision"] = "CLARIFY"
+        result["veto"] = True
+        result["reason"] = safety.get("reason", "") + " A return does not remove the approval."
+        return result
+    result["decision"] = proposal
+    if proposal != safe:
+        result["reason"] = safety.get("reason", "") + f" The model was more cautious ({proposal})."
+    return result

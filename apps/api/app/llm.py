@@ -52,6 +52,13 @@ def complete(system: str, user: str, max_tokens: int = 600) -> tuple[str, int]:
 
 def stub_complete(user: str) -> str:
     u = user.lower()
+    if "research review" in u:
+        return "SUFFICIENT\nThe opened pages cover the planned queries."
+    if "manager judgement" in u:
+        return "CLARIFY\nRationale: the evidence can support the briefing, and a person must approve any external action."
+    prefix = ""
+    if "ayven tool runtime" in u:
+        prefix = 'TOOL ayven_tool {"tool":"record_review","payload":"reviewed the ledger"}\n'
     if "evidence:" in u:
         ev = user.split("Evidence:", 1)[-1].strip()[:1800]
         needs = any(k in u for k in ("price", "trade", "scotland", "hinge", "moq", "account"))
@@ -61,20 +68,22 @@ def stub_complete(user: str) -> str:
             "including non-standard hinge positions. Please confirm trade pricing, MOQ, lead times and delivery to Scotland."
             if needs else ""
         )
-        return (
+        body = (
             "Findings from captured sources (stub synthesis; live model not configured):\n"
             f"{ev[:1400]}\n\n"
             "Gaps: public pages often omit trade price, MOQ and custom options. Confirm with the manufacturer."
             f"{enquiry}"
         )
-    if "ticket" in u or "dortmund" in u or "ajax" in u:
-        return (
+    elif "ticket" in u or "dortmund" in u or "ajax" in u:
+        body = (
             "Findings (stub, no live LLM key):\n"
             "- Clubs typically sell via official ticketing sites and authorised resellers.\n"
             "- Authorised sports travel organisers package official allocations.\n"
             "- Feasible model: agency / package-travel partnership, not inventory speculation.\n"
             "- Next: contact authorised wholesalers; do not scrape unofficial resale."
         )
-    if "synthes" in u or "consolidat" in u or "milo" in u:
-        return "Milo: Research Lab findings are ready for Lee."
-    return "Working notes recorded. Verify claims against primary manufacturer or official pages."
+    elif "synthes" in u or "consolidat" in u or "milo" in u:
+        body = "Milo: Research Lab findings are ready for Lee."
+    else:
+        body = "Working notes recorded. Verify claims against primary manufacturer or official pages."
+    return prefix + body

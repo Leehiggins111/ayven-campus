@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -269,9 +270,16 @@ def research(
     queries: list[str] | None = None,
     search_fn=None,
     fetch_fn=None,
+    reviewer=None,
+    browse_fn=None,
 ) -> dict:
     mode = research_mode()
     rounds = max_rounds if max_rounds is not None else int(os.environ.get("AYVEN_MAX_RESEARCH_ROUNDS", "2"))
+    max_searches = int(os.environ.get("AYVEN_MAX_SEARCHES", "12"))
+    max_pages = int(os.environ.get("AYVEN_MAX_PAGES", "16"))
+    max_browser = int(os.environ.get("AYVEN_MAX_BROWSER_ACTIONS", "2"))
+    deadline = time.monotonic() + int(os.environ.get("AYVEN_MAX_RESEARCH_SECONDS", "120"))
+    browser_left = [max_browser]
     planned = list(queries) if queries is not None else queries_for(task_class, objective)
     evidence: list[dict] = []
     failures: list[dict] = []
@@ -287,10 +295,25 @@ def research(
 
     search_impl = search_fn or (_fixture_search if mode == "fixtures" else _live_search)
     open_fn = fetch_fn or (_open_fixture if mode == "fixtures" else _open_live)
+    if browse_fn is None and mode == "live":
+        browse_fn = _live_browse
+    budget_hit = ""
     # Every planned query runs at depth 1. Later depths are gap reformulations
     # and a bounded number of relevant links, not a reason to drop a club.
     pending = [{"kind": "search", "query": query, "depth": 1} for query in planned]
     while pending:
+        if len(searched) >= max_searches:
+            budget_hit = "searches"
+            break
+        if len(evidence) >= max_pages:
+            budget_hit = "pages"
+            break
+        if time.monotonic() > deadline:
+            budget_hit = "time"
+            break
+        if browser_left[0] < 0:
+            budget_hit = "browser"
+            break
         job = pending.pop(0)
         query = job["query"]
         depth = job["depth"]
@@ -330,6 +353,7 @@ def research(
             for hit in hits:
                 opened = _open_hit(
                     hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence,
+                    browse_fn=browse_fn, browser_left=browser_left,
                 )
                 opened_any = opened_any or opened
                 if opened and followed < 3 and depth < rounds:
@@ -341,7 +365,7 @@ def research(
                 pending.append({"kind": "search", "query": query + " primary official source", "depth": depth + 1})
         else:
             hit = {"url": job.get("url") or "", "title": job.get("title") or "", "snippet": ""}
-            _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence)
+            _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=browse_fn, browser_left=browser_left)
 
     gaps = []
     blob = " ".join(item.get("extracted_content", "") + item.get("source_url", "") for item in evidence).lower()
@@ -367,6 +391,28 @@ def research(
         gaps.append("Research produced no opened page. No model-memory fallback was used.")
     elif mode == "live" and failures:
         gaps.append("Some live retrievals failed. No model-memory fallback was used.")
+    if any(item.get("error") == "js_wall" for item in failures) and browse_fn is None:
+        gaps.append("A page needed a browser. The browser was not launched. No model-memory fallback was used.")
+    if budget_hit:
+        gaps.append(f"Research stopped because the {budget_hit} budget was exhausted. No model-memory fallback was used.")
+    review_text = ""
+    if os.environ.get("AYVEN_AGENTIC_RESEARCH", "1") != "0":
+        review_text = _agentic_review(objective, evidence, gaps, searched, reviewer)
+        unknown = _explicit_unknown(review_text)
+        if unknown:
+            gaps.append(unknown)
+        extra = _next_query(review_text)
+        if extra and extra not in searched and not budget_hit and len(searched) < max_searches and len(evidence) < max_pages and time.monotonic() <= deadline:
+            searched.append(extra)
+            try:
+                hits = search_impl(extra, limit=5) or []
+            except Exception as exc:
+                hits = []
+                failures.append({"query": extra, "stage": "search", "error": str(exc)[:300]})
+            for hit in hits:
+                if len(evidence) >= max_pages:
+                    break
+                _open_hit(hit, extra, rounds, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=browse_fn, browser_left=browser_left)
     return {
         "mode": mode,
         "queries": searched,
@@ -380,10 +426,13 @@ def research(
         "rounds_exhausted": True,
         "followed_links": followed,
         "memory_fallback_used": False,
+        "review": review_text,
+        "budget": {"max_rounds": rounds, "max_searches": max_searches, "max_pages": max_pages, "max_browser_actions": max_browser, "hit": budget_hit},
+        "browser_actions": max_browser - browser_left[0],
     }
 
 
-def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence) -> bool:
+def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=None, browser_left=None) -> bool:
     url = hit.get("url") or ""
     if url in seen:
         duplicates.append(url)
@@ -415,11 +464,34 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
             )
         text = page.get("text") or ""
         if _js_wall(text):
+            from .fallbacks import on_http_result
+
+            decision = on_http_result(
+                status="error",
+                error="js_wall",
+                browser_available=browse_fn is not None,
+                browser_permitted=browse_fn is not None and (browser_left is None or browser_left[0] > 0),
+            )
+            if decision["launch_browser"]:
+                if browser_left is not None:
+                    browser_left[0] -= 1
+                browsed = browse_fn(agent_id, package_id, page.get("url") or u)
+                if getattr(browsed, "status", "") == "ok" and (browsed.extracted_content or ""):
+                    return ToolResult(
+                        tool="browser",
+                        status="ok",
+                        query=query,
+                        source_url=browsed.source_url or page.get("url") or u,
+                        source_title=page.get("title") or "",
+                        timestamp=now(),
+                        extracted_content=browsed.extracted_content,
+                        metadata={"mode": mode, "evidence_level": "page", "via": "browser", "http_error": "js_wall", "source_rank": rank_source(page.get("url") or u), "freshness": "LIVE", "relevant": True, "round": depth},
+                    )
             return ToolResult(
                 tool="fetch_page", status="error", query=query, source_url=page.get("url") or u,
                 source_title=page.get("title") or "", error="js_wall", extracted_content="",
                 timestamp=page.get("retrieved_at") or now(),
-                metadata={"mode": mode, "evidence_level": "unusable", "attempts": attempts, "js_only": True},
+                metadata={"mode": mode, "evidence_level": "unusable", "attempts": attempts, "js_only": True, "browser": decision["action"]},
             )
         extract = _relevant(text, query)
         tokens = re.findall(r"[a-z0-9]{4,}", query.lower())
@@ -472,6 +544,51 @@ def _emit_tool(project_id: str | None, agent_id: str, tool: str, summary: str) -
 
     events.emit("agent.using_tool", project_id=project_id, agent_id=agent_id, department_id="research", status="researching", tool=tool, summary=summary, progress=0.4)
     events.emit("agent.researching", project_id=project_id, agent_id=agent_id, department_id="research", status="researching", tool=tool, summary=summary, progress=0.45)
+
+
+def _live_browse(agent_id: str, package_id: str, url: str):
+    from .browser_adapter import available, open_page
+
+    if not available():
+        return None
+    return open_page(agent_id, package_id, url)
+
+
+def _agentic_review(objective: str, evidence: list, gaps: list, searched: list, reviewer) -> str:
+    user = (
+        "research review\n"
+        f"Objective: {(objective or '')[:400]}\n"
+        f"Queries already run: {searched}\n"
+        f"Pages opened: {len(evidence)}\n"
+        f"Gaps so far: {gaps[:6]}\n"
+        "Say SUFFICIENT if the opened pages are enough. "
+        "Or start with NEXT: and one new query. "
+        "Or say I still don't know X."
+    )
+    try:
+        if reviewer is not None:
+            return reviewer(user) or "SUFFICIENT"
+        from ..models import complete_role
+
+        text, _tokens, _meta = complete_role("EMPLOYEE", "You are reviewing research coverage.", user, max_tokens=120)
+        return text or "SUFFICIENT"
+    except Exception:
+        return "SUFFICIENT"
+
+
+def _explicit_unknown(text: str) -> str:
+    for line in (text or "").splitlines():
+        if "i still don't know" in line.lower():
+            return line.strip()
+    return ""
+
+
+def _next_query(text: str) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped.upper().startswith("NEXT:"):
+            return stripped.split(":", 1)[1].strip()[:180]
+    return ""
 
 
 def is_availability_text(text: str) -> bool:

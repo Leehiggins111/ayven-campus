@@ -15,6 +15,8 @@ from ..distribution import route, update_package
 from . import claims as claim_ledger
 from . import memory, qwen_adapter
 from .audit import advisory_decision, authoritative_decision, challenge_material_claims, run_supervisor_attempts
+from .calc import eval_arithmetic
+from .capabilities import frankenstein_status
 from .completion import score_task
 from .critic import critique
 from .grounding import ground_text
@@ -22,11 +24,12 @@ from .planner import build_plan, classify
 from .quality import score as quality_score
 from .prospects import extract_prospects
 from .quoting import quote_internal_doors
-from .resolution import resolve_manager
+from .resolution import apply_manager_veto, parse_manager_decision, resolve_manager
+from .skills import select_skills, skill_prompt
+from .toolkit import ToolResult, invoke, now as tool_now
 from .registry import route_for
 from .render import render_focus, render_parent
 from .research import research
-from .skills import select_skills
 from .store import (
     insert_package,
     save_model_call,
@@ -56,7 +59,7 @@ def _set_agent(agent_id: str, **fields) -> None:
     conn.close()
 
 
-def _complete(role: str, system: str, user: str, max_tokens: int = 400):
+def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = ""):
     from ..models import complete_role
 
     try:
@@ -67,7 +70,18 @@ def _complete(role: str, system: str, user: str, max_tokens: int = 400):
         return "", 0, {"error": "malformed model response", "backend": "malformed", "completion_tokens": 0, "execution": "fail"}
     meta = dict(meta)
     meta["completion_tokens"] = tokens
-    return strip_think(text), tokens, meta
+    text = strip_think(text)
+    if role == "EMPLOYEE" and programme is not None and qwen_adapter.runtime_mode() == "qwen-agent":
+        child = next((item for item in programme.children if item["id"] == package_id), None)
+        agent_id = child["agent_id"] if child else "research-e1"
+        turned = qwen_adapter.employee_turn(system=system, user=user, agent_id=agent_id, package_id=package_id or programme.parent_id, preset_text=text)
+        meta["runtime"] = turned.get("runtime")
+        meta["tools_invoked"] = turned.get("tools") or []
+        if turned.get("fallback"):
+            meta["qwen_fallback"] = turned["fallback"]
+        programme.runtime_notes.append({"package_id": package_id, "runtime": turned.get("runtime"), "tools": meta["tools_invoked"], "fallback": turned.get("fallback") or ""})
+        text = turned.get("text") or ""
+    return text, tokens, meta
 
 
 class Programme:
@@ -89,6 +103,10 @@ class Programme:
         self.grounded: dict[str, str] = {}
         self.removed: list[str] = []
         self.resolution: dict = {}
+        self.supervisor_tools: list[dict] = []
+        self.memory_rows: list[dict] = []
+        self.runtime_notes: list[dict] = []
+        self._supervisor_checked = False
 
     def prepare_all(self) -> str:
         _set_agent(MANAGER, status="working", last_summary="Planning the work package", progress=0.2, current_tool=None)
@@ -252,6 +270,7 @@ class Programme:
         if meta.get("error"):
             self.errors.append(str(meta.get("error")))
         evidence, _deterministic = self._corpus()
+        self._supervisor_independent(package_id)
         challenges = challenge_material_claims(
             claim_ledger.list_claims(package_id), evidence, self.quote, text,
         )
@@ -308,6 +327,45 @@ class Programme:
         self.audits.append(audit)
         _set_agent(SUPERVISOR, status="working", last_summary=f"{decision} {child['focus']}", progress=0.8)
 
+    def _supervisor_independent(self, package_id: str) -> None:
+        """One independent tool check. The prompt never includes employee reasoning."""
+        if self._supervisor_checked:
+            return
+        self._supervisor_checked = True
+        if self.quote and self.quote.get("prices"):
+            prices = self.quote["prices"]
+            expr = "+".join(str(prices[key]) for key in ("door", "handle", "hinges", "consumables", "labour") if prices.get(key))
+
+            def _calc(expression: str = expr) -> ToolResult:
+                try:
+                    value = eval_arithmetic(expression)
+                except Exception as exc:
+                    return ToolResult(tool="calculator", status="error", query=expression, error=str(exc), timestamp=tool_now(), metadata={"independent": True})
+                return ToolResult(tool="calculator", status="ok", query=expression, extracted_content=value, timestamp=tool_now(), metadata={"independent": True, "role": "supervisor"})
+
+            result = invoke(SUPERVISOR, "calculator", package_id, _calc)
+            self.supervisor_tools.append({"tool": "calculator", "status": result.status, "output": result.extracted_content})
+            return
+        evidence = self.research.get("evidence") or []
+        if not evidence:
+            return
+        item = evidence[0]
+        url = item.get("source_url") or ""
+
+        def _fetch() -> ToolResult:
+            return ToolResult(
+                tool="fetch_page",
+                status="ok",
+                query=url,
+                source_url=url,
+                extracted_content=(item.get("extracted_content") or "")[:500],
+                timestamp=tool_now(),
+                metadata={"independent": True, "role": "supervisor", "source": "re-read stored evidence"},
+            )
+
+        result = invoke(SUPERVISOR, "fetch_page", package_id, _fetch)
+        self.supervisor_tools.append({"tool": "fetch_page", "status": result.status, "url": url})
+
     def _bind_manager(self, text: str, meta: dict) -> None:
         save_model_call(self.parent_id, "MANAGER", self.task_class, meta, text)
         self.tokens += int(meta.get("completion_tokens") or 0)
@@ -321,7 +379,7 @@ class Programme:
         advisory = advisory_decision(text)
         all_ids = [self.parent_id, *[child["id"] for child in self.children]]
         all_claims = claim_ledger.list_claims(project_package_ids=all_ids)
-        self.resolution = resolve_manager(
+        safety = resolve_manager(
             task_class=self.task_class,
             audits=self.audits,
             claims=all_claims,
@@ -329,6 +387,10 @@ class Programme:
             research=self.research,
             advisory=advisory,
         )
+        proposal, rationale = parse_manager_decision(strip_think(text))
+        self.resolution = apply_manager_veto(proposal, safety)
+        self.resolution["rationale"] = rationale
+        self.resolution["model_judgement"] = True
         decision = self.resolution["decision"]
         facts = self._facts()
         completion = score_task(self.task_class, render_parent(facts, self.audits, decision), self.research, self.quote)
@@ -369,6 +431,11 @@ class Programme:
             "unsupported_removed": self.removed,
             "retries": self.retries,
             "tokens": self.tokens,
+            "runtime": self.runtime_notes,
+            "supervisor_tools": self.supervisor_tools,
+            "memory_ids": [row.get("id") for row in self.memory_rows],
+            "skills_loaded": [{"name": skill.name, "tools": skill.tools, "evidence": skill.evidence, "checks": skill.checks, "permissions": skill.requested_permissions} for skill in self.skills],
+            "frankenstein": frankenstein_status(),
             "errors": self.errors,
             "research_mode": self.research.get("mode"),
             "frontier_called": False,
@@ -410,13 +477,9 @@ def run_objective(project_id: str, objective: str, task_id: str | None = None) -
     programme.prepare_all()
     for role in ("EMPLOYEE", "SUPERVISOR", "MANAGER"):
         for prompt in programme.prompts(role):
-            text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=320 if role != "MANAGER" else 480)
+            text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=320 if role != "MANAGER" else 480, programme=programme, package_id=prompt["id"])
             programme.bind(role, prompt["id"], text, meta)
     return programme.parent_id
-
-
-def _skill_block(programme: Programme) -> str:
-    return "\n\n".join(f"Skill {skill.name} v{skill.version}\n{skill.body}" for skill in programme.skills)
 
 
 def _employee_system(programme: Programme) -> str:
@@ -426,12 +489,21 @@ def _employee_system(programme: Programme) -> str:
         "explain uncertainty, and give business reasoning. "
         "Label sentences FACT, INFERENCE, RECOMMENDATION, or UNKNOWN. "
         "Do not silently add prices, URLs, companies, contacts, footfall, or availability that the evidence does not state. "
-        "Do not emit think tags. Arithmetic totals come from the calculator.\n\n" + _skill_block(programme)
+        "Do not emit think tags. Arithmetic totals come from the calculator. "
+        "Memory in the user message is context, not evidence.\n\n"
+        + skill_prompt(programme.skills)
     )
 
 
 def _employee_user(programme: Programme, child: dict) -> str:
-    return f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\nPublished draft:\n{child['report'][:2500]}"
+    programme.memory_rows = memory.retrieve(programme.objective, limit=3)
+    remembered = memory.format_for_prompt(programme.memory_rows)
+    block = f"\n\n{remembered}" if remembered else ""
+    return (
+        "Ayven tool runtime. When you need a tool, emit a line "
+        'TOOL ayven_tool {"tool":"record_review","payload":"why"} and then the answer.\n'
+        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\nPublished draft:\n{child['report'][:2500]}{block}"
+    )
 
 
 def _supervisor_system() -> str:
@@ -446,20 +518,31 @@ def _supervisor_system() -> str:
 def _supervisor_user(programme: Programme, child: dict) -> str:
     claims = claim_ledger.list_claims(child["id"])
     brief = "\n".join(f"- {c['status']} {c['claim_type']}: {c['claim_text'][:180]}" for c in claims[:12])
-    return f"Objective:\n{programme.objective}\n\nPlan class: {programme.task_class}\n\nDraft:\n{child['report'][:2000]}\n\nClaims:\n{brief}"
+    gaps = "; ".join((programme.research.get("gaps") or [])[:4])
+    return (
+        f"Objective:\n{programme.objective}\n\nPlan class: {programme.task_class}\n"
+        f"Gaps: {gaps}\n\nDraft:\n{child['report'][:2000]}\n\nClaims:\n{brief}"
+    )
 
 
 def _manager_system() -> str:
     return (
-        "You are the Ayven manager. When the employee and the supervisor disagree, decide whether the evidence, "
-        "another research pass, a deterministic tool, or the customer can resolve it, and only then choose "
-        "SYNTHESISE, CLARIFY, or ESCALATE. Do not call a frontier model. Do not emit think tags."
+        "You are the Ayven manager. Reason over the objective, the employee deliverable, the evidence, "
+        "the claim ledger, supervisor challenges, retries, contradictions, and gaps. "
+        "First line is one of SYNTHESISE, RESEARCH_MORE, RETURN, CLARIFY, ESCALATE. "
+        "Then one line: Rationale: a short reason. Do not emit think tags. Do not call a frontier model. "
+        "Safety and permissions can veto you."
     )
 
 
 def _manager_user(programme: Programme) -> str:
     lines = [f"{audit['focus']}={audit['decision']}" for audit in programme.audits]
-    return f"Objective:\n{programme.objective}\n\nSupervisor audits: {', '.join(lines) or 'pending'}\nUnknowns: {programme.plan.get('unknowns', [])[:6]}"
+    gaps = "; ".join((programme.research.get("gaps") or [])[:4])
+    return (
+        "manager judgement\n"
+        f"Objective:\n{programme.objective}\n\nSupervisor audits: {', '.join(lines) or 'pending'}\n"
+        f"Unknowns: {programme.plan.get('unknowns', [])[:6]}\nGaps: {gaps}\nRetries: {programme.retries}"
+    )
 
 
 def _memory_text(programme: Programme, decision: str) -> str:

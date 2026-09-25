@@ -26,13 +26,14 @@ ALL = (
     EXTERNAL_CONTACT,
 )
 
-# High-impact actions. Research roles never receive these.
+# High-impact actions stay approval-gated even when a role is allowed to request them.
 GATED = {WRITE_FILES, SEND_EMAIL, MODIFY_DATABASE, PURCHASE, EXTERNAL_CONTACT, RUN_CODE}
 
 TOOL_CAPS = {
     "web_search": READ_WEB,
     "fetch_page": READ_WEB,
     "calculator": RUN_CALC,
+    "record_review": READ_WEB,
     "browser": BROWSE_WEB,
     "firecrawl": READ_WEB,
     "code_exec": RUN_CODE,
@@ -48,8 +49,8 @@ TOOL_CAPS = {
 ROLE_CAPS = {
     "research-e1": {READ_WEB, RUN_CALC},
     "research-e2": {READ_WEB, RUN_CALC},
-    "research-e3": {READ_WEB, RUN_CALC},
-    "research-sup": {READ_WEB, RUN_CALC, BROWSE_WEB},
+    "research-e3": {READ_WEB, RUN_CALC, BROWSE_WEB, RUN_CODE},
+    "research-sup": {READ_WEB, RUN_CALC, BROWSE_WEB, RUN_CODE},
     "research-mgr": {READ_WEB, RUN_CALC},
     "web-researcher": {READ_WEB, RUN_CALC},
     "milo": {READ_WEB},

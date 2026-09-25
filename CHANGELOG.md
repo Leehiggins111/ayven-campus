@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.0 — 2026-09-25
+
+Frankenstein runtimes. Ayven still owns work packages, permissions, evidence, and approvals.
+
+- Qwen-Agent 0.0.34 runs the employee tool loop inside that boundary. `AYVEN_AGENT_RUNTIME=qwen-agent|native|auto`. A failure falls back to the native runtime.
+- Browser Use 0.13.10 reads HTTP pages. It does not click, submit, or buy. HTTP fetch stays the default. A JavaScript wall can escalate to the browser.
+- The MCP Python SDK 2.1.1 connects to servers listed in `AYVEN_MCP_SERVERS`. Read and action tools are distinguished. Actions need approval.
+- Selected `SKILL.md` files, including their tool and evidence contract, are what the employee runtime sees.
+- Research reviews what it opened, may run one bounded next query, and can record "I still don't know" as a gap.
+- Code runs in `unshare --user --map-root-user --net --pid`, not Docker. The network namespace is off. The filesystem is still the host. The calculator remains the arithmetic tool. `AYVEN_ALLOW_CODE` defaults off.
+- Memory retrieval ranks SQLite rows and injects only overlaps. Letta and Mem0 are not installed.
+- The manager model proposes SYNTHESISE, RESEARCH_MORE, RETURN, CLARIFY, or ESCALATE. Deterministic safety can veto. The stored rationale is not chain-of-thought.
+- The supervisor can calculate or re-read evidence. It does not receive the employee's reasoning.
+- Pydantic is 2.13.5 because the MCP SDK requires Pydantic 2.12 or newer. Starlette stays 0.41.3 so FastAPI 0.115.6 still loads.
+
 ## 1.0.1 — 2026-09-25
 
 Pre-GPU hardening. The architecture is unchanged.

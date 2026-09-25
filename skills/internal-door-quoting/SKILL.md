@@ -7,6 +7,19 @@ triggers:
   - hinges
   - labour
   - livingston
+tools:
+  - calculator
+  - web_search
+  - fetch_page
+evidence:
+  - opened supplier page for any named supplier
+  - calculator totals for both labour readings
+checks:
+  - labour unit stays ambiguous unless the input says per door or per job
+  - VAT stays unknown unless the input states it
+permissions:
+  - READ_WEB
+  - RUN_CALC
 ---
 
 # Internal door quoting

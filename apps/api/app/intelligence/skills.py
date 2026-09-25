@@ -17,6 +17,10 @@ class Skill:
     path: Path
     references: list[str] = field(default_factory=list)
     scripts: list[str] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
+    checks: list[str] = field(default_factory=list)
+    requested_permissions: list[str] = field(default_factory=list)
     loaded: bool = False
 
 
@@ -25,6 +29,15 @@ def skills_root() -> Path:
     if override:
         return Path(override)
     return Path(__file__).resolve().parents[4] / "skills"
+
+
+def _list_field(meta: dict, key: str) -> list[str]:
+    value = meta.get(key)
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -89,6 +102,10 @@ def load_skill(name: str) -> Skill:
         path=path,
         references=references,
         scripts=scripts,
+        tools=_list_field(meta, "tools"),
+        evidence=_list_field(meta, "evidence"),
+        checks=_list_field(meta, "checks"),
+        requested_permissions=_list_field(meta, "permissions"),
         loaded=True,
     )
 
@@ -127,5 +144,15 @@ def skill_prompt(skills: list[Skill]) -> str:
         return ""
     blocks = []
     for skill in skills:
-        blocks.append(f"### Skill {skill.name} v{skill.version}\n{skill.body}")
+        contract = []
+        if skill.tools:
+            contract.append("Recommended tools: " + ", ".join(skill.tools))
+        if skill.evidence:
+            contract.append("Required evidence: " + "; ".join(skill.evidence))
+        if skill.checks:
+            contract.append("Deterministic checks: " + "; ".join(skill.checks))
+        if skill.requested_permissions:
+            contract.append("Requested permissions (Ayven still approves): " + ", ".join(skill.requested_permissions))
+        extra = ("\n".join(contract) + "\n") if contract else ""
+        blocks.append(f"### Skill {skill.name} v{skill.version}\n{extra}{skill.body}")
     return "\n\n".join(blocks)

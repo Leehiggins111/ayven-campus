@@ -44,6 +44,9 @@ def registry() -> list[ModelSpec]:
         ModelSpec(supervisor, "gguf-or-openai-compat", True, 32768, 0.75, 0.55, 0.6, 0.6, 0.45, 24, "Q4_K_M-benchmark-default", ("SUPERVISOR",), ("verification", "audit"), True),
         ModelSpec(manager, "gguf-or-openai-compat", True, 32768, 0.7, 0.5, 0.55, 0.55, 0.5, 20, "Q4_K_M-benchmark-default", ("MANAGER",), ("planning", "synthesis"), True),
         ModelSpec("frontier-escalation", "openai-compatible-remote", False, 128000, 0.9, 0.8, 0.8, 1.0, 0.4, 0, "remote", ("ESCALATION",), ("unresolved_escalation",), _escalation_enabled()),
+        ModelSpec("ayven-browser", "browser-use", True, 0, 0, 1, 0, 0.3, 0.4, 1, "local-chrome", ("TOOL",), ("browser",), True),
+        ModelSpec("ayven-code-sandbox", "unshare", True, 0, 0, 0, 1, 0.1, 0.7, 0.5, "unshare-user-net-pid", ("TOOL",), ("code_sandbox",), True),
+        ModelSpec(os.environ.get("AYVEN_CODING_MODEL", employee), "huggingface-or-openai-compat", True, 32768, 0.45, 0.5, 0.7, 0.2, 0.8, 16, "benchmark-default", ("CODING",), ("coding",), True),
     ]
 
 
@@ -59,6 +62,15 @@ def route_for(task_class: str, stage: str) -> dict:
     if stage in ("planning", "manager", "synthesis"):
         spec = next(item for item in specs if "MANAGER" in item.roles)
         return _public(spec, stage, "orchestration uses the manager role")
+    if stage == "browser":
+        spec = next(item for item in specs if item.model_id == "ayven-browser")
+        return _public(spec, stage, "HTTP fetch is not enough (script, navigation, or interactive reading); browser is read-only")
+    if stage == "code_sandbox":
+        spec = next(item for item in specs if item.model_id == "ayven-code-sandbox")
+        return _public(spec, stage, "work is computation beyond arithmetic, so the calculator is the wrong tool")
+    if stage == "coding":
+        spec = next(item for item in specs if "CODING" in item.roles)
+        return _public(spec, stage, "coding-capable local model; the role stays separate from the model id")
     if stage == "escalation":
         spec = next(item for item in specs if "ESCALATION" in item.roles)
         reason = "frontier call allowed" if spec.enabled else "frontier escalation disabled; AYVEN_ALLOW_ESCALATION=0"

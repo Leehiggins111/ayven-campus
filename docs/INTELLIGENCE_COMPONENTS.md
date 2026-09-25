@@ -1,49 +1,53 @@
 # Open-source component audit
 
-Audited 2026-09-25 from the GitHub API (licence, stars, last push) and the repository licence files. Nothing in this list was vendored. Ayven's runtime dependencies are unchanged: FastAPI, Uvicorn, HTTPX, Pydantic, pytest.
+Updated 2026-09-25 for v1.1.0. Nothing was vendored. AGPL and source-available trees were not copied.
 
-## Dependency and licence ledger
+Core install: `apps/api/requirements.txt` (FastAPI, Uvicorn, HTTPX, Pydantic, pytest).
+Frankenstein install: `apps/api/requirements-frankenstein.txt`. The GPU script installs both.
 
-| Component | Licence | Runtime dependency? |
-| --- | --- | --- |
-| FastAPI, Uvicorn, Pydantic, HTTPX, pytest | MIT (see `THIRD_PARTY_NOTICES.md`) | Yes, already installed |
-| Qwen weights used by the harness | Apache-2.0 | Not installed here. Downloaded only on a GPU pod by the existing prepare script |
-| Qwen-Agent, MCP SDK, Browser Use, smolagents, LiteLLM, Letta, Mem0, LangGraph, Agent Framework, OpenHands, Aider, SWE-agent, mini-SWE-agent, deep-research | See below | No |
-| Firecrawl | AGPL-3.0 | No, and its source is not copied |
-| anthropics/skills document skills | Source-available, not Apache, for docx/pdf/pptx/xlsx | Not copied |
+## Installed dependencies
 
-## Candidates
-
-| Project | Licence | Activity (pushed) | Stars | Local models | Usefulness | Strategy | Selected? |
+| Project | Version | Licence | Why | What Ayven uses | Required? | Where | Replacement boundary |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| QwenLM/Qwen-Agent | Apache-2.0 | 2026-03-04 | 17128 | Yes. Tool calling, MCP, code interpreter, RAG | High for Qwen tool loops | Optional adapter. Patterns adopted: tool schema, multi-step tools, stop when evidence is enough. Not imported | Adapter only. Default off |
-| agentskills/agentskills | Apache-2.0 | 2026-08-09 | 25691 | Format, not a model | Skill folder standard | Own loader. `SKILL.md`, scripts, references, assets. Progressive disclosure | Yes, adapted |
-| anthropics/skills | Mixed. README: many Apache-2.0; document skills source-available. GitHub licence metadata empty | 2026-09-24 | 178270 | Examples for Claude | Format reference only | Studied. No skill text copied | No |
-| modelcontextprotocol/python-sdk | MIT | 2026-09-25 | 24402 | Transport, not a model | Dynamic tools later | Boundary module. SDK not installed. No session opened | Boundary only |
-| browser-use/browser-use | MIT | 2026-09-25 | 116287 | Has its own agent loop | JS-heavy pages | Adapter reports `not_installed`. Not a dependency | Optional, not selected for default |
-| lukeswade/deep-research | MIT | 2026-08-23 | 0 | Local OpenAI-compatible | Research loop shape | Borrowed: decompose, open, verbatim evidence, gap-driven second search. Not installed (immature) | Pattern only |
-| huggingface/smolagents | Apache-2.0 | 2026-09-23 | 29495 | Yes, code agent | Sandbox ideas | Borrowed the caution. Own AST calculator. No Docker, no E2B | Pattern only |
-| BerriAI/litellm | MIT for non-enterprise code. `enterprise/` is separate. GitHub SPDX was NOASSERTION | 2026-09-25 | 59629 | Many providers | Gateway | Deferred. Ayven already speaks OpenAI-compatible locally. Large dependency | No |
-| letta-ai/letta | Apache-2.0 | 2026-09-10 | 24884 | Yes | Stateful memory | Studied scopes and provenance. Own SQLite memory. No server | Pattern only |
-| mem0ai/mem0 | Apache-2.0 | 2026-09-25 | 66010 | Yes | Memory layer | Studied. Rejected hosted memory. Own scoped rows | Pattern only |
-| langchain-ai/langgraph | MIT | 2026-09-23 | 42288 | Via LangChain | Graph runtime | Would replace the orchestrator. Rejected | No |
-| microsoft/agent-framework | MIT | 2026-09-25 | 13797 | Yes | Multi-agent workflows | Would replace Ayven's loop. Deferred | No |
-| All-Hands-AI/OpenHands | MIT | 2026-09-25 | 89167 | Yes | Software-engineering agent | Wrong product shape, heavy. Rejected | No |
-| Aider-AI/aider | Apache-2.0 | 2026-05-22 | 49186 | Yes | Coding pair tool | Deferred until a software department exists | No |
-| SWE-agent/SWE-agent (also reachable as princeton-nlp/SWE-agent) | MIT | 2026-09-21 | 20407 | Yes | Issue fixing | Deferred | No |
-| SWE-agent/mini-swe-agent | MIT | 2026-09-21 | 7971 | Yes | Small coding agent | Deferred. Simplicity noted, not adopted | No |
-| firecrawl/firecrawl | AGPL-3.0 | 2026-09-25 | 184701 | API | Page extraction | Adapter is disabled. No source copied. No request sent | No |
+| FastAPI | 0.115.6 | MIT | Campus API | Routes, health, work packages | Required | local | The HTTP app |
+| Uvicorn | 0.34.0 | BSD | ASGI server | `uvicorn app.main:app` | Required | local | Any ASGI server |
+| HTTPX | 0.28.1 | BSD | HTTP client | Search, fetch, local model calls | Required | remote HTTP | Another client behind `tools.py` |
+| Pydantic | 2.13.5 | MIT | Models | Request bodies. Raised from 2.10.4 because MCP requires >=2.12 | Required | local | — |
+| pytest | 8.3.4 | MIT | Tests | Local suite | Required for tests | local | — |
+| Starlette | 0.41.3 | BSD | FastAPI base | Kept below 0.42 so FastAPI 0.115.6 still constructs | Required | local | Do not let MCP's newer SSE extra upgrade it |
+| sse-starlette | 3.0.2 | BSD | MCP extra | Pinned so it does not demand Starlette >=0.49 | Required by MCP | local | Stdio does not use SSE |
+| QwenLM/Qwen-Agent | 0.0.34 | Apache-2.0 (upstream; PyPI licence field empty) | Function-calling loop | `FnCallAgent` inside the employee boundary | Optional extra, on for validation | local | `AYVEN_AGENT_RUNTIME=native` |
+| modelcontextprotocol/python-sdk | 2.1.1 | MIT | MCP client | stdio connect, list, call. browser-use 0.13.10 requires this exact MCP version | Optional extra | local | Empty `AYVEN_MCP_SERVERS` |
+| browser-use/browser-use | 0.13.10 | MIT (upstream; PyPI licence field empty) | JS and navigation | Read-only `BrowserSession` | Optional extra | local Chrome | HTTP fetch when the page is static |
+| python-soundfile | 0.14.0 | BSD-3-Clause | Import side effect | qwen-agent imports it at startup. Ayven does not transcribe audio | Optional extra | local | Remove if a future qwen-agent stops importing it |
+| openai | 2.26.0 (transitive) | Apache-2.0 | Qwen-Agent's OpenAI-compatible client | Used only when `AYVEN_LOCAL_LLM_BASE_URL` is set. No paid call is made by installing it | Transitive | local process, remote only if that URL is set | The scripted model in tests |
+
+Qwen weights are not installed in this checkout. The harness downloads them on a GPU pod. Their licence is Apache-2.0.
+
+## Studied and not installed
+
+| Project | Licence | Decision | Why not |
+| --- | --- | --- | --- |
+| huggingface/smolagents | Apache-2.0 | STUDIED | A second code-agent loop. The sandbox is `unshare`, and Qwen-Agent already runs tools. |
+| lukeswade/deep-research | MIT | STUDIED | The plan/read/review/gap pattern is in `research.py`. The project had no maintenance to justify a dependency. |
+| BerriAI/litellm | MIT for non-enterprise code; `enterprise/` is separate | REJECTED | Ayven already calls an OpenAI-compatible local server. The package is large and the licence is split. |
+| letta-ai/letta | Apache-2.0 | REJECTED | Needs its own server and a model to write memory. No local embedder without a GPU or a paid API. |
+| mem0ai/mem0 | Apache-2.0 | REJECTED | The gain is vector recall. Same missing embedder. SQLite overlap ranking is enough for the include/exclude test. |
+| langchain-ai/langgraph | MIT | REJECTED | Would replace the work-package graph. |
+| microsoft/agent-framework | MIT | REJECTED | Would replace the employee, supervisor, and manager loop. |
+| All-Hands-AI/OpenHands | MIT | REJECTED | Host agent with its own shell and browser. It would skip permissions and the ledger, and it implies a software department. |
+| Aider-AI/aider | Apache-2.0 | REJECTED | Owns the edit loop. The frozen exams do not edit a repository. |
+| SWE-agent/SWE-agent | MIT | REJECTED | Host agent, Docker-centric. Docker is not on this VM. |
+| SWE-agent/mini-SWE-agent | MIT | REJECTED | Smaller, but still its own shell loop. The sandbox keeps that control in Ayven. |
+| firecrawl/firecrawl | AGPL-3.0 | REJECTED | Not vendored. Adapter stays disabled. No request is sent. |
+| anthropics/skills | Mixed; document skills are source-available | REJECTED | No skill text copied. The local loader follows the Apache-2.0 agentskills folder layout. |
 
 ## Replacement boundaries
 
-- Skills can be replaced by another folder of `SKILL.md` files (`AYVEN_SKILLS_DIR`).
-- Search and fetch can be replaced behind `research.py` without touching the ledger.
-- Browser Use can be filled in later at `browser_adapter.py`.
-- MCP servers can be listed in `AYVEN_MCP_SERVERS` once the SDK is installed. Action tools stay approval-gated.
-- Qwen-Agent can be turned on with `AYVEN_USE_QWEN_AGENT=1` only after `qwen-agent` is installed. The hook returns control to Ayven's loop.
-- Firecrawl cannot be vendored. A future HTTP client would be a separate process boundary, still off by default.
-- The model registry can point employee, supervisor, and manager at other local ids. The calculator route stays deterministic.
-
-## Rejected as the orchestrator
-
-LangGraph, CrewAI, Microsoft Agent Framework, OpenHands, and Qwen-Agent as the host process. ADR-001 still holds: Ayven owns the task graph so packages, events, and approvals stay stable.
+- Skills: another directory of `SKILL.md` files via `AYVEN_SKILLS_DIR`.
+- Agent loop: `AYVEN_AGENT_RUNTIME=native` skips Qwen-Agent.
+- Browser: `browser_adapter.py`. HTTP fetch does not import it when the page opens.
+- MCP: `AYVEN_MCP_SERVERS` JSON. The client does not hard-code a server.
+- Sandbox: `code_sandbox.py`. Arithmetic stays on the calculator.
+- Memory: `memory.py`. A future local embedder would sit behind `retrieve()`.
+- Models: `AYVEN_EMPLOYEE_MODEL`, `AYVEN_SUPERVISOR_MODEL`, `AYVEN_MANAGER_MODEL`, `AYVEN_CODING_MODEL`.

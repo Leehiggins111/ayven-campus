@@ -210,6 +210,26 @@ def run(rate=None):
         (run_dir / sub).mkdir(parents=True, exist_ok=True)
     os.environ["AYVEN_DB"] = str(run_dir / "ayven.db")
     os.environ["AYVEN_ALLOW_ESCALATION"] = "0"
+    os.environ.setdefault("AYVEN_AGENT_RUNTIME", "auto")
+    if not os.environ.get("AYVEN_MCP_SERVERS"):
+        os.environ["AYVEN_MCP_SERVERS"] = json.dumps([{
+            "name": "ayven-local",
+            "command": sys.executable,
+            "args": ["-m", "app.intelligence.mcp_local_server"],
+        }])
+    from app.intelligence.capabilities import frankenstein_status
+    caps = frankenstein_status()
+    print("FRANKENSTEIN CAPABILITIES")
+    for name, state in caps.items():
+        if name == "all_core_active":
+            continue
+        print(f"- {name}: {state}")
+    if require_real() and not caps.get("all_core_active"):
+        inactive = [name for name, state in caps.items() if state == "INACTIVE"]
+        print("CORE CAPABILITY INACTIVE: " + ", ".join(inactive))
+        print("Not loading models and not calling this run Frankenstein.")
+        print("No results archive was created.")
+        raise SystemExit(2)
     if dry_run():
         os.environ["AYVEN_RESEARCH_MODE"] = "fixtures"
         os.environ["AYVEN_LLM_STUB"] = "1"
@@ -250,7 +270,10 @@ def run(rate=None):
             for name, _kind, programme in programmes:
                 for prompt in programme.prompts(role):
                     try:
-                        text, meta = infer(session, role, prompt["system"], prompt["user"])
+                        if role == "EMPLOYEE":
+                            text, meta = _employee_runtime(session, programme, prompt)
+                        else:
+                            text, meta = infer(session, role, prompt["system"], prompt["user"])
                     except Exception as exc:
                         text, meta = f"{role}_ERROR: {exc}\n{traceback.format_exc()[-800:]}", {"error": str(exc), "execution": "fail", "backend": "fail"}
                     meta = dict(meta)
@@ -314,11 +337,12 @@ def run(rate=None):
         "estimated_gpu_usd": est,
         "frontier_enabled": False,
         "research_mode": os.environ.get("AYVEN_RESEARCH_MODE"),
+        "frankenstein": caps,
         "calls": calls,
         "note": "DRY-RUN uses fixture pages and stub models. It does not prove Qwen quality.",
     }
     (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
-    lines = _scorecard(verdict, cards, totals, elapsed, hourly, est, dry_run(), assertions_ok, real_roles, stub_roles)
+    lines = _scorecard(verdict, cards, totals, elapsed, hourly, est, dry_run(), assertions_ok, real_roles, stub_roles, caps)
     (run_dir / "final-report.md").write_text("\n".join(lines) + "\n")
     archive = _export(run_dir)
     report = (run_dir / "final-report.md").read_text()
@@ -374,7 +398,7 @@ def _card(kind: str, assertions: list, programme) -> dict:
     else:
         calculation = "PASS" if "the final quote is" not in text.lower() else "FAIL"
     supervisor = "PASS" if challenges and all(a.get("decision") in ("ACCEPT", "RETURN", "TAKE_OVER", "ESCALATE") for a in obs.get("supervisor_decisions") or []) else "FAIL"
-    manager = "PASS" if resolution.get("resolution_method") and resolution.get("decision") in ("SYNTHESISE", "CLARIFY", "ESCALATE") else "FAIL"
+    manager = "PASS" if resolution.get("resolution_method") and resolution.get("decision") in ("SYNTHESISE", "RESEARCH_MORE", "RETURN", "CLARIFY", "ESCALATE") else "FAIL"
     task = completion.get("outcome") or "FAIL"
     rejected = sum(1 for c in claims if c["status"] == "CONTRADICTED") + len(removed)
     final = "PASS"
@@ -400,13 +424,47 @@ def _card(kind: str, assertions: list, programme) -> dict:
     }
 
 
-def _scorecard(verdict, cards, totals, elapsed, hourly, est, dry, assertions_ok, real_roles, stub_roles) -> list[str]:
+def _employee_runtime(session, programme, prompt):
+    from app.intelligence import qwen_adapter
+
+    child = next(item for item in programme.children if item["id"] == prompt["id"])
+    if qwen_adapter.runtime_mode() != "qwen-agent":
+        return infer(session, "EMPLOYEE", prompt["system"], prompt["user"])
+    if session is None:
+        turned = qwen_adapter.employee_turn(system=prompt["system"], user=prompt["user"], agent_id=child["agent_id"], package_id=prompt["id"])
+        meta = dict(turned.get("meta") or {})
+        meta.setdefault("execution", "stub")
+        meta["runtime"] = turned.get("runtime")
+        meta["tools_invoked"] = turned.get("tools") or []
+        if turned.get("fallback"):
+            meta["qwen_fallback"] = turned["fallback"]
+        programme.runtime_notes.append({"package_id": prompt["id"], "runtime": turned.get("runtime"), "tools": meta["tools_invoked"]})
+        return turned.get("text") or "", meta
+    turned = qwen_adapter.employee_turn(system=prompt["system"], user=prompt["user"], agent_id=child["agent_id"], package_id=prompt["id"], session=session)
+    meta = {"execution": "real", "runtime": turned.get("runtime"), "tools_invoked": turned.get("tools") or [], "backend": "qwen-agent"}
+    if turned.get("fallback"):
+        meta["qwen_fallback"] = turned["fallback"]
+        meta["execution"] = "real" if session is not None else "stub"
+    programme.runtime_notes.append({"package_id": prompt["id"], "runtime": turned.get("runtime"), "tools": meta["tools_invoked"]})
+    return turned.get("text") or "", meta
+
+
+def _scorecard(verdict, cards, totals, elapsed, hourly, est, dry, assertions_ok, real_roles, stub_roles, caps=None) -> list[str]:
     names = {"A_trades": "TRADES", "B_football": "FOOTBALL", "C_vending": "VENDING"}
+    caps = caps or {}
+    armed = "ARMED" if caps.get("all_core_active") else "INCOMPLETE"
     lines = [
         f"OVERALL {verdict}",
+        f"FRANKENSTEIN {armed}",
         "A fixture or stub run can pass the exam content and still be PARTIAL overall. That does not prove Qwen.",
         "",
+        "CAPABILITIES",
     ]
+    for name, state in caps.items():
+        if name == "all_core_active":
+            continue
+        lines.append(f"- {name}: {state}")
+    lines.append("")
     for key, label in names.items():
         card = cards[key]
         lines += [
