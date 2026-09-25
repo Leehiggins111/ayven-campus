@@ -1,0 +1,20 @@
+employee:
+  hf: Qwen/Qwen3-8B
+  format: bf16-transformers
+  license: Apache-2.0
+  disk_gb: 16.0
+  vram_gb: 16.0
+supervisor:
+  hf: Qwen/Qwen3-32B-GGUF
+  file: Qwen3-32B-Q4_K_M.gguf
+  format: gguf-q4_k_m
+  license: Apache-2.0
+  disk_gb: 19.8
+  vram_gb: 24.0
+manager:
+  hf: Qwen/Qwen3-30B-A3B-GGUF
+  file: Qwen3-30B-A3B-Q4_K_M.gguf
+  format: gguf-q4_k_m
+  license: Apache-2.0
+  disk_gb: 18.6
+  vram_gb: 20.0
