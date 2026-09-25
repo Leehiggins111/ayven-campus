@@ -22,110 +22,29 @@ def connect() -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS departments (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            x REAL NOT NULL,
-            z REAL NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS agents (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            role TEXT NOT NULL,
-            department_id TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'idle',
-            current_task_id TEXT,
-            current_tool TEXT,
-            last_summary TEXT,
-            progress REAL DEFAULT 0,
-            tokens INTEGER DEFAULT 0,
-            cost_usd REAL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS projects (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            objective TEXT NOT NULL,
-            status TEXT NOT NULL,
-            result TEXT,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS tasks (
-            id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            agent_id TEXT,
-            title TEXT NOT NULL,
-            brief TEXT NOT NULL,
-            status TEXT NOT NULL,
-            result TEXT,
-            requires_approval INTEGER DEFAULT 0,
-            approval_status TEXT,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS events (
-            event_id TEXT PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            project_id TEXT,
-            task_id TEXT,
-            agent_id TEXT,
-            department_id TEXT,
-            type TEXT NOT NULL,
-            status TEXT,
-            tool TEXT,
-            summary TEXT,
-            progress REAL,
-            metadata TEXT
-        );
-        CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY,
-            namespace TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS approvals (
-            id TEXT PRIMARY KEY,
-            task_id TEXT NOT NULL,
-            project_id TEXT,
-            agent_id TEXT,
-            summary TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS work_packages (
-            id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL,
-            task_id TEXT,
-            title TEXT NOT NULL,
-            objective TEXT NOT NULL,
-            origin TEXT NOT NULL,
-            agent_id TEXT,
-            department_id TEXT,
-            stage TEXT NOT NULL,
-            status TEXT NOT NULL,
-            findings TEXT,
-            next_action TEXT,
-            requires_approval INTEGER DEFAULT 0,
-            destination TEXT,
-            error TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS sources (
-            id TEXT PRIMARY KEY,
-            package_id TEXT NOT NULL,
-            url TEXT NOT NULL,
-            title TEXT,
-            snippet TEXT,
-            note TEXT,
-            created_at TEXT NOT NULL
-        );
+        CREATE TABLE IF NOT EXISTS departments (id TEXT PRIMARY KEY, name TEXT NOT NULL, x REAL NOT NULL, z REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL, department_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'idle', current_task_id TEXT, current_tool TEXT, last_summary TEXT, progress REAL DEFAULT 0, tokens INTEGER DEFAULT 0, cost_usd REAL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, title TEXT NOT NULL, objective TEXT NOT NULL, status TEXT NOT NULL, result TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, agent_id TEXT, title TEXT NOT NULL, brief TEXT NOT NULL, status TEXT NOT NULL, result TEXT, requires_approval INTEGER DEFAULT 0, approval_status TEXT, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS events (event_id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, project_id TEXT, task_id TEXT, agent_id TEXT, department_id TEXT, type TEXT NOT NULL, status TEXT, tool TEXT, summary TEXT, progress REAL, metadata TEXT);
+        CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, project_id TEXT, agent_id TEXT, summary TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS work_packages (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_id TEXT, title TEXT NOT NULL, objective TEXT NOT NULL, origin TEXT NOT NULL, agent_id TEXT, department_id TEXT, stage TEXT NOT NULL, status TEXT NOT NULL, findings TEXT, next_action TEXT, requires_approval INTEGER DEFAULT 0, destination TEXT, error TEXT, parent_id TEXT, tier TEXT, confidence REAL, review_status TEXT, attempt_count INTEGER DEFAULT 0, return_reason TEXT, model_role TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, package_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT, snippet TEXT, note TEXT, created_at TEXT NOT NULL);
         """
     )
     conn.commit()
     seed(conn)
+    migrate_v04(conn)
 
 
 SEED_AGENTS = [
     ("milo", "Milo", "Chief of Staff", "command"),
+    ("research-mgr", "Rowan Vale", "Research Manager", "research"),
+    ("research-sup", "Eden Shah", "Research Supervisor", "research"),
+    ("research-e1", "Ivy Chen", "Research Employee 01", "research"),
+    ("research-e2", "Noah Hale", "Research Employee 02", "research"),
+    ("research-e3", "Sam Okoye", "Research Employee 03", "research"),
     ("web-researcher", "Ivy Chen", "Web Researcher", "research"),
     ("verifier", "Noah Hale", "Verification Agent", "research"),
     ("travel-researcher", "Sofia Berg", "Travel Researcher", "travel"),
@@ -155,9 +74,24 @@ def seed(conn: sqlite3.Connection) -> None:
     for d in SEED_DEPTS:
         conn.execute("INSERT INTO departments(id,name,x,z) VALUES(?,?,?,?)", d)
     for a in SEED_AGENTS:
-        conn.execute(
-            """INSERT INTO agents(id,name,role,department_id,status)
-               VALUES(?,?,?,?, 'idle')""",
-            a,
-        )
+        conn.execute("INSERT INTO agents(id,name,role,department_id,status) VALUES(?,?,?,?, 'idle')", a)
+    conn.commit()
+
+
+def migrate_v04(conn: sqlite3.Connection) -> None:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(work_packages)").fetchall()}
+    for name, typ in {
+        "parent_id": "TEXT", "tier": "TEXT", "confidence": "REAL", "review_status": "TEXT",
+        "attempt_count": "INTEGER DEFAULT 0", "return_reason": "TEXT", "model_role": "TEXT",
+    }.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE work_packages ADD COLUMN {name} {typ}")
+    for a in [
+        ("research-mgr", "Rowan Vale", "Research Manager", "research"),
+        ("research-sup", "Eden Shah", "Research Supervisor", "research"),
+        ("research-e1", "Ivy Chen", "Research Employee 01", "research"),
+        ("research-e2", "Noah Hale", "Research Employee 02", "research"),
+        ("research-e3", "Sam Okoye", "Research Employee 03", "research"),
+    ]:
+        conn.execute("INSERT OR IGNORE INTO agents(id,name,role,department_id,status) VALUES(?,?,?,?, 'idle')", a)
     conn.commit()
