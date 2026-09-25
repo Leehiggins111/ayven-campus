@@ -8,3 +8,8 @@ apps/api/data
 .env
 .DS_Store
 .pytest_cache
+validation/runs/
+validation/.last_archive_path
+validation/.prepared.env
+validation/.last_prepare.json
+ayven-results/

@@ -1,4 +1,6 @@
-# v0.4 Model roles
+# Model roles
+
+v1.0.0 routes by task. The table is the benchmark default, not a fixed assignment. See `MODEL_ROUTING.md`. Calculation uses the deterministic calculator. Escalation is off unless `AYVEN_ALLOW_ESCALATION=1`.
 
 | Role | Env | Default | Why |
 |---|---|---|---|

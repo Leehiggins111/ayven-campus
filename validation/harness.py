@@ -6,11 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / "validation" / "runs"
-OBJECTIVES = {
-    "A_trades": "Customer wants 7 internal doors supplied/fitted in Livingston. Sizes mm: 762x1981, 762x1981, 686x1981, 762x1981, 838x1981, 762x1981, 686x1981. Oak-looking, black handles. Provisional: door £82, handle £18, hinges £7, labour £95, delivery £35/job, consumables £12/door. Check if £214/door and £1,533 is a FINAL quote. Find UK suppliers, hinge positions, trade/MOQ/Scotland/VAT/measurement unknowns. Do not invent a firm quote.",
-    "B_football": "Legitimate ticket/package routes for Borussia Dortmund, Ajax, Sparta Prague, Rosenborg without speculative inventory. Facts vs assumptions. Official vs reseller. Enquiry gaps. No purchases.",
-    "C_vending": "UK vending-machine placement prospects. Public evidence, decision-maker type, suitability, missing info, outreach draft only. Approval before contact.",
-}
+# Frozen exam text lives in app.intelligence.assertions so the harness and the
+# unit tests cannot drift apart.
 
 def _now():
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -144,21 +141,6 @@ class GgufSession:
             pass
         _free()
 
-def research(query):
-    api = ROOT / "apps" / "api"
-    if str(api) not in sys.path:
-        sys.path.insert(0, str(api))
-    from app.tools import combined_search, fetch_page
-    hits = combined_search(query, limit=5)
-    out=[]
-    for h in hits:
-        url=h.get("url") or ""
-        sn=h.get("snippet") or ""
-        if url.startswith("http") and len(sn)<80:
-            page=fetch_page(url); sn=(page.get("text") or sn)[:400]; url=page.get("url") or url
-        out.append({"title": h.get("title"), "url": url, "snippet": sn[:400]})
-    return out
-
 def open_session(role, weights):
     if dry_run():
         return None
@@ -178,98 +160,202 @@ def infer(session, role, system, user):
     meta.setdefault("execution", "real")
     return text, meta
 
-def run(rate=0.26):
-    run_dir = RUNS / _now()
-    for sub in ("employee","supervisor","manager","benchmarks"):
-        (run_dir/sub).mkdir(parents=True, exist_ok=True)
-    weights={"employee_id": os.environ.get("AYVEN_EMPLOYEE_MODEL","Qwen/Qwen3-8B"), "supervisor_gguf": os.environ.get("AYVEN_SUPERVISOR_GGUF",""), "manager_gguf": os.environ.get("AYVEN_MANAGER_GGUF","")}
-    benches={}; calls=[]; t0=time.time()
-    emp_sess=open_session("EMPLOYEE", weights)
-    try:
-        for name, obj in OBJECTIVES.items():
-            try:
-                sources=research(obj[:180])
-            except Exception as exc:
-                sources=[{"title":"search_error","url":"","snippet":str(exc)}]
-            ev="\n".join(f"{s.get('title')} {s.get('url')}\n{s.get('snippet')}" for s in sources)[:3500]
-            try:
-                emp, em = infer(emp_sess, "EMPLOYEE", "Ayven Employee. Facts only. Flag unknowns. Do not treat £214/£1533 as a final quote unless sizes, VAT and spec are proven.", obj+"\nSources:\n"+(ev or "none"))
-            except Exception as exc:
-                emp, em = f"EMPLOYEE_ERROR: {exc}\n{traceback.format_exc()[-1200:]}", {"error": str(exc), "execution": "fail"}
-            em.update({"role":"EMPLOYEE","benchmark":name,"gpu":_gpu()}); calls.append(em)
-            (run_dir/"employee"/f"{name}.md").write_text(emp)
-            (run_dir/"employee"/f"{name}.json").write_text(json.dumps({"sources":sources,"meta":em}, indent=2, default=str))
-            benches[name]={"employee":emp,"sources":sources,"source_count":sum(1 for s in sources if (s.get("url") or "").startswith("http"))}
-    finally:
-        if emp_sess: emp_sess.close()
-    sup_sess=open_session("SUPERVISOR", weights)
-    try:
-        for name in OBJECTIVES:
-            try:
-                sup, sm = infer(sup_sess, "SUPERVISOR", "Ayven Supervisor. First line ACCEPT|RETURN|TAKE OVER|ESCALATE TO MANAGER. Catch weak quotes.", benches[name]["employee"][:4000])
-            except Exception as exc:
-                sup, sm = f"SUPERVISOR_ERROR: {exc}", {"error": str(exc), "execution": "fail"}
-            sm.update({"role":"SUPERVISOR","benchmark":name}); calls.append(sm)
-            (run_dir/"supervisor"/f"{name}.md").write_text(sup)
-            decision="ACCEPT"
-            for tok in ("RETURN","TAKE OVER","ESCALATE","ACCEPT"):
-                if tok in sup.upper():
-                    decision = "ESCALATE TO MANAGER" if tok=="ESCALATE" else tok
-                    break
-            benches[name]["supervisor"]=sup; benches[name]["supervisor_decision"]=decision
-    finally:
-        if sup_sess: sup_sess.close()
-    need=[n for n,b in benches.items() if b.get("supervisor_decision")=="RETURN"]
-    if need:
-        emp_sess=open_session("EMPLOYEE", weights)
+def _export(run_dir: Path) -> Path:
+    import shutil
+    import tarfile
+    stamp = run_dir.name
+    destinations = []
+    for raw in (os.environ.get("AYVEN_RESULTS_DIR"), "/workspace/ayven-results", str(Path.home() / "ayven-results")):
+        if not raw:
+            continue
+        dest = Path(raw)
         try:
-            for name in need:
-                try:
-                    emp2, em2 = infer(emp_sess, "EMPLOYEE", "Retry with supervisor feedback. Facts only.", OBJECTIVES[name]+"\nFeedback:\n"+benches[name]["supervisor"])
-                except Exception as exc:
-                    emp2, em2 = f"EMPLOYEE_RETRY_ERROR: {exc}", {"error": str(exc), "execution": "fail"}
-                em2.update({"role":"EMPLOYEE","retry":True,"benchmark":name}); calls.append(em2)
-                benches[name]["employee"]=emp2
-                (run_dir/"employee"/f"{name}-retry.md").write_text(emp2)
-        finally:
-            if emp_sess: emp_sess.close()
-    mgr_sess=open_session("MANAGER", weights)
-    try:
-        for name in OBJECTIVES:
-            b=benches[name]
-            try:
-                mgr, mm = infer(mgr_sess, "MANAGER", "Ayven Manager. Do not redo trivial search. Completeness, contradictions, enquiry/approval. No frontier call.", f"Employee:\n{b['employee'][:2500]}\nSupervisor ({b.get('supervisor_decision')}):\n{(b.get('supervisor') or '')[:1500]}")
-            except Exception as exc:
-                mgr, mm = f"MANAGER_ERROR: {exc}", {"error": str(exc), "execution": "fail"}
-            mm.update({"role":"MANAGER","benchmark":name}); calls.append(mm)
-            (run_dir/"manager"/f"{name}.md").write_text(mgr)
-            b["manager"]=mgr
-            b["approval_needed"]=("approv" in (mgr+b["employee"]).lower() or "enquiry" in mgr.lower())
-            (run_dir/"benchmarks"/f"{name}.json").write_text(json.dumps({k:b[k] for k in b if k not in ("employee","supervisor","manager","sources")}, indent=2))
-    finally:
-        if mgr_sess: mgr_sess.close()
-    elapsed=time.time()-t0
-    real_roles=sorted({c.get("role") for c in calls if c.get("execution")=="real"})
-    stub_roles=sorted({c.get("role") for c in calls if c.get("execution")=="stub"})
-    errors=[c for c in calls if c.get("error")]
-    if require_real() and (stub_roles or errors):
-        verdict="FAIL"
-    elif errors:
-        verdict="PARTIAL"
-    elif require_real() and {"EMPLOYEE","SUPERVISOR","MANAGER"} <= set(real_roles):
-        verdict="PASS"
-    elif not require_real():
-        verdict="DRY-RUN"
+            dest.mkdir(parents=True, exist_ok=True)
+            archive = dest / f"ayven-validation-{stamp}.tar.gz"
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(run_dir, arcname=f"ayven-validation-{stamp}")
+            shutil.copytree(run_dir, dest / stamp, dirs_exist_ok=True)
+            destinations.append(archive)
+        except Exception as exc:
+            print(f"Export to {dest} failed: {exc}")
+    chosen = destinations[0] if destinations else run_dir
+    (ROOT / "validation" / ".last_archive_path").write_text(str(chosen))
+    note = "\n".join([
+        "========================================",
+        "COPY/SAVE RESULTS BEFORE STOPPING POD",
+        "========================================",
+        f"Run directory: {run_dir}",
+        f"Archive: {chosen}",
+        "Automatic export already created the archive. Download it before you stop the pod.",
+        "Manual copy if you need another path:",
+        f"  tar -czf \"$HOME/ayven-validation-{stamp}.tar.gz\" -C \"{run_dir.parent}\" \"{run_dir.name}\"",
+        "========================================",
+        "",
+    ])
+    (run_dir / "EXPORT.txt").write_text(note)
+    for archive in destinations:
+        folder = archive.parent / stamp
+        if folder.exists():
+            (folder / "EXPORT.txt").write_text(note)
+    return chosen
+
+
+def run(rate=None):
+    api = ROOT / "apps" / "api"
+    if str(api) not in sys.path:
+        sys.path.insert(0, str(api))
+    hourly = float(rate if rate is not None else os.environ.get("AYVEN_GPU_USD_PER_HOUR", "2.00"))
+    run_dir = RUNS / _now()
+    for sub in ("employee", "supervisor", "manager", "benchmarks"):
+        (run_dir / sub).mkdir(parents=True, exist_ok=True)
+    os.environ["AYVEN_DB"] = str(run_dir / "ayven.db")
+    os.environ["AYVEN_ALLOW_ESCALATION"] = "0"
+    if dry_run():
+        os.environ["AYVEN_RESEARCH_MODE"] = "fixtures"
+        os.environ["AYVEN_LLM_STUB"] = "1"
     else:
-        verdict="PARTIAL"
-    (run_dir/"metrics.json").write_text(json.dumps({"gpu":_gpu(),"cuda":_cuda(),"dry_run":dry_run(),"require_real":require_real(),"verdict":verdict,"real_roles":real_roles,"stub_roles":stub_roles,"elapsed_s":round(elapsed,2),"calls":calls}, indent=2, default=str))
-    lines=["# AYVEN LOCAL WORKFORCE VALIDATION", f"GPU: {_gpu()}", f"Dry run: {dry_run()}", f"Elapsed s: {round(elapsed,2)}", f"Est £: {round((elapsed/3600)*rate,3)}", f"VERDICT: {verdict}", f"real_roles: {real_roles}", f"stub_roles: {stub_roles}", ""]
-    for name,b in benches.items():
-        lines += [f"## {name}", f"decision: {b.get('supervisor_decision')}", f"sources: {b.get('source_count')}", "```", (b.get("employee") or "")[:800], "```", ""]
-    lines += ["VALIDATION FINISHED", "STOP THE RUNPOD POD NOW if this ran on rented GPU."]
-    (run_dir/"final-report.md").write_text("\n".join(lines))
-    print((run_dir/"final-report.md").read_text()[-700:])
-    print("Results:", run_dir)
+        os.environ["AYVEN_RESEARCH_MODE"] = os.environ.get("AYVEN_RESEARCH_MODE", "live")
+        os.environ["AYVEN_LLM_STUB"] = "0"
+    from app.db import connect, reset_connection_state
+    from app.intelligence.assertions import FOOTBALL, TRADES, VENDING, evaluate_project, failed
+    from app.intelligence.execution import Programme
+
+    reset_connection_state()
+    objectives = {"A_trades": ("trades", TRADES), "B_football": ("football", FOOTBALL), "C_vending": ("vending", VENDING)}
+    weights = {
+        "employee_id": os.environ.get("AYVEN_EMPLOYEE_MODEL", "Qwen/Qwen3-8B"),
+        "supervisor_gguf": os.environ.get("AYVEN_SUPERVISOR_GGUF", ""),
+        "manager_gguf": os.environ.get("AYVEN_MANAGER_GGUF", ""),
+    }
+    programmes = []
+    calls = []
+    assertion_rows = {}
+    t0 = time.time()
+    conn = connect()
+    for name, (_kind, objective) in objectives.items():
+        project_id = f"val-{name}-{run_dir.name}"
+        conn.execute(
+            "INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)",
+            (project_id, name, objective, "running", _now()),
+        )
+    conn.commit()
+    conn.close()
+    for name, (kind, objective) in objectives.items():
+        programme = Programme(f"val-{name}-{run_dir.name}", objective, None)
+        programme.prepare_all()
+        programmes.append((name, kind, programme))
+    for role, folder in (("EMPLOYEE", "employee"), ("SUPERVISOR", "supervisor"), ("MANAGER", "manager")):
+        session = open_session(role, weights)
+        try:
+            for name, _kind, programme in programmes:
+                for prompt in programme.prompts(role):
+                    try:
+                        text, meta = infer(session, role, prompt["system"], prompt["user"])
+                    except Exception as exc:
+                        text, meta = f"{role}_ERROR: {exc}\n{traceback.format_exc()[-800:]}", {"error": str(exc), "execution": "fail", "backend": "fail"}
+                    meta = dict(meta)
+                    meta.update({"role": role, "benchmark": name, "gpu": _gpu()})
+                    calls.append(meta)
+                    programme.bind(role, prompt["id"], text, meta)
+                    (run_dir / folder / f"{name}-{prompt['id'][:8]}.md").write_text(text or "")
+        finally:
+            if session:
+                session.close()
+    for name, kind, programme in programmes:
+        results = evaluate_project(programme.project_id, kind)
+        assertion_rows[name] = results
+        (run_dir / "benchmarks" / f"{name}.json").write_text(json.dumps({"assertions": results, "failed": failed(results)}, indent=2))
+        conn = connect()
+        row = conn.execute("SELECT findings FROM work_packages WHERE id=?", (programme.parent_id,)).fetchone()
+        conn.close()
+        (run_dir / "benchmarks" / f"{name}.md").write_text(row["findings"] if row else "")
+    elapsed = time.time() - t0
+    real_roles = sorted({c.get("role") for c in calls if c.get("execution") == "real"})
+    stub_roles = sorted({c.get("role") for c in calls if c.get("execution") == "stub" or c.get("backend") == "stub"})
+    errors = [c for c in calls if c.get("error")]
+    assertion_failures = {name: failed(rows) for name, rows in assertion_rows.items()}
+    assertions_ok = not any(assertion_failures.values())
+    if not assertions_ok:
+        verdict = "FAIL"
+    elif require_real() and (stub_roles or errors or not {"EMPLOYEE", "SUPERVISOR", "MANAGER"} <= set(real_roles)):
+        verdict = "FAIL"
+    elif errors:
+        verdict = "PARTIAL"
+    elif require_real():
+        verdict = "PASS"
+    elif not require_real():
+        verdict = "DRY-RUN"
+    else:
+        verdict = "PARTIAL"
+    est = round((elapsed / 3600) * hourly, 3)
+    metrics = {
+        "gpu": _gpu(),
+        "cuda": _cuda(),
+        "dry_run": dry_run(),
+        "require_real": require_real(),
+        "verdict": verdict,
+        "assertions_ok": assertions_ok,
+        "assertion_failures": {k: v for k, v in assertion_failures.items() if v},
+        "real_roles": real_roles,
+        "stub_roles": stub_roles,
+        "elapsed_s": round(elapsed, 2),
+        "gpu_usd_per_hour_assumption": hourly,
+        "estimated_gpu_usd": est,
+        "frontier_enabled": False,
+        "research_mode": os.environ.get("AYVEN_RESEARCH_MODE"),
+        "calls": calls,
+        "note": "DRY-RUN uses fixture pages and stub models. It does not prove Qwen quality.",
+    }
+    (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
+    lines = [
+        "# AYVEN INTELLIGENCE VALIDATION",
+        f"GPU: {_gpu()}",
+        f"Dry run: {dry_run()}",
+        f"Research mode: {os.environ.get('AYVEN_RESEARCH_MODE')}",
+        f"Elapsed s: {round(elapsed, 2)}",
+        f"Estimated GPU USD at ${hourly:.2f}/hour: {est}",
+        "Previous observed baseline was about $0.75 for a shorter sequential chat run. This run does more tool and audit work.",
+        f"VERDICT: {verdict}",
+        f"Assertions ok: {assertions_ok}",
+        f"real_roles: {real_roles}",
+        f"stub_roles: {stub_roles}",
+        "",
+        "Comparison vs v0.4 qualitative baseline (the numeric run was lost with the pod):",
+        "- v0.4 replaced failed search with model memory, repeated mistakes up the hierarchy, and did not preserve labour ambiguity.",
+        "- This run publishes ledger scenarios, records claims, strips think tags, and keeps escalation off.",
+        "- Model intelligence is NOT proven until VERDICT is PASS on a real GPU.",
+        "",
+    ]
+    for name, rows in assertion_rows.items():
+        bad = failed(rows)
+        lines.append(f"## {name}: {len(rows) - len(bad)}/{len(rows)} assertions passed")
+        for item in bad:
+            lines.append(f"- FAIL {item['id']}: {item['detail']}")
+    lines += [
+        "",
+        "========================================",
+        "COPY/SAVE RESULTS BEFORE STOPPING POD",
+        "========================================",
+    ]
+    (run_dir / "final-report.md").write_text("\n".join(lines) + "\n")
+    archive = _export(run_dir)
+    banner = "\n".join([
+        "========================================",
+        "COPY/SAVE RESULTS BEFORE STOPPING POD",
+        "========================================",
+        f"VERDICT: {verdict}",
+        f"Assertions ok: {assertions_ok}",
+        f"Run directory: {run_dir}",
+        f"Archive: {archive}",
+        f"Report: {run_dir / 'final-report.md'}",
+        f"Metrics: {run_dir / 'metrics.json'}",
+        f"Estimated GPU USD: {est} at ${hourly:.2f}/hour",
+        "Download the archive before you stop the pod.",
+        f"Manual: tar -czf \"$HOME/ayven-validation-{run_dir.name}.tar.gz\" -C \"{run_dir.parent}\" \"{run_dir.name}\"",
+        "========================================",
+    ])
+    print(banner)
+    print((run_dir / "final-report.md").read_text()[-1200:])
     return run_dir
 
 if __name__ == "__main__":

@@ -1,11 +1,17 @@
 # STATUS
 
-CURRENT PHASE: v0.2 Visual Campus — GitHub sync for Render
+CURRENT PHASE: v1.0.0 intelligence engine — architecture and local tests. GPU validation pending.
 
 WHAT WORKS
-- FastAPI campus at /campus (R3F via import map)
-- Eight buildings, live /state + approvals + football-trips slice
-- pytest 5 passed locally
+- FastAPI campus at /campus
+- Work packages, hierarchy, approvals, distribution
+- Intelligence loop: plan, skills, tools, claims, critic, verifier, supervisor, manager
+- Local pytest against fixture pages and stub models
+- Escalation disabled unless `AYVEN_ALLOW_ESCALATION=1`
+
+NOT YET
+- A real Qwen rerun of the three exams
+- Browser Use, Firecrawl, and the MCP SDK are not installed
 
 NEXT ACTION
-- Finish GitHub source sync, then Render
+- Lee runs `./scripts/run_ayven_validation.sh` on a pod he already has, then downloads the archive before stopping it.

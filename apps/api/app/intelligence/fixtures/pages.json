@@ -1,0 +1,50 @@
+[
+  {
+    "url": "https://www.bvb.de/de/de/tickets.html",
+    "title": "BVB-Tickets | Offizieller Shop",
+    "match": ["dortmund", "bvb"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:10:00+00:00",
+    "text": "BVB-Tickets | Offizieller Shop. Zugang zum Ticketshop, Tippspiel und exklusiven Gewinnspielen. Ein Login für alle BVB-Plattformen."
+  },
+  {
+    "url": "https://www.ajax.nl/fans/kaartverkoop/",
+    "title": "Informatie over Ajax kaartverkoop en tickets - Ajax.nl",
+    "match": ["ajax"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:10:00+00:00",
+    "text": "Informatie over Ajax kaartverkoop en tickets. Op deze pagina vind je alle kaartverkoopinformatie voor alle thuiswedstrijden. Voor de meeste kaartverkopen heb je een geverifieerd account nodig. Deze maak je snel en gratis aan via Mijn.Ajax.nl. Zwarthandel betreft het doorverkopen van wedstrijdtickets tegen sterk verhoogde prijzen via niet-officiële kanalen."
+  },
+  {
+    "url": "https://sparta.cz/cs",
+    "title": "AC Sparta Praha - oficiální web | sparta.cz",
+    "match": ["sparta"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:10:00+00:00",
+    "text": "AC Sparta Praha - oficiální web | sparta.cz."
+  },
+  {
+    "url": "https://www.rbk.no/billetter",
+    "title": "Billetter / Rosenborg",
+    "match": ["rosenborg"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:10:00+00:00",
+    "text": "Billetter / Rosenborg. Billetter. Sesongkort 2026. Kjøp kampbilletter. Billettinformasjon. Kampdagsinfo Lerkendal stadion."
+  },
+  {
+    "url": "https://www.contractsfinder.service.gov.uk/Search/Results?keywords=vending",
+    "title": "Search results - Contracts Finder",
+    "match": ["contracts finder"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:10:00+00:00",
+    "text": "Search results - Contracts Finder. GOV.UK Contracts Finder. This is a new service."
+  },
+  {
+    "url": "https://find-and-update.company-information.service.gov.uk/",
+    "title": "Search the register - Find and update company information - GOV.UK",
+    "match": ["companies house"],
+    "freshness": "FIXTURE_SNAPSHOT",
+    "retrieved_at": "2026-09-25T22:10:00+00:00",
+    "text": "Search the register - Find and update company information - GOV.UK. This is the official company register, not a list of sites seeking machines."
+  }
+]

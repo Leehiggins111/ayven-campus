@@ -14,9 +14,10 @@ from pydantic import BaseModel
 from .db import connect, init_db
 from . import events
 from . import orchestrator
+from .version import VALIDATION_STATUS, __version__
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
-app = FastAPI(title="Ayven Campus API", version="0.4.0")
+app = FastAPI(title="Ayven Campus API", version=__version__)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
 
@@ -58,7 +59,14 @@ def _rows(sql: str, args=()):
 @app.get("/health")
 def health():
     from .models import DEFAULT_MODELS, escalation_configured, local_configured
-    return {"ok": True, "service": "ayven-api", "version": "0.4.0", "workforce": {"roles": DEFAULT_MODELS, "local_endpoint": local_configured(), "escalation_enabled": escalation_configured()}}
+    return {
+        "ok": True,
+        "service": "ayven-api",
+        "version": __version__,
+        "validation_status": VALIDATION_STATUS,
+        "gpu_validated": False,
+        "workforce": {"roles": DEFAULT_MODELS, "local_endpoint": local_configured(), "escalation_enabled": escalation_configured()},
+    }
 
 @app.get("/state")
 def state():
@@ -72,6 +80,44 @@ def state():
         "memories": _rows("SELECT id,namespace,created_at FROM memories ORDER BY created_at DESC LIMIT 20"),
         "work_packages": _rows("SELECT * FROM work_packages ORDER BY updated_at DESC LIMIT 20"),
         "sources": _rows("SELECT * FROM sources ORDER BY created_at DESC LIMIT 40"),
+        "intelligence": _intelligence_state(),
+    }
+
+
+def _intelligence_state() -> dict:
+    from .intelligence.mcp_boundary import status as mcp_status
+    from .intelligence.qwen_adapter import status as qwen_status
+
+    return {
+        "version": __version__,
+        "validation_status": VALIDATION_STATUS,
+        "plans": _rows("SELECT id,package_id,task_class,deliverable,created_at FROM plans ORDER BY created_at DESC LIMIT 20"),
+        "skills_used": _rows("SELECT package_id,skill_name,version,reason,created_at FROM skills_used ORDER BY created_at DESC LIMIT 40"),
+        "tool_calls": _rows("SELECT id,package_id,agent_id,tool,status,query,source_url,source_title,retrieved_at,error,created_at FROM tool_calls ORDER BY created_at DESC LIMIT 40"),
+        "claims": _rows("SELECT id,package_id,agent_id,claim_type,status,confidence,source_url,source_type,freshness,substr(claim_text,1,240) AS claim_text FROM claims ORDER BY created_at DESC LIMIT 40"),
+        "verification": _rows("SELECT package_id,stage,agent_id,decision,created_at FROM verification_results ORDER BY created_at DESC LIMIT 40"),
+        "quality": _rows("SELECT package_id,overall,created_at FROM quality_results ORDER BY created_at DESC LIMIT 20"),
+        "model_calls": _rows("SELECT package_id,role,model_id,backend,prompt_tokens,completion_tokens,latency_s,est_cost_usd,created_at FROM model_calls ORDER BY created_at DESC LIMIT 40"),
+        "mcp": mcp_status(),
+        "qwen_agent": qwen_status(),
+    }
+
+
+@app.get("/work-packages/{package_id}/intelligence")
+def package_intelligence(package_id: str):
+    packages = _rows("SELECT * FROM work_packages WHERE id=?", (package_id,))
+    if not packages:
+        raise HTTPException(404)
+    return {
+        "package": packages[0],
+        "plan": _rows("SELECT * FROM plans WHERE package_id=?", (package_id,)),
+        "skills_used": _rows("SELECT * FROM skills_used WHERE package_id=?", (package_id,)),
+        "tool_calls": _rows("SELECT * FROM tool_calls WHERE package_id=? ORDER BY created_at", (package_id,)),
+        "claims": _rows("SELECT * FROM claims WHERE package_id=? ORDER BY created_at", (package_id,)),
+        "claim_evidence": _rows("SELECT * FROM claim_evidence WHERE package_id=? ORDER BY created_at", (package_id,)),
+        "verification": _rows("SELECT * FROM verification_results WHERE package_id=? ORDER BY created_at", (package_id,)),
+        "quality": _rows("SELECT * FROM quality_results WHERE package_id=? ORDER BY created_at", (package_id,)),
+        "model_calls": _rows("SELECT * FROM model_calls WHERE package_id=? ORDER BY created_at", (package_id,)),
     }
 
 @app.post("/projects")

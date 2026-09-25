@@ -2,7 +2,22 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+AYVEN_RESULTS_ARCHIVE=""
 banner() {
+  echo
+  echo "========================================"
+  echo "COPY/SAVE RESULTS BEFORE STOPPING POD"
+  echo "========================================"
+  if [ -f "$ROOT/validation/.last_archive_path" ]; then
+    echo "Archive: $(cat "$ROOT/validation/.last_archive_path")"
+  elif [ -n "${AYVEN_RESULTS_ARCHIVE}" ]; then
+    echo "Archive: $AYVEN_RESULTS_ARCHIVE"
+  else
+    echo "No archive path was recorded. Check validation/runs before you stop."
+  fi
+  echo "Download that archive before you stop the pod."
+  echo "Manual: tar -czf \"\$HOME/ayven-validation-results.tar.gz\" -C \"$ROOT/validation/runs\" ."
+  echo "========================================"
   echo
   echo "============================================================"
   echo "VALIDATION FINISHED OR STOPPED"
@@ -13,7 +28,7 @@ banner() {
 trap banner EXIT
 echo "============================================================"
 echo "Ayven one-command validation"
-echo "This script does NOT rent a GPU."
+echo "This script does NOT rent a GPU and does NOT call a paid API."
 echo "If you are on RunPod, this time is BILLABLE."
 echo "============================================================"
 python3 -m pip install -q httpx huggingface_hub transformers accelerate 2>/dev/null || true
@@ -28,4 +43,5 @@ if [ -f "$ROOT/validation/.prepared.env" ]; then
   source "$ROOT/validation/.prepared.env"
 fi
 export PYTHONPATH="$ROOT/apps/api:${PYTHONPATH:-}"
+export AYVEN_ALLOW_ESCALATION=0
 python3 "$ROOT/validation/harness.py"

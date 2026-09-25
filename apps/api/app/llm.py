@@ -5,17 +5,29 @@ from typing import Any
 
 import httpx
 
-STUB = os.environ.get("AYVEN_LLM_STUB", "1") != "0"
 BASE = os.environ.get("AYVEN_LLM_BASE_URL", "https://api.x.ai/v1")
 MODEL = os.environ.get("AYVEN_LLM_MODEL", "grok-3")
-API_KEY = os.environ.get("AYVEN_LLM_API_KEY") or os.environ.get("XAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+
+def _api_key() -> str:
+    return os.environ.get("AYVEN_LLM_API_KEY") or os.environ.get("XAI_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+
+
+def _stub_enabled() -> bool:
+    return os.environ.get("AYVEN_LLM_STUB", "1") != "0"
+
+
+def _escalation_allowed() -> bool:
+    return os.environ.get("AYVEN_ALLOW_ESCALATION", "0") == "1"
 
 
 def complete(system: str, user: str, max_tokens: int = 600) -> tuple[str, int]:
-    """Return (text, estimated_tokens). Never send chain-of-thought to callers."""
-    if STUB or not API_KEY:
+    """Return (text, estimated_tokens). Paid calls require AYVEN_ALLOW_ESCALATION=1."""
+    from .intelligence.think import strip_think
+
+    if _stub_enabled() or not _api_key() or not _escalation_allowed():
         text = stub_complete(user)
-        return text, max(32, len(text) // 4)
+        return strip_think(text), max(32, len(text) // 4)
     payload: dict[str, Any] = {
         "model": MODEL,
         "messages": [
@@ -25,17 +37,17 @@ def complete(system: str, user: str, max_tokens: int = 600) -> tuple[str, int]:
         "max_tokens": max_tokens,
         "temperature": 0.2,
     }
-    headers = {"Authorization": f"Bearer {API_KEY}"}
+    headers = {"Authorization": f"Bearer {_api_key()}"}
     try:
         r = httpx.post(f"{BASE.rstrip('/')}/chat/completions", json=payload, headers=headers, timeout=45)
         r.raise_for_status()
         data = r.json()
-        text = data["choices"][0]["message"]["content"]
+        text = strip_think(data["choices"][0]["message"]["content"])
         usage = data.get("usage", {})
         tokens = int(usage.get("total_tokens") or len(text) // 4)
         return text, tokens
     except Exception as exc:
-        return stub_complete(user) + f"\n\n[provider fallback: {type(exc).__name__}]", 48
+        return strip_think(stub_complete(user) + f"\n\n[provider fallback: {type(exc).__name__}]"), 48
 
 
 def stub_complete(user: str) -> str:

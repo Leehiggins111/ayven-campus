@@ -9,6 +9,11 @@ import httpx
 UA = "AyvenCampus/0.3 (research agent; +https://github.com/Leehiggins111/ayven-campus)"
 
 
+def combined_search(query: str, limit: int = 6) -> list[dict]:
+    """Backward-compatible name. New research goes through the intelligence engine."""
+    return web_search(query, limit=limit)
+
+
 def web_search(query: str, limit: int = 6) -> list[dict]:
     """DuckDuckGo HTML search — real network I/O, no API key."""
     try:

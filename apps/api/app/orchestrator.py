@@ -55,7 +55,12 @@ def _run_project(project_id: str) -> None:
     except Exception:
         run_package(pid)
     conn = connect()
-    pkg = conn.execute("SELECT * FROM work_packages WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchone()
+    pkg = conn.execute(
+        "SELECT * FROM work_packages WHERE project_id=? AND tier='MANAGER' AND findings IS NOT NULL ORDER BY updated_at DESC",
+        (project_id,),
+    ).fetchone()
+    if not pkg:
+        pkg = conn.execute("SELECT * FROM work_packages WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchone()
     findings = pkg["findings"] if pkg else brief
     conn.execute("UPDATE projects SET status=?, result=? WHERE id=?", ("complete", findings, project_id))
     conn.commit()

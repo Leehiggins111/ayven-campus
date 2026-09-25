@@ -112,7 +112,18 @@ def main() -> int:
     else: log("CUDA absent: dry-run only. Real hierarchy will NOT run.")
     info["supervisor_path"] = str(sup) if sup else ""; info["manager_path"] = str(mgr) if mgr else ""; info["ok"] = True
     (ROOT/"validation").mkdir(exist_ok=True)
-    (ROOT/"validation"/".prepared.env").write_text(f"export AYVEN_EMPLOYEE_MODEL={EMPLOYEE_ID}\nexport AYVEN_SUPERVISOR_GGUF={info['supervisor_path']}\nexport AYVEN_MANAGER_GGUF={info['manager_path']}\nexport AYVEN_REQUIRE_REAL={'1' if info['cuda'] else '0'}\nexport AYVEN_VALIDATION_DRY_RUN={'0' if info['cuda'] else '1'}\nexport AYVEN_LLM_STUB={'0' if info['cuda'] else '1'}\n")
+    research_mode = "live" if info["cuda"] else "fixtures"
+    (ROOT/"validation"/".prepared.env").write_text(
+        f"export AYVEN_EMPLOYEE_MODEL={EMPLOYEE_ID}\n"
+        f"export AYVEN_SUPERVISOR_GGUF={info['supervisor_path']}\n"
+        f"export AYVEN_MANAGER_GGUF={info['manager_path']}\n"
+        f"export AYVEN_REQUIRE_REAL={'1' if info['cuda'] else '0'}\n"
+        f"export AYVEN_VALIDATION_DRY_RUN={'0' if info['cuda'] else '1'}\n"
+        f"export AYVEN_LLM_STUB={'0' if info['cuda'] else '1'}\n"
+        "export AYVEN_ALLOW_ESCALATION=0\n"
+        f"export AYVEN_RESEARCH_MODE={research_mode}\n"
+        "export AYVEN_GPU_USD_PER_HOUR=\"${AYVEN_GPU_USD_PER_HOUR:-2.00}\"\n"
+    )
     (ROOT/"validation"/".last_prepare.json").write_text(json.dumps(info, indent=2)); log("PREFLIGHT")
     for k,v in info.items(): log(f"  {k}: {v}")
     return 0

@@ -3,19 +3,26 @@ from pathlib import Path
 
 import os
 
-DB_PATH = Path(os.environ.get("AYVEN_DB", "/tmp/ayven-campus.db"))
+_state = {"path": None}
 
-_initialized = False
+
+def db_path() -> Path:
+    return Path(os.environ.get("AYVEN_DB", "/tmp/ayven-campus.db"))
+
+
+def reset_connection_state() -> None:
+    """Allow a new AYVEN_DB path to initialise. Does not delete data."""
+    _state["path"] = None
 
 
 def connect() -> sqlite3.Connection:
-    global _initialized
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    path = db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    if not _initialized:
+    if _state["path"] != str(path):
         init_db(conn)
-        _initialized = True
+        _state["path"] = str(path)
     return conn
 
 
@@ -36,6 +43,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
     seed(conn)
     migrate_v04(conn)
+    migrate_v10(conn)
 
 
 SEED_AGENTS = [
@@ -94,4 +102,135 @@ def migrate_v04(conn: sqlite3.Connection) -> None:
         ("research-e3", "Sam Okoye", "Research Employee 03", "research"),
     ]:
         conn.execute("INSERT OR IGNORE INTO agents(id,name,role,department_id,status) VALUES(?,?,?,?, 'idle')", a)
+    conn.commit()
+
+
+def _add_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, typ in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+
+
+def migrate_v10(conn: sqlite3.Connection) -> None:
+    """Intelligence engine tables. Additive only — v0.4 rows are kept."""
+    _add_columns(conn, "work_packages", {
+        "task_class": "TEXT",
+        "plan_id": "TEXT",
+        "selected_model": "TEXT",
+        "selected_skills": "TEXT",
+        "quality_score": "REAL",
+        "supervisor_decision": "TEXT",
+        "manager_decision": "TEXT",
+        "observability_json": "TEXT",
+    })
+    _add_columns(conn, "memories", {
+        "scope": "TEXT",
+        "subject_id": "TEXT",
+        "provenance": "TEXT",
+        "source_url": "TEXT",
+        "expires_at": "TEXT",
+        "superseded_by": "TEXT",
+        "tags": "TEXT",
+    })
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS plans (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            objective TEXT,
+            deliverable TEXT,
+            plan_json TEXT NOT NULL,
+            task_class TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS skills_used (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            skill_name TEXT NOT NULL,
+            version TEXT,
+            reason TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS tool_calls (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            agent_id TEXT,
+            tool TEXT NOT NULL,
+            status TEXT NOT NULL,
+            query TEXT,
+            source_url TEXT,
+            source_title TEXT,
+            retrieved_at TEXT,
+            extracted_content TEXT,
+            error TEXT,
+            metadata TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS claims (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            agent_id TEXT,
+            claim_text TEXT NOT NULL,
+            claim_type TEXT,
+            source_id TEXT,
+            evidence_text TEXT,
+            source_url TEXT,
+            source_type TEXT,
+            retrieved_at TEXT,
+            freshness TEXT,
+            verification_status TEXT,
+            confidence REAL,
+            challenged_by TEXT,
+            challenge_reason TEXT,
+            supersedes TEXT,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS claim_evidence (
+            id TEXT PRIMARY KEY,
+            claim_id TEXT NOT NULL,
+            package_id TEXT NOT NULL,
+            source_url TEXT,
+            source_title TEXT,
+            source_type TEXT,
+            evidence_text TEXT,
+            retrieved_at TEXT,
+            rank TEXT,
+            supports TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS verification_results (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            agent_id TEXT,
+            decision TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS quality_results (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            score_json TEXT NOT NULL,
+            overall REAL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS model_calls (
+            id TEXT PRIMARY KEY,
+            package_id TEXT,
+            role TEXT,
+            model_id TEXT,
+            provider TEXT,
+            task_class TEXT,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            latency_s REAL,
+            est_cost_usd REAL,
+            backend TEXT,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
     conn.commit()
