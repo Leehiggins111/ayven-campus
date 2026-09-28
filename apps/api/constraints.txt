@@ -1,0 +1,7 @@
+# Pins that keep the API and the Frankenstein extra on one resolver.
+# Install with: pip install -r requirements.txt -r requirements-frankenstein.txt -c constraints.txt
+starlette==0.41.3
+sse-starlette==3.0.2
+typing-extensions>=4.12,<5
+pydantic==2.13.5
+llguidance==1.3.0

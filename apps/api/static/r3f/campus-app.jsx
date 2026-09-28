@@ -18,7 +18,7 @@ const CAT = Object.fromEntries(CATALOG.map((d) => [d.id, d]));
 
 let state = {
   departments: CATALOG.map((d) => ({ id: d.id, name: d.name, x: d.x, z: d.z })),
-  agents: [], events: [], tasks: [], approvals: [], projects: [], work_packages: [], sources: [],
+  agents: [], events: [], tasks: [], approvals: [], projects: [], work_packages: [], sources: [], campus_brief: null,
   selectedId: "milo", focus: { kind: "campus" },
   brief: "Find manufacturers who can supply internal doors suitable for joinery work, including custom hinge positions. Compare trade pricing, delivery to Scotland, minimum orders and trade-account requirements.",
 };
@@ -48,6 +48,7 @@ useCampus.hydrate = async () => {
     approvals: s.approvals || [],
     projects: s.projects || [],
     work_packages: s.work_packages || [],
+    campus_brief: s.campus_brief || null,
     sources: s.sources || [],
   });
 };
@@ -143,6 +144,21 @@ function packagePos(pkg, departments) {
   return [command.x, 0.7, command.z + 2.2];
 }
 
+function CampusNow() {
+  const brief = useCampus((s) => s.campus_brief) || {};
+  return (
+    <div className="cmd-block">
+      <div className="muted">What Ayven is doing</div>
+      <div><b>Doing</b> {brief.doing || "Idle"}</div>
+      <div><b>Why</b> {brief.why ? String(brief.why).slice(0, 180) : "—"}</div>
+      <div><b>Stage</b> {brief.stage || "—"} · <b>Skills</b> {brief.skills || "—"}</div>
+      <div><b>Stuck</b> {brief.stuck ? "Yes" : "No"} · <b>Needs you</b> {brief.needs_you ? "Yes" : "No"} · <b>Finished</b> {brief.finished ? "Yes" : "No"}</div>
+      <div><b>Trust</b> {brief.trust || "—"}</div>
+      <div className="muted">Repairs {brief.repairs || 0} · Sources {brief.sources || 0}</div>
+    </div>
+  );
+}
+
 function WorkCrate({ pkg, departments }) {
   const ref = useRef();
   const dest = packagePos(pkg, departments);
@@ -204,6 +220,22 @@ function humanEvent(e) {
   return `${map[e.type] || e.type}${e.summary ? " — " + e.summary : ""}`;
 }
 
+class SceneBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    if (this.state.failed) {
+      return <div className="scene-fallback">3D campus unavailable. The status panel stays live.</div>;
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   const agents = useCampus((s) => s.agents);
   const events = useCampus((s) => s.events);
@@ -229,9 +261,11 @@ function App() {
   const pkg = (work_packages || [])[0];
   return (
     <>
-      <Canvas shadows camera={{ position: [38, 30, 38], fov: 42 }}>
-        <Scene />
-      </Canvas>
+      <SceneBoundary>
+        <Canvas shadows camera={{ position: [38, 30, 38], fov: 42 }}>
+          <Scene />
+        </Canvas>
+      </SceneBoundary>
       <div className="overlay">
         <div className="panel top">
           <div className="brand">AYVEN CAMPUS</div>
@@ -253,6 +287,7 @@ function App() {
               <button className="ghost" onClick={() => fetch(`/approvals/${p.id}/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "rejected" }) }).then(() => useCampus.hydrate())}>Reject</button>
             </div>
           ))}
+          <CampusNow />
           <div className="cmd-block">
             <div className="muted">Command</div>
             <div>Working: {agents.filter((a) => ["working", "researching", "using_tool"].includes(a.status)).length}</div>

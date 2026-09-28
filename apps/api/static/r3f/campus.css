@@ -2,6 +2,7 @@
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .overlay { position: absolute; inset: 0; pointer-events: none; }
+.scene-fallback { position: absolute; inset: 0; display: flex; align-items: flex-end; justify-content: flex-end; padding: 18px; color: #8eaa99; font-size: 12px; }
 .panel { pointer-events: auto; background: rgba(8,18,14,.86); border: 1px solid #1f3d2e; border-radius: 14px; padding: 12px 14px; backdrop-filter: blur(8px); }
 .top { position: absolute; left: 16px; top: 16px; width: 340px; max-height: 48vh; overflow: auto; }
 .right { position: absolute; right: 16px; top: 16px; width: 300px; max-height: 78vh; overflow: auto; }

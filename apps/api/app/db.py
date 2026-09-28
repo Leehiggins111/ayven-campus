@@ -44,6 +44,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     seed(conn)
     migrate_v04(conn)
     migrate_v10(conn)
+    migrate_v20(conn)
 
 
 SEED_AGENTS = [
@@ -233,4 +234,22 @@ def migrate_v10(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    conn.commit()
+
+
+def migrate_v20(conn: sqlite3.Connection) -> None:
+    """v2 ledger, workflow, and memory columns. Additive only."""
+    _add_columns(conn, "work_packages", {"workflow_state": "TEXT"})
+    _add_columns(conn, "claims", {
+        "origin": "TEXT",
+        "contradicting_evidence": "TEXT",
+        "authority": "TEXT",
+        "repair_history": "TEXT",
+        "verification_history": "TEXT",
+    })
+    _add_columns(conn, "memories", {
+        "confidence": "REAL",
+        "last_used": "TEXT",
+        "supersedes": "TEXT",
+    })
     conn.commit()

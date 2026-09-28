@@ -29,7 +29,11 @@ from .skills import select_skills, skill_prompt
 from .toolkit import ToolResult, invoke, now as tool_now
 from .registry import route_for
 from .render import render_focus, render_parent
+from .repair import apply_repairs
 from .research import research
+from .selfcheck import self_check
+from .contracts import evaluate_contract
+from .workflow import log_transition, state_for_manager
 from .store import (
     insert_package,
     save_model_call,
@@ -150,6 +154,8 @@ class Programme:
         self.runtime_notes: list[dict] = []
         self._supervisor_checked: set[str] = set()
         self.employee_session = None
+        self.repairs: list[dict] = []
+        self.self_checks: list[dict] = []
 
     def prepare_all(self) -> str:
         _set_agent(MANAGER, status="working", last_summary="Planning the work package", progress=0.2, current_tool=None)
@@ -158,6 +164,7 @@ class Programme:
             origin="milo", agent_id=MANAGER, tier="MANAGER", model_role="MANAGER", stage="planning", status="planning",
         )
         events.emit("package.created", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="planning", summary="Manager opened parent work package")
+        log_transition(self.parent_id, "IN_PROGRESS", "work package opened")
         events.emit("agent.planning", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="planning", summary=f"Classified as {self.task_class}")
         plan_id = save_plan(self.parent_id, self.plan)
         for skill in self.skills:
@@ -184,6 +191,7 @@ class Programme:
                 model_role="EMPLOYEE", stage="employee", status="drafting",
             )
             events.emit("package.created", project_id=self.project_id, task_id=self.task_id, agent_id=spec["agent_id"], department_id="research", status="assigned", summary=f"Child package for {spec['agent_id']}: {spec['title']}")
+            log_transition(child_id, "IN_PROGRESS", f"assigned {spec['focus']}")
             self._claims_for(child_id, spec)
             report = render_focus(spec["focus"], self._facts())
             critique_payload = critique(self.task_class, report, claim_ledger.list_claims(child_id), self.research, self.quote)
@@ -314,13 +322,35 @@ class Programme:
             self.errors.append(str(meta.get("error")))
         evidence, _deterministic = self._corpus()
         self._supervisor_independent(package_id)
+        checklist = self_check(
+            objective=self.objective,
+            report=child["report"],
+            claims=claim_ledger.list_claims(package_id),
+            research=self.research,
+            quote=self.quote,
+        )
+        self.self_checks.append({"package_id": package_id, **checklist})
+        save_verification(package_id, "employee_self_check", child["agent_id"], "CHECKED", checklist)
+        log_transition(package_id, "UNDER_REVIEW", "employee self-check stored; supervisor has no chain of thought")
         challenges = challenge_material_claims(
             claim_ledger.list_claims(package_id), evidence, self.quote, text,
         )
+        repair = apply_repairs(package_id, challenges)
+        self.repairs.extend(repair["actions"])
+        self.retries += int(repair["attempted"] or 0)
+        if repair["actions"]:
+            log_transition(package_id, "REPAIRING", "rejected material claims repaired locally")
+            child["report"] = render_focus(child["focus"], self._facts())
+            log_transition(package_id, "UNDER_REVIEW", "repaired section returned to the supervisor")
+        settled = {
+            item["claim_id"]
+            for item in repair["actions"]
+            if item.get("claim_id") and item["action"] in ("REMOVE_CLAIM", "REPLACE_SOURCE", "RECALCULATE", "DOWNGRADE_TO_INFERENCE", "RESEARCH_MORE", "UNRESOLVED_GAP")
+        }
         for item in challenges:
-            if item["result"] == "DISPROVED" and item.get("claim_id"):
+            if item["result"] == "DISPROVED" and item.get("claim_id") and item["claim_id"] not in settled:
                 claim_ledger.challenge(item["claim_id"], SUPERVISOR, item["resolution"], "CONTRADICTED")
-        save_verification(package_id, "supervisor_challenge", SUPERVISOR, "CHALLENGED", {"challenges": challenges})
+        save_verification(package_id, "supervisor_challenge", SUPERVISOR, "CHALLENGED", {"challenges": challenges, "repairs": repair})
         conflicts = list(self.research.get("conflicts") or [])
         advisory = advisory_decision(text)
 
@@ -424,6 +454,8 @@ class Programme:
         if grounded["text"]:
             self.grounded[self.parent_id] = grounded["text"]
         self.removed.extend(grounded["removed"])
+        log_transition(self.parent_id, "UNDER_REVIEW", "manager is resolving the package")
+        log_transition(self.parent_id, "READY", "supervisor audits are in")
         advisory = advisory_decision(text)
         all_ids = [self.parent_id, *[child["id"] for child in self.children]]
         all_claims = claim_ledger.list_claims(project_package_ids=all_ids)
@@ -471,6 +503,9 @@ class Programme:
             "skills": [skill.name for skill in self.skills],
             "queries": self.research.get("queries") or [],
             "pages": [item.get("source_url") for item in self.research.get("evidence") or []],
+            "relevant_opened": sum(1 for item in self.research.get("evidence") or [] if (item.get("metadata") or {}).get("relevant")),
+            "filtered_results": self.research.get("filtered") or [],
+            "targets": self.research.get("targets") or [],
             "failures": self.research.get("failures") or [],
             "supervisor_decisions": [{k: audit[k] for k in ("focus", "decision", "advisory")} for audit in self.audits],
             "manager_decision": decision,
@@ -478,6 +513,10 @@ class Programme:
             "completion": completion,
             "unsupported_removed": self.removed,
             "retries": self.retries,
+            "repairs": self.repairs,
+            "self_checks": self.self_checks,
+            "completion_contract": self.plan.get("completion_contract"),
+            "contract_evaluation": evaluate_contract(self.plan.get("completion_contract") or {}, report=findings, research=self.research, claims=all_claims),
             "tokens": self.tokens,
             "runtime": self.runtime_notes,
             "supervisor_tools": self.supervisor_tools,
@@ -490,16 +529,26 @@ class Programme:
             "quality": quality,
         }
         save_observability(self.parent_id, observability)
-        clarification = decision == "CLARIFY"
+        approval_required = decision in ("CLARIFY", "APPROVAL_REQUIRED") or (
+            bool(self.plan.get("human_approval_required")) and decision in ("ESCALATE", "RETURN", "RESEARCH_MORE", "CLARIFY")
+        )
+        final_state = state_for_manager(decision, approval_required=approval_required and decision in ("CLARIFY", "APPROVAL_REQUIRED", "RETURN", "RESEARCH_MORE"))
         if decision == "ESCALATE":
+            log_transition(self.parent_id, "ESCALATED", self.resolution.get("reason") or "escalated")
+            if approval_required:
+                _create_approval(self, "Escalation does not authorise an external action. " + _approval_summary(self.task_class))
+                log_transition(self.parent_id, "AWAITING_APPROVAL", "approval record created during escalation")
             update_package(
                 self.parent_id, findings=findings, stage="escalation_required", status="escalation_required",
                 manager_decision=decision, quality_score=quality["overall"], next_action="Frontier escalation is disabled",
                 selected_model=route_for(self.task_class, "escalation")["model_id"],
+                requires_approval=1 if approval_required else 0,
             )
             events.emit("package.escalation_required", project_id=self.project_id, agent_id=MANAGER, department_id="research", status="escalation_required", summary="Escalation recorded. No frontier API was called.")
-            _set_agent(MANAGER, status="idle", last_summary="Escalation disabled")
+            _set_agent(MANAGER, status="needs_approval" if approval_required else "idle", last_summary="Escalation disabled")
             return
+        log_transition(self.parent_id, final_state, decision)
+        clarification = bool(approval_required)
         update_package(
             self.parent_id, findings=findings, requires_approval=1 if clarification else 0,
             manager_decision=decision, quality_score=quality["overall"], stage="distribution", status="routing",
@@ -598,6 +647,17 @@ def _memory_text(programme: Programme, decision: str) -> str:
     if programme.quote:
         return f"{programme.task_class}: labour {programme.quote['labour_unit']}; VAT not applied; manager {decision}. {gaps}"
     return f"{programme.task_class}: manager {decision}. {gaps}".strip()
+
+
+def _create_approval(programme: Programme, summary: str) -> None:
+    conn = connect()
+    conn.execute(
+        "INSERT INTO approvals(id,task_id,project_id,agent_id,summary,status,created_at) VALUES(?,?,?,?,?,?,?)",
+        (str(uuid.uuid4()), programme.task_id or programme.parent_id, programme.project_id, MANAGER, summary, "pending", _now()),
+    )
+    conn.commit()
+    conn.close()
+    events.emit("approval.requested", project_id=programme.project_id, task_id=programme.task_id, agent_id=MANAGER, department_id="command", status="pending", summary=summary)
 
 
 def _approval_summary(task_class: str) -> str:

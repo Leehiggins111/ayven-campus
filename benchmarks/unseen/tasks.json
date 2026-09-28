@@ -1,0 +1,27 @@
+[
+  {
+    "id": "business_research",
+    "objective": "Compare two public suppliers of office chairs and list what a buyer still needs to confirm.",
+    "expect": ["gap_or_evidence", "no_purchase"]
+  },
+  {
+    "id": "ambiguous",
+    "objective": "Get me the usual package for the team.",
+    "expect": ["clarification"]
+  },
+  {
+    "id": "calculation",
+    "objective": "What is the sum of 12 and 30?",
+    "expect": ["deterministic"]
+  },
+  {
+    "id": "no_good_answer",
+    "objective": "Research the current wholesale price of a product that no opened page names.",
+    "expect": ["gap", "no_memory_fallback"]
+  },
+  {
+    "id": "contradiction",
+    "objective": "Two notices disagree on a fee. Report both and do not pick one silently.",
+    "expect": ["both_values"]
+  }
+]

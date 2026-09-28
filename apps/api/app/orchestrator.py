@@ -79,9 +79,18 @@ def resolve_approval(approval_id: str, decision: str) -> None:
     if row["task_id"]:
         conn.execute("UPDATE tasks SET approval_status=?, status=? WHERE id=?", (decision, "complete" if decision == "approved" else "rejected", row["task_id"]))
         conn.execute("UPDATE work_packages SET status=?, stage=?, destination=? WHERE task_id=?", ("complete" if decision == "approved" else "rejected", "results" if decision == "approved" else "exception", "command" if decision == "approved" else "exception", row["task_id"]))
+    waiting = conn.execute(
+        "SELECT id FROM work_packages WHERE workflow_state='AWAITING_APPROVAL' AND (task_id=? OR project_id=?)",
+        (row["task_id"], row["project_id"]),
+    ).fetchall()
     conn.commit()
     agent_id = row["agent_id"]
     conn.close()
+    from .intelligence.workflow import log_transition
+
+    landed = "APPROVED" if decision == "approved" else "FAILED"
+    for pkg in waiting:
+        log_transition(pkg["id"], landed, f"approval {decision}; no external action was taken")
     _set_agent(agent_id, status="idle", last_summary=f"Approval {decision}", progress=1, current_task_id=None)
     events.emit("approval.resolved", project_id=row["project_id"], task_id=row["task_id"], agent_id=agent_id, department_id="command", status=decision, summary=f"Lee {decision} the enquiry draft — nothing was sent automatically")
 

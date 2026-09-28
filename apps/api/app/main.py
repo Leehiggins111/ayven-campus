@@ -81,7 +81,47 @@ def state():
         "work_packages": _rows("SELECT * FROM work_packages ORDER BY updated_at DESC LIMIT 20"),
         "sources": _rows("SELECT * FROM sources ORDER BY created_at DESC LIMIT 40"),
         "intelligence": _intelligence_state(),
+        "campus_brief": _campus_brief(),
     }
+
+
+def _campus_brief() -> dict:
+    rows = _rows(
+        "SELECT id, title, stage, status, workflow_state, agent_id, manager_decision, supervisor_decision, "
+        "substr(findings,1,400) AS findings, selected_skills, task_class, observability_json "
+        "FROM work_packages WHERE parent_id IS NULL ORDER BY updated_at DESC LIMIT 1"
+    )
+    if not rows:
+        return {"doing": "Idle", "why": "No work package is open.", "stuck": False, "needs_you": False, "finished": False, "trust": "nothing in progress"}
+    row = rows[0]
+    try:
+        obs = json.loads(row.get("observability_json") or "{}")
+    except json.JSONDecodeError:
+        obs = {}
+    from .intelligence.observability import summarise
+
+    brief = summarise(obs)
+    decision = row.get("manager_decision") or row.get("stage") or "in progress"
+    brief.update({
+        "doing": decision,
+        "package_id": row["id"],
+        "stage": row.get("workflow_state") or row.get("stage"),
+        "status": row.get("status"),
+        "employee": row.get("agent_id"),
+        "skills": row.get("selected_skills") or "",
+        "task_class": row.get("task_class") or "",
+        "manager": row.get("manager_decision") or "",
+        "output": row.get("findings") or "",
+        "trust": "Evidence and the ledger" if not obs.get("errors") else "Degraded — see the gap list",
+        "needs_you": brief["needs_you"] or row.get("status") == "needs_approval" or row.get("workflow_state") in ("AWAITING_APPROVAL", "AWAITING_CLARIFICATION"),
+    })
+    if row.get("workflow_state") in ("APPROVED", "COMPLETED", "ACTIONING"):
+        brief["needs_you"] = False
+    if brief["needs_you"] or row.get("workflow_state") in ("AWAITING_APPROVAL", "AWAITING_CLARIFICATION", "REPAIRING", "IN_PROGRESS", "UNDER_REVIEW"):
+        brief["finished"] = False
+    if row.get("workflow_state") == "COMPLETED":
+        brief["finished"] = True
+    return brief
 
 
 def _intelligence_state() -> dict:

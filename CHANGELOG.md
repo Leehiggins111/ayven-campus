@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.0 — 2026-09-28
+
+Workable control plane. Models propose. The runtime executes only typed fields.
+
+- Reasoning is split off before tool parsing. llguidance's JSON-schema grammar rejects a reasoning prefix. `think` and `think.mp3` cannot become a query or a fetched URL.
+- Research records entity targets, authority class, and rerank scores. Noise hits are not opened. Model-originated hits under the relevance threshold are not fetched.
+- Rejected material claims enter a capped repair loop. Manager escalation on work that needs a person writes an approval and lands in `AWAITING_APPROVAL`.
+- Claim rows carry origin, authority, and repair history. Employee self-check and a completion contract are stored.
+- Local traces, a result-export gate, and a GPU banner run before any download. `STOP POD` is printed only after a durable export is verified.
+- Real Qwen quality is still unverified. `AYVEN_ALLOW_ESCALATION` stays 0.
+
 ## 1.1.1 — 2026-09-25
 
 Repair after the v1.1.0 review. The frozen exams are unchanged.

@@ -12,6 +12,7 @@ import os
 import re
 from typing import Any, Callable
 
+from .boundary import extract_executable, validate_tool_call
 from .permissions import authorize
 from .think import strip_think
 
@@ -69,15 +70,14 @@ def _version() -> str:
 
 
 def parse_tool_lines(text: str) -> tuple[list[dict], str]:
-    calls: list[dict] = []
-    prose: list[str] = []
-    for line in (text or "").splitlines():
-        match = TOOL_LINE.match(line.strip())
-        if not match:
-            prose.append(line)
-            continue
-        calls.append({"name": match.group(1), "arguments": match.group(2)})
-    return calls, strip_think("\n".join(prose).strip())
+    """Tool calls are taken from the executable channel only. Reasoning never matches."""
+    calls, prose = extract_executable(text or "")
+    accepted = []
+    for call in calls:
+        gate = validate_tool_call(call)
+        if gate.ok:
+            accepted.append({"name": gate.call.get("name") or call["name"], "arguments": gate.call.get("arguments") or call["arguments"]})
+    return accepted, strip_think(prose)
 
 
 def strip_tool_lines(text: str) -> str:
@@ -115,6 +115,11 @@ def run_tool_loop(
             args = self._verify_json_format_args(params)
             tool_name = str(args.get("tool") or "")
             payload = str(args.get("payload") or "")
+            gate = validate_tool_call({"name": "ayven_tool", "arguments": json.dumps({"tool": tool_name, "payload": payload})})
+            if not gate.ok:
+                invoked.append({"tool": tool_name, "status": "rejected", "error": gate.error})
+                return f"rejected: {gate.error}"
+            payload = str(gate.call.get("payload") or payload)
             try:
                 authorize(agent_id, tool_name, approved=approved)
             except Exception as exc:

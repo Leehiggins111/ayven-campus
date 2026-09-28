@@ -78,7 +78,42 @@ MATRIX = (
         "decision": "REJECTED",
         "reason": "It would replace the employee/supervisor/manager loop. The loop is the product boundary, not a missing library.",
     },
+    {
+        "project": "guidance-ai/llguidance",
+        "licence": "MIT",
+        "capability": "JSON-schema constrained decoding",
+        "decision": "INTEGRATED",
+        "reason": "Tool arguments are accepted only when the schema grammar allows them. A reasoning prefix cannot be the first token.",
+    },
+    {
+        "project": "pydantic/pydantic-ai",
+        "licence": "MIT",
+        "capability": "typed agent runtime",
+        "decision": "ADAPTED",
+        "reason": "Pydantic schemas are the tool boundary. Pydantic AI is not the application runtime, so Ayven keeps packages, approvals, and the ledger.",
+    },
+    {
+        "project": "unclecode/crawl4ai",
+        "licence": "Apache-2.0",
+        "capability": "markdown extraction and crawling",
+        "decision": "OPTIONAL",
+        "reason": "The ladder calls it only when it is installed and HTTP text is missing. It is not a required dependency.",
+    },
 )
+
+
+def run_coding(agent_id: str, source: str, approved: bool = False) -> dict:
+    """The one coding specialist: Ayven's sandbox, behind the same permission gate."""
+    from .code_sandbox import run_code
+
+    result = run_code(agent_id, source, approved=approved)
+    return {
+        "engine": "ayven-code-sandbox",
+        "skill": "software-engineering",
+        "status": result.status,
+        "evidence": result.as_dict(),
+        "supervisor_sees": "stdout, stderr, exit code",
+    }
 
 
 def matrix() -> list[dict]:

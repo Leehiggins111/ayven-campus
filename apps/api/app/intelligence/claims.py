@@ -57,6 +57,9 @@ def add_claim(
     source_title: str = "",
     status: str | None = None,
     supersedes: str | None = None,
+    origin: str = "evidence",
+    authority: str = "",
+    contradicting_evidence: str = "",
 ) -> dict:
     text = strip_think(claim_text)
     evidence = strip_think(evidence_text)
@@ -93,18 +96,25 @@ def add_claim(
         "status": status,
         "created_at": ts,
         "updated_at": ts,
+        "origin": origin,
+        "contradicting_evidence": contradicting_evidence,
+        "authority": authority or source_type,
+        "repair_history": "[]",
+        "verification_history": "[]",
     }
     conn = connect()
     conn.execute(
         """INSERT INTO claims(
             id,package_id,agent_id,claim_text,claim_type,source_id,evidence_text,source_url,
             source_type,retrieved_at,freshness,verification_status,confidence,challenged_by,
-            challenge_reason,supersedes,status,created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            challenge_reason,supersedes,status,created_at,updated_at,origin,contradicting_evidence,
+            authority,repair_history,verification_history
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [row[k] for k in (
             "id", "package_id", "agent_id", "claim_text", "claim_type", "source_id", "evidence_text",
             "source_url", "source_type", "retrieved_at", "freshness", "verification_status", "confidence",
             "challenged_by", "challenge_reason", "supersedes", "status", "created_at", "updated_at",
+            "origin", "contradicting_evidence", "authority", "repair_history", "verification_history",
         )],
     )
     if evidence or source_url:

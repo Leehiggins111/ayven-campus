@@ -14,6 +14,7 @@ echo "============================================================"
 echo "Ayven one-command validation"
 echo "This script does NOT rent a GPU and does NOT call a paid API."
 echo "If you are on RunPod, this time is BILLABLE."
+echo "STOP POD is printed only after a durable export is VERIFIED."
 if [[ "$PREFLIGHT_ONLY" -eq 1 ]]; then
   echo "Preflight only. No model download and no exam run."
 fi
@@ -104,7 +105,8 @@ PY
   fi
 fi
 
-export PYTHONPATH="$ROOT/apps/api:${PYTHONPATH:-}"
+export PYTHONPATH="$ROOT:$ROOT/apps/api:${PYTHONPATH:-}"
+python3 "$ROOT/validation/banner.py" || echo "Preflight banner reported a problem. The capability check below still decides whether to continue."
 if command -v nvidia-smi >/dev/null 2>&1 || [[ -e /dev/nvidia0 ]]; then
   export AYVEN_PREFLIGHT_GPU=1
 else
@@ -155,13 +157,18 @@ status=$?
 set -e
 if [ ! -f "$ROOT/validation/.report_ready" ]; then
   echo "No finalized report was written. No STOP POD instruction is printed."
+  echo "DO NOT STOP POD — RESULTS NOT EXPORTED"
   exit "$status"
 fi
 echo
 echo "============================================================"
 echo "VALIDATION FINISHED"
-echo "The archive path, the copy command, and the full report were printed above."
-echo "STOP THE RUNPOD POD NOW if this was a paid GPU."
-echo "Do not leave billed GPU time idle."
+echo "The archive path and the full report were printed above."
+if [ -f "$ROOT/validation/.export_status" ] && grep -q '"verified": true' "$ROOT/validation/.export_status"; then
+  echo "STOP POD"
+else
+  echo "RESULTS NOT EXPORTED — DO NOT STOP POD"
+  echo "DO NOT STOP POD — RESULTS NOT EXPORTED"
+fi
 echo "============================================================"
 exit "$status"

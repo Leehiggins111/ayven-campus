@@ -380,10 +380,35 @@ def run(rate=None):
         report.rstrip(),
         "========================================",
     ])
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from validation.export_results import banner as export_banner
+    from validation.export_results import verify_export
+
+    export = verify_export(run_dir)
+    (run_dir / "export-status.json").write_text(json.dumps(export, indent=2))
+    (ROOT / "validation" / ".export_status").write_text(json.dumps(export))
     print(banner)
+    print(f"EXPORT {export.get('status')} {export.get('location') or export.get('reason') or ''}")
+    print(export_banner(bool(export.get("verified"))))
     ready = ROOT / "validation" / ".report_ready"
     ready.write_text(str(archive))
     return run_dir
+
+
+def _repair_rate(cards: dict):
+    rejected = sum(card.get("claims_rejected") or 0 for card in cards.values())
+    repaired = sum(card.get("claims_repaired") or 0 for card in cards.values())
+    if not rejected:
+        return "n/a"
+    return round(repaired / rejected, 3)
+
+
+def _precision(cards: dict):
+    values = [card.get("research_precision") for card in cards.values() if card.get("research_precision") is not None]
+    if not values:
+        return "n/a"
+    return round(sum(values) / len(values), 3)
 
 
 def _card(kind: str, assertions: list, programme) -> dict:
@@ -412,6 +437,11 @@ def _card(kind: str, assertions: list, programme) -> dict:
     completion = obs.get("completion") or {}
     resolution = obs.get("resolution") or {}
     removed = obs.get("unsupported_removed") or []
+    repairs = obs.get("repairs") or []
+    repaired = len([item for item in repairs if item.get("action") not in ("UNRESOLVED_GAP", "")])
+    unresolved = len([item for item in repairs if item.get("action") == "UNRESOLVED_GAP"])
+    opened = int(sources or 0)
+    relevant = int(obs.get("relevant_opened") or 0)
     text = parent["findings"] or ""
     bad_assertions = failed(assertions)
     grounding = "FAIL" if "UNSUPPORTED FACT:" in text or "<think" in text.lower() else "PASS"
@@ -444,6 +474,11 @@ def _card(kind: str, assertions: list, programme) -> dict:
         "claims_rejected": rejected,
         "retries": int(obs.get("retries") or 0),
         "tokens": int(obs.get("tokens") or 0),
+        "claims_repaired": repaired,
+        "claims_unresolved": unresolved,
+        "repair_rate": round(repaired / rejected, 3) if rejected else None,
+        "research_precision": round(relevant / opened, 3) if opened else None,
+        "manager_decision": resolution.get("decision") or "",
     }
 
 
@@ -501,6 +536,11 @@ def _scorecard(verdict, cards, totals, elapsed, hourly, est, dry, assertions_ok,
             f"- Manager effectiveness: {card['manager_effectiveness']}",
             f"- Manager decision: {card.get('manager_decision_source', 'unreported')}",
             f"- Unsupported claims: {card['unsupported_claims']}",
+            f"- Claims repaired: {card.get('claims_repaired', 0)}",
+            f"- Claims unresolved: {card.get('claims_unresolved', 0)}",
+            f"- Repair rate: {card.get('repair_rate')}",
+            f"- Research precision: {card.get('research_precision')}",
+            f"- Manager outcome: {card.get('manager_decision')}",
             f"- Final verdict: {card['final_verdict']}",
             "",
         ]
@@ -513,6 +553,8 @@ def _scorecard(verdict, cards, totals, elapsed, hourly, est, dry, assertions_ok,
         f"- Claims challenged: {totals['claims_challenged']}",
         f"- Claims rejected: {totals['claims_rejected']}",
         f"- Retries: {totals['retries']}",
+        f"- Repair rate: { _repair_rate(cards) }",
+        f"- Research precision: { _precision(cards) }",
         f"- Latency seconds: {round(elapsed, 2)}",
         f"- Tokens: {totals['tokens'] if totals['tokens'] else 'unavailable'}",
         f"- Estimated GPU USD at ${hourly:.2f}/hour: {est}",

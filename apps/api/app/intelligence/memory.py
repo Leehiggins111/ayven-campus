@@ -25,11 +25,14 @@ def remember(
     tags: str = "",
     expires_at: str | None = None,
     supersedes: str | None = None,
+    confidence: float = 0.7,
 ) -> str:
     if scope not in SCOPES:
         raise ValueError(f"unknown memory scope {scope}")
-    text = strip_think(content)
-    if not text:
+    from .boundary import reject_reasoning_query, separate_channels
+
+    text = separate_channels(strip_think(content)).executable
+    if not text or reject_reasoning_query(text):
         return ""
     mem_id = str(uuid.uuid4())
     conn = connect()
@@ -41,6 +44,13 @@ def remember(
         ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (mem_id, scope, text[:2000], now(), scope, subject_id, provenance[:300], source_url, expires_at, "", tags[:200]),
     )
+    try:
+        conn.execute(
+            "UPDATE memories SET confidence=?, last_used=?, supersedes=? WHERE id=?",
+            (confidence, now(), supersedes or "", mem_id),
+        )
+    except Exception:
+        pass
     conn.commit()
     conn.close()
     return mem_id
@@ -50,7 +60,7 @@ def _tokens(text: str) -> set[str]:
     return {part for part in "".join(ch.lower() if ch.isalnum() else " " for ch in text).split() if len(part) > 2}
 
 
-def retrieve(query: str, *, scopes: tuple[str, ...] | list[str] | None = None, subject_id: str | None = None, limit: int = 4) -> list[dict]:
+def retrieve(query: str, *, scopes: tuple[str, ...] | list[str] | None = None, subject_id: str | None = None, limit: int = 4, threshold: int = 1) -> list[dict]:
     """Rank memories by token overlap. Score 0, expired, and superseded rows stay out."""
     wanted = _tokens(query)
     if not wanted:
@@ -73,9 +83,10 @@ def retrieve(query: str, *, scopes: tuple[str, ...] | list[str] | None = None, s
         if row.get("expires_at") and row["expires_at"] <= ts:
             continue
         overlap = wanted & _tokens(row.get("content") or "")
-        if not overlap:
+        if len(overlap) < threshold:
             continue
         row["score"] = len(overlap)
+        row["last_used"] = ts
         ranked.append(row)
     ranked.sort(key=lambda item: (-item["score"], item.get("created_at") or ""), reverse=False)
     return ranked[:limit]

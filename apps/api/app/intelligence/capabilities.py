@@ -55,7 +55,10 @@ def health() -> list[dict]:
     browser_ok = browser_mod and bool(chrome_path())
     browser_detail = chrome_path() or "chrome missing"
 
-    mcp_ok = importlib.util.find_spec("mcp.client.stdio") is not None
+    try:
+        mcp_ok = importlib.util.find_spec("mcp.client.stdio") is not None
+    except ModuleNotFoundError:
+        mcp_ok = False
     mcp_detail = "mcp.client.stdio" if mcp_ok else "not installed"
     if mcp_ok and os.environ.get("AYVEN_MCP_SERVERS"):
         from .mcp_boundary import discover
@@ -150,5 +153,10 @@ def frankenstein_status() -> dict:
     level = isolation_level()
     report["isolation"] = level
     report["code_sandbox"] = "ACTIVE" if level in ("unshare-user-net-pid", "bubblewrap-unshare-net") else "REPORTED"
+    from .boundary import llguidance_status
+
+    guide = llguidance_status()
+    report["typed_boundary"] = "ACTIVE"
+    report["llguidance"] = "ACTIVE" if guide.get("installed") else "INACTIVE"
     report["all_core_active"] = all(report.get(name) == "ACTIVE" for name in GATING_CAPABILITIES)
     return report
