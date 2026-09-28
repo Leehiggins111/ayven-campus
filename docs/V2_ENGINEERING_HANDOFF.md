@@ -4,7 +4,9 @@ This is the state of the tree after the local control-plane build. It is not a c
 
 ## FINAL SHA
 
-The SHA is the commit that contains this file. Read it from `git rev-parse HEAD` on the branch that was pushed. Do not trust a SHA typed here before that commit exists.
+Forensics content: `f27686ae3b657af8871fe694a664273361ba0d94`.
+
+The branch tip on `cursor/ayven-v2-workable-a9eb` is the commit that contains this line. Read it with `git rev-parse HEAD` after push. The pull request body names that tip.
 
 ## VERSION
 
