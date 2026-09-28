@@ -22,51 +22,49 @@ New control pieces that run on the production path (`execution.run_objective`, w
 
 ## GPU FAILURE ROOT CAUSES
 
-The run archive is not in the repo. See `docs/V2_GPU_FAILURE_ANALYSIS.md`.
+Read `docs/V2_REAL_GPU_FORENSICS.md`. It is the archive `ayven-validation-20260928T102746Z`. `docs/V2_GPU_FAILURE_ANALYSIS.md` now points there and no longer says the artifacts were missing.
 
-The 1.1.1 mechanisms that match the reported symptoms:
-
-1. Tool lines were parsed before reasoning was removed, so `<think>` text could become a query or URL (`think`, `think.mp3`).
-2. A regex strip after generation was the only defence.
-3. Research opened hits without an entity plan or a noise filter.
-4. `ESCALATE` returned before the approval insert.
-5. Vending could be safe and still PARTIAL because usefulness is not the same as refusal.
-6. `CONTRADICTED` claims did not increment retries. Only a supervisor `RETURN` did.
-
-The 24 claim rows themselves were not available. They were not reconstructed.
+Headline: verdict FAIL. 131 claims created and challenged. Scorecard rejected **24** = 18 `CONTRADICTED` + 6 `unsupported_removed`. Supervisor payloads were 116 STOOD and 15 DISPROVED. Status counts were 89 SUPPORTED, 22 UNVERIFIED, 18 CONTRADICTED, 2 PARTIALLY_SUPPORTED. Retries 0. Approvals 0. Three searches ran the query `<think>`. Planning paragraphs were also searched. `Door: £82` was stripped even though the brief states it. Four unopened club URLs were stripped and not repaired. Vending stayed PARTIAL.
 
 ## COMPONENT MATRIX
 
-| Piece | State | What executes |
-| --- | --- | --- |
-| Typed boundary | ACTIVE | Every tool call |
-| llguidance | ACTIVE when installed (it is in requirements) | Grammar mask and `response_format` on the local OpenAI path |
-| Qwen-Agent | ACTIVE when imported | Employee tool loop, after the gate |
-| Pydantic runtime | ACTIVE | `AYVEN_AGENT_RUNTIME=pydantic` runs pydantic-ai 2.51.0 FunctionModel through the tool gate |
-| Research v2 | ACTIVE | Targets, filter, authority, rerank |
-| Crawl4AI | ACTIVE in this environment (0.7.4) | Markdown extraction on fetched or local HTML |
-| Browser Use | ACTIVE when Chrome and the package exist | JavaScript / interaction only |
-| Claim ledger v2 | ACTIVE | Extra columns on `claims` |
-| Repair loop | ACTIVE | Capped, local |
-| Self-check | ACTIVE | Stored before the supervisor |
-| Supervisor | ACTIVE | Checks plus repair |
-| Manager | ACTIVE | Safety veto remains |
-| Approval state machine | ACTIVE | `workflow_state` plus approval rows |
-| Memory | ACTIVE | SQLite |
-| Mem0 | REJECTED | — |
-| Model gateway | ACTIVE | `gateway.py` |
-| LiteLLM | REJECTED | — |
-| DSPy | OPTIONAL | Offline candidate only |
-| MCP | ACTIVE when the SDK and servers are configured | Registry, not every employee |
-| Code sandbox | ACTIVE only with unshare or bubblewrap, allow flag, and approval | Otherwise reported and idle |
-| Documents | ACTIVE | PDF (pypdf), DOCX, XLSX, CSV, HTML, with page or sheet provenance |
-| Coding specialist | ACTIVE contract, sandbox engine | One specialist |
-| Observability | ACTIVE | Package JSON and optional trace file |
-| Langfuse | OPTIONAL | Not installed |
-| Security fences | ACTIVE | Tests |
-| llm-guard | OPTIONAL | Not installed |
-| Garak | OPTIONAL | Script only |
-| Result export | ACTIVE gate | VERIFIED only with a configured remote |
+Each piece is exactly one of: ACTIVE AND EXECUTED, ACTIVE BUT NOT MODEL-VALIDATED, OPTIONAL, DEFERRED, FAILED, REJECTED.
+
+| Piece | Class |
+| --- | --- |
+| Typed boundary | ACTIVE AND EXECUTED |
+| llguidance post-check | ACTIVE AND EXECUTED |
+| Qwen-Agent live weights | ACTIVE BUT NOT MODEL-VALIDATED |
+| Pydantic AI runtime (FunctionModel through the gate) | ACTIVE AND EXECUTED |
+| Research filter, rank, entity repair | ACTIVE AND EXECUTED |
+| Crawl4AI markdown on fetched or local HTML | ACTIVE AND EXECUTED |
+| Browser Use local HTTP read | ACTIVE AND EXECUTED |
+| Claim ledger | ACTIVE AND EXECUTED |
+| Repair loop | ACTIVE AND EXECUTED |
+| Employee self-check | ACTIVE AND EXECUTED |
+| Supervisor checks | ACTIVE AND EXECUTED |
+| Manager safety veto | ACTIVE AND EXECUTED |
+| Approval state machine | ACTIVE AND EXECUTED |
+| Semantic memory (fastembed, lexical fallback) | ACTIVE AND EXECUTED |
+| Mem0 | REJECTED |
+| Local model gateway | ACTIVE AND EXECUTED |
+| LiteLLM as Ayven's gateway | REJECTED |
+| DSPy | OPTIONAL |
+| MCP registry | ACTIVE AND EXECUTED |
+| Code sandbox (unshare or bubblewrap) | ACTIVE AND EXECUTED |
+| Documents PDF, DOCX, XLSX | ACTIVE AND EXECUTED |
+| Coding specialist beyond the sandbox | REJECTED |
+| Observability traces | ACTIVE AND EXECUTED |
+| Langfuse | OPTIONAL |
+| Security fences and injection page | ACTIVE AND EXECUTED |
+| llm-guard | OPTIONAL |
+| Garak | OPTIONAL |
+| Git result export (local bare repo read-back) | ACTIVE AND EXECUTED |
+| Graphiti | DEFERRED |
+| Firecrawl, PyMuPDF | REJECTED |
+| Daytona, OpenHands, Aider, SWE-agent, mini-SWE, Letta, Rebuff | REJECTED |
+| Live llama.cpp grammar mask during sampling | ACTIVE BUT NOT MODEL-VALIDATED |
+| Qwen exam quality | ACTIVE BUT NOT MODEL-VALIDATED |
 
 ## OSS INTEGRATED
 
@@ -74,7 +72,7 @@ llguidance 1.3.0, Pydantic 2.13.5, Qwen-Agent 0.0.34 (when installed), Browser U
 
 ## OSS ADAPTED
 
-Pydantic AI’s ideas, without the framework. Bubblewrap when `unshare` is absent. The research ladder’s shape, without Crawl4AI installed.
+Pydantic AI 2.51.0 runs as an optional runtime through Ayven's gate. Crawl4AI 0.7.4's markdown generator runs on HTML. Bubblewrap is the sandbox when `unshare` is absent.
 
 ## OSS REJECTED
 
@@ -90,7 +88,7 @@ ACTIVE in this environment (1.3.0). `first_token_is_schema` allows byte 123 (`{`
 
 ## PYDANTIC AI DECISION
 
-INTEGRATED as an optional runtime. pydantic-ai-slim 2.51.0 is installed. `PydanticRuntime.employee_turn` runs a `FunctionModel` and a `TestModel`, then `validate_tool_call`. A reasoning-wrapped tool line is rejected. Ayven still owns packages, approvals, and the ledger.
+ACTIVE AND EXECUTED as an optional runtime, not the default employee. pydantic-ai-slim 2.51.0 is installed. `PydanticRuntime.employee_turn` runs a `FunctionModel` and a `TestModel`, then `validate_tool_call`. A reasoning-wrapped tool line is rejected. Ayven still owns packages, approvals, and the ledger.
 
 ## QWEN-AGENT STATUS
 
@@ -206,11 +204,11 @@ The served Campus (`apps/api/static/r3f/campus-app.jsx`) shows doing, why, stage
 
 ## TEST COUNT
 
-80 passed, 0 failed. Command: `PYTHONPATH=. python3 -m pytest tests -q` from `apps/api` (with the repo root on `PYTHONPATH` so the export test can import `validation`). No GPU and no paid API.
+85 passed, 0 failed. Command: `PYTHONPATH=. python3 -m pytest tests -q` from `apps/api` (with the repo root on `PYTHONPATH` so the export test can import `validation`). No GPU and no paid API.
 
 ## TEST RESULTS
 
-Local pytest was run with `AYVEN_LLM_STUB=1`, `AYVEN_ALLOW_ESCALATION=0`, and fixture research. Result: **80 passed**. Frozen exam files were not edited. `scripts/check_dependency_lock.py` printed `CORE RESOLVES`.
+Local pytest was run with `AYVEN_LLM_STUB=1`, `AYVEN_ALLOW_ESCALATION=0`, and fixture research. Result: **85 passed**. Frozen exam files were not edited. `scripts/check_dependency_lock.py` was already green on the pin check. The archive replay tests are in `tests/test_gpu_forensics.py`.
 
 ## UNSEEN EVAL RESULTS
 
@@ -236,7 +234,7 @@ Label: **SYSTEM VERIFIED** for the local tests. **MODEL INTELLIGENCE UNVERIFIED*
 
 ## FRANKENSTEIN READINESS
 
-PARTIAL. The runtime hooks are in place and local integration tests pass. A GPU run has not been executed for 2.0.0, so this is not READY.
+This build is not READY. Local tests executed the control plane. Qwen exam quality is ACTIVE BUT NOT MODEL-VALIDATED. A GPU run has not been executed for 2.0.0.
 
 ## EXACT GPU COMMAND
 

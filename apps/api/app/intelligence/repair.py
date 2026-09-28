@@ -118,7 +118,7 @@ def apply_repairs(
 def _execute(package_id, row, kind, *, objective, agent_id, section, search_fn, fetch_fn) -> dict:
     claim_id = row.get("claim_id") or ""
     claim = _claim(package_id, claim_id)
-    claim_text = (claim or {}).get("claim_text") or ""
+    claim_text = (claim or {}).get("claim_text") or (row.get("evidence") or "")
     detail = (row.get("resolution") or kind)[:300]
     evidence: list[dict] = []
     status = "UNVERIFIED"
@@ -175,27 +175,33 @@ def _execute(package_id, row, kind, *, objective, agent_id, section, search_fn, 
         else:
             found = _research(package_id, agent_id, objective or question, question, search_fn, fetch_fn)
             evidence = found.get("evidence") or []
-            support = _supporting(claim_text, evidence)
-            if support and claim_id:
+            support = _supporting(row.get("follow_up") or claim_text, evidence)
+            if support:
                 passage = (support.get("extracted_content") or "")[:500]
                 meta = support.get("metadata") or {}
-                update_claim(
-                    claim_id,
-                    evidence_text=passage,
-                    source_url=support.get("source_url") or "",
-                    source_type=meta.get("source_rank") or "UNKNOWN",
-                    freshness=meta.get("freshness") or "UNKNOWN",
-                    status="SUPPORTED",
-                    confidence=0.7,
-                    authority=meta.get("authority_class") or meta.get("source_rank") or "",
-                    origin="repair",
-                    verification_status="CHECKED",
-                )
-                recheck_row = _recheck(package_id, claim_id, passage)
-                recheck = recheck_row.get("result") or ""
+                replacement = passage if row.get("follow_up") else claim_text
+                if claim_id:
+                    update_claim(
+                        claim_id,
+                        claim_text=replacement[:500],
+                        evidence_text=passage,
+                        source_url=support.get("source_url") or "",
+                        source_type=meta.get("source_rank") or "UNKNOWN",
+                        freshness=meta.get("freshness") or "UNKNOWN",
+                        status="SUPPORTED",
+                        confidence=0.7,
+                        authority=meta.get("authority_class") or meta.get("source_rank") or "",
+                        origin="repair",
+                        verification_status="CHECKED",
+                    )
+                    recheck_row = _recheck(package_id, claim_id, passage)
+                    recheck = recheck_row.get("result") or ""
+                else:
+                    recheck = "STOOD"
                 if recheck == "DISPROVED":
-                    challenge(claim_id, "repair", "Supervisor recheck still disproved the repaired claim.", "UNVERIFIED")
-                    mark_verified(claim_id, "UNVERIFIED")
+                    if claim_id:
+                        challenge(claim_id, "repair", "Supervisor recheck still disproved the repaired claim.", "UNVERIFIED")
+                        mark_verified(claim_id, "UNVERIFIED")
                     status = "UNVERIFIED"
                     resolved = False
                     kind = "UNRESOLVED_GAP"
@@ -205,7 +211,8 @@ def _execute(package_id, row, kind, *, objective, agent_id, section, search_fn, 
                     resolved = True
                     detail = question
                     section = rewrite_section(section, claim_text, passage)
-                _note(claim_id, "RESEARCH_MORE" if kind != "UNRESOLVED_GAP" else "UNRESOLVED_GAP", detail)
+                if claim_id:
+                    _note(claim_id, "RESEARCH_MORE" if kind != "UNRESOLVED_GAP" else "UNRESOLVED_GAP", detail)
             else:
                 if claim_id:
                     challenge(claim_id, "repair", f"{kind}: no supporting page for {question}", "UNVERIFIED")
@@ -348,6 +355,11 @@ def _claim(package_id: str, claim_id: str) -> dict | None:
 
 
 def _targeted_question(row: dict) -> str:
+    follow = (row.get("follow_up") or "").strip()
+    if follow:
+        if reject_reasoning_query(follow):
+            return ""
+        return follow[:160]
     evidence = (row.get("evidence") or "").strip()
     resolution = (row.get("resolution") or "").strip()
     text = resolution or evidence

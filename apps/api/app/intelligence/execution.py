@@ -148,6 +148,7 @@ class Programme:
         self.retries = 0
         self.grounded: dict[str, str] = {}
         self.removed: list[str] = []
+        self.removed_by: dict[str, list[str]] = {}
         self.resolution: dict = {}
         self.supervisor_tools: list[dict] = []
         self.memory_rows: list[dict] = []
@@ -302,11 +303,12 @@ class Programme:
             f"{item.get('source_url') or ''} {item.get('extracted_content') or ''}"
             for item in self.research.get("evidence") or []
         )
-        deterministic = ""
+        deterministic = self.objective or ""
         if self.quote:
             door = self.quote["scenarios"]["labour_per_door"]["total_ex_vat"]
             job = self.quote["scenarios"]["labour_per_job"]["total_ex_vat"]
-            deterministic = f"{door} {job} {self.quote['per_door_ex_delivery']} {self.quote['labour_unit']} {self.quote['vat']}"
+            prices = " ".join(str(value) for value in (self.quote.get("prices") or {}).values())
+            deterministic = f"{door} {job} {self.quote['per_door_ex_delivery']} {self.quote['labour_unit']} {self.quote['vat']} {prices} {self.objective}"
         return evidence, deterministic
 
     def _bind_employee(self, package_id: str, text: str, meta: dict) -> None:
@@ -319,6 +321,7 @@ class Programme:
         grounded = ground_text(text, evidence, deterministic)
         self.grounded[package_id] = grounded["text"]
         self.removed.extend(grounded["removed"])
+        self.removed_by.setdefault(package_id, []).extend(grounded["removed"])
         update_package(package_id, selected_model=meta.get("model") or route_for(self.task_class, "draft")["model_id"])
         _set_agent(child["agent_id"], status="idle", last_summary="Ledger draft submitted", progress=0.7, current_tool=None)
 
@@ -341,8 +344,22 @@ class Programme:
         save_verification(package_id, "employee_self_check", child["agent_id"], "CHECKED", checklist)
         log_transition(package_id, "UNDER_REVIEW", "employee self-check stored; supervisor has no chain of thought")
         challenges = challenge_material_claims(
-            claim_ledger.list_claims(package_id), evidence, self.quote, text,
+            claim_ledger.list_claims(package_id), evidence, self.quote, text, objective=self.objective,
         )
+        from .audit import _entity_follow_up
+
+        follow = _entity_follow_up(self.objective)
+        for sentence in self.removed_by.get(package_id, []):
+            if not follow:
+                continue
+            challenges.append({
+                "claim_id": "",
+                "challenge": "replace the unsupported published sentence",
+                "result": "DISPROVED",
+                "evidence": sentence[:400],
+                "resolution": "Published specifics were absent from the opened pages.",
+                "follow_up": follow,
+            })
         self.material_challenges.extend(challenges)
         repair = apply_repairs(
             package_id,

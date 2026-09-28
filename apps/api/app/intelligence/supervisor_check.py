@@ -60,6 +60,14 @@ def independent_verify(
             checks.append(_row(claim, "budget_exhausted", "", ""))
             continue
         query = query_from_claim(claim.get("claim_text") or "")
+        from .boundary import is_noise_hit, reject_reasoning_query
+
+        if reject_reasoning_query(query) or is_noise_hit(url=claim.get("source_url") or "", title=query):
+            checks.append(_row(claim, "skipped_noise", "[rejected-reasoning]", "reasoning query was not searched"))
+            continue
+        if (claim.get("claim_text") or "").count("<") >= 2:
+            checks.append(_row(claim, "skipped_markup", "", "markup was not searched"))
+            continue
         hit = None
         if searches < max_searches:
             searches += 1

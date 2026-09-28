@@ -186,7 +186,11 @@ def claims_from_evidence(package_id: str, agent_id: str, evidence: list[dict]) -
     created = []
     for item in evidence:
         passage = (item.get("extracted_content") or "").strip()
-        if not passage:
+        if not passage or passage.count("<") >= 2:
+            continue
+        from .boundary import is_noise_hit
+
+        if is_noise_hit(item.get("source_url") or "", item.get("source_title") or "", passage[:240]):
             continue
         meta = item.get("metadata") or {}
         freshness = meta.get("freshness") or "UNKNOWN"

@@ -83,12 +83,11 @@ def rank_source(url: str, text: str = "", query: str = "", title: str = "") -> s
         return "PRIMARY_OFFICIAL"
     tokens = [tok for tok in re.findall(r"[a-z0-9]{4,}", (query or "").lower()) if tok not in _QUERY_STOP]
     label = _registrable_label(host)
-    if any(tok in label for tok in tokens):
+    if any(len(tok) >= 4 and tok in label for tok in tokens):
         return "PRIMARY_OFFICIAL"
     blob = f"{title}\n{text}".lower()
-    if any(stem in blob for stem in SELF_ID_STEMS):
-        return "PRIMARY_OFFICIAL"
-    if any(len(tok) >= 5 and tok in blob for tok in tokens):
+    # "official" on its own is not authority. The site's own name has to appear with that wording.
+    if label and len(label) >= 3 and label in blob and any(stem in blob for stem in SELF_ID_STEMS):
         return "PRIMARY_OFFICIAL"
     return "OTHER_SECONDARY"
 
@@ -137,6 +136,10 @@ def _normalise_queries(raw) -> list[str]:
         text = line.strip().lstrip("-*0123456789.) ").strip()
         if not text or text.lower().startswith(("query", "objective", "skill")):
             continue
+        from .boundary import reject_reasoning_query
+
+        if reject_reasoning_query(text):
+            continue
         if text not in cleaned:
             cleaned.append(text[:180])
     return cleaned[:8]
@@ -158,12 +161,11 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
 
             raw = _PLANNER(objective, guidance)
             planned = queries_from_plan_text(raw if isinstance(raw, str) else "\n".join(str(item) for item in raw))
-            if not planned:
-                planned = _normalise_queries(raw)
             if planned:
                 return planned, "model"
+            return generic_from_objective(objective), "objective-fallback"
         except Exception:
-            pass
+            return generic_from_objective(objective), "objective-fallback"
     if not stub:
         from .. import models as model_mod
         from ..models import complete_role, local_base
@@ -177,7 +179,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                 f"Objective:\n{(objective or '')[:1200]}\n\nSkill guidance:\n{guidance}"
             )
             try:
-                from .boundary import queries_from_plan_text, separate_channels
+                from .boundary import queries_from_plan_text
                 from .schemas import ResearchPlan
 
                 text, _tokens, _meta = complete_role(
@@ -187,7 +189,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                     max_tokens=180,
                     schema=ResearchPlan,
                 )
-                planned = queries_from_plan_text(text) or _normalise_queries(separate_channels(text).executable)
+                planned = queries_from_plan_text(text)
                 if planned:
                     return planned, "model"
             except Exception:
@@ -435,8 +437,8 @@ def research(
                 continue
             noise = reject_reasoning_query(query)
             if noise:
-                failures.append({"query": query, "stage": "query", "error": noise})
-                filtered.append({"query": query, "reason": noise})
+                failures.append({"query": "[rejected-reasoning]", "stage": "query", "error": noise})
+                filtered.append({"query": "[rejected-reasoning]", "reason": noise})
                 continue
             if job["kind"] == "search":
                 if query in searched:
@@ -557,6 +559,27 @@ def _injection(text: str) -> list[str]:
     return injection_signals(text)
 
 
+def _plain_text(text: str) -> str:
+    """Drop tags, stylesheets, and reasoning-media URLs before a page becomes a claim."""
+    from .boundary import is_noise_hit
+
+    raw = text or ""
+    raw = re.sub(r"(?is)<(script|style|noscript)\b[^>]*>.*?</\1>", " ", raw)
+    raw = re.sub(r"(?is)<[^>]+>", " ", raw)
+
+    def _keep(match: re.Match) -> str:
+        url = match.group(0).rstrip(".,")
+        if is_noise_hit(url) or url.lower().split("?")[0].endswith(_MEDIA_NOISE):
+            return " "
+        return url
+
+    raw = re.sub(r"https?://[^\s)>\"]+", _keep, raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+_MEDIA_NOISE = (".mp3", ".wav", ".ogg", ".css", ".js", ".woff", ".woff2", ".svg", ".mp4")
+
+
 def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=None, browser_left=None) -> bool:
     url = hit.get("url") or ""
     if url in seen:
@@ -587,17 +610,19 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 error=str(page.get("error"))[:300], timestamp=now(),
                 metadata={"mode": mode, "attempts": attempts, "round": depth},
             )
-        text = page.get("text") or ""
-        looks_html = "<" in text and ">" in text
-        if looks_html or (mode == "live" and len(text) < 40 and not page.get("error")):
+        raw_text = page.get("text") or ""
+        text = raw_text
+        looks_html = "<" in raw_text and ">" in raw_text
+        if looks_html or (mode == "live" and len(raw_text) < 40 and not page.get("error")):
             from .crawl_adapter import extract as crawl_extract
 
-            crawled = crawl_extract(page.get("url") or u, text)
+            crawled = crawl_extract(page.get("url") or u, raw_text)
             if crawled.get("ok") and crawled.get("text"):
                 text = crawled["text"]
                 page = dict(page)
                 page["text"] = text
                 page["via_crawl"] = crawled.get("engine") or True
+        text = _plain_text(text)
         if _js_wall(text):
             from .fallbacks import on_http_result
 

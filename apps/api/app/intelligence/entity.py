@@ -8,6 +8,7 @@ _STOP = {
     "about", "after", "also", "before", "check", "draft", "find", "from", "have", "into",
     "looking", "only", "page", "pages", "public", "that", "their", "this", "with", "your",
     "what", "when", "where", "which", "would", "could", "should", "please", "research",
+    "legitimate", "facts", "official", "enquiry", "approval", "customer",
 }
 
 _PUBLIC = ("government", "council", "ministry", "regulator", "hospital", "university", "nhs", "municipal")

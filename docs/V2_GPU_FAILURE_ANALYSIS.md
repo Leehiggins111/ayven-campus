@@ -4,9 +4,11 @@ Version under analysis: 1.1.1, commit `ab5869ade7c8a99905591131f447ba1c063b640c`
 
 ## Artifacts
 
-The preserved GPU run is **not in this repository or on this workspace**. Searches of `validation/`, `docs/`, `benchmarks/`, `/tmp`, and the home directory found no scorecard, metrics file, claim dump, model-output folder, or tool log from that run.
+Superseded by `docs/V2_REAL_GPU_FORENSICS.md`.
 
-The figures below are the ones supplied with the v2 brief, not rows read from an archive:
+The preserved run is archive `ayven-validation-20260928T102746Z` (real L40, real Employee/Supervisor/Manager, no stubs). The scorecard totals match the brief: 21 model calls, 90 tool calls, 56 sources, 131 claims created and challenged, 24 rejected, 0 retries, 631.26s, 5147 tokens, about $0.35. The 24 is `CONTRADICTED` (18) plus `unsupported_removed` (6). It is not the count of DISPROVED challenges (15) and not the count of non-SUPPORTED claims (42). Per-claim reconstruction, including which rejections were wrong, is in the forensics document. Do not treat the “artifacts were absent” wording from earlier drafts as current.
+
+The figures below are the scorecard, now confirmed from `metrics.json`:
 
 | Exam | Completion | Grounding | Calc | Supervisor | Manager | Unsupported claims | Verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -14,20 +16,9 @@ The figures below are the ones supplied with the v2 brief, not rows read from an
 | Football | PASS | PASS | PASS | PASS | PASS | 11 | FAIL |
 | Vending | PARTIAL | PASS | PASS | PASS | PASS | 5 | FAIL |
 
-Totals supplied with the brief: 21 model calls, 90 tool calls, 56 sources opened, 131 claims created/challenged, 24 rejected, 0 retries, 631.26s, 5147 tokens, all roles REAL, about $0.35 inference. OVERALL FAIL.
+Totals confirmed from the archive: 21 model calls, 90 tool calls, 56 sources opened, 131 claims created/challenged, 24 rejected, 0 retries, 631.26s, 5147 tokens, all roles REAL, about $0.35 inference. OVERALL FAIL.
 
-A per-claim table (task, employee, claim text, originating model output, evidence, rejection reason) **cannot be written without inventing it**. The 24 rejected claims are not on disk.
-
-### Files needed to finish the per-claim map
-
-From the pod, before it is destroyed:
-
-- `validation/runs/<stamp>/metrics.json`
-- `validation/runs/<stamp>/final-report.md`
-- `validation/runs/<stamp>/benchmarks/*.md` and `*.json`
-- `validation/runs/<stamp>/employee/*.md`, `supervisor/*.md`, `manager/*.md`
-- `validation/runs/<stamp>/ayven.db` (tables `claims`, `claim_evidence`, `tool_calls`, `model_calls`, `verification_results`, `approvals`, `work_packages`)
-- `validation/runs/<stamp>/EXPORT.txt` if it existed
+The per-claim table is in `docs/V2_REAL_GPU_FORENSICS.md`. It was read from `ayven.db`, the role markdown, and the benchmark cards. It is not inferred from the code alone.
 
 ## What the 1.1.1 code actually did
 
@@ -63,7 +54,7 @@ Completion is scored separately from safety. A briefing that refuses to invent d
 
 ## Correct rejections vs engine bugs
 
-Unsupported specifics (a figure, URL, or organisation that no opened page states) **should** be rejected. The engine bug is what happened next: no repair, no retry, and often an escalation that dropped the approval row. Do not treat all 24 as model hallucinations until the claim rows are in the archive. Tool-routing junk (`think`, `think.mp3`) is a control bug even when the page exists.
+Unsupported specifics (a URL or organisation that no opened page states) should be rejected. The archive shows that was correct for the four invented club URLs and the invented vending link, and incorrect for `Door: £82` (it is in the brief) and for the 15 dictionary failure rows (a 403 is a gap, not a contradicted fact). The engine bug after a real rejection was no repair, no retry, and an escalation that wrote no approval. Tool-routing junk (`think`, `think.mp3`) is a control bug even when the page exists. The row-by-row verdict is in `docs/V2_REAL_GPU_FORENSICS.md`.
 
 ## Root-cause classes used above
 
@@ -78,8 +69,8 @@ Unsupported specifics (a figure, URL, or organisation that no opened page states
 | SUPERVISOR | Independent checks did not schedule a repair. |
 | MANAGER | `ESCALATE` outranked `CLARIFY` and skipped the approval insert. |
 | STATE MACHINE | No `AWAITING_APPROVAL` transition was required for that path. |
-| OTHER | The run archive lived on ephemeral pod disk, so the first detailed run could not be re-read. |
+| OTHER | Covered where a row does not fit the classes above. The archive has now been read; see the forensics document. |
 
 ## v2 response in this tree
 
-The typed boundary, grammar mask, noise filter, repair loop, and approval insert are in the engine. They are covered by local tests. They have **not** been confirmed against the missing 24 rows or a new GPU run.
+The typed boundary, grammar mask, noise filter, repair loop, and approval insert are in the engine. The traceability table in `docs/V2_REAL_GPU_FORENSICS.md` maps each archive failure to a test that passed locally. They have not been confirmed on a new GPU run.

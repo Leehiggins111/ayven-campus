@@ -29,7 +29,13 @@ from .schemas import (
 from .think import contains_think
 
 _NOISE_EXACT = {"think", "thinking", "reasoning", "redacted_thinking", "thought", "thoughts", "cot"}
-_MEDIA = (".mp3", ".wav", ".ogg", ".m4a", ".flac", ".mp4", ".webm")
+_MEDIA = (".mp3", ".wav", ".ogg", ".m4a", ".flac", ".mp4", ".webm", ".css", ".js", ".woff", ".woff2", ".svg")
+_NARRATION = (
+    "let's tackle", "lets tackle", "the user wants", "the user need", "step by step",
+    "i'll search", "i will search", "i need to", "the search query", "the search term",
+    "first, the objective", "okay, let's", "okay, lets", "let me ",
+)
+_QUOTED = re.compile(r"[\"“]([^\"“”]{4,120})[\"”]")
 _OPENERS = (
     ("<think", "</think>"),
     ("<|think|>", "<|/think|>"),
@@ -111,21 +117,47 @@ def reject_reasoning_query(query: str | None) -> str:
         return "reasoning_token"
     if any(lowered.endswith(ext) for ext in _MEDIA) and not any(tok not in _NOISE_EXACT and tok not in {ext[1:] for ext in _MEDIA} for tok in tokens):
         return "media_noise"
+    if _planning_prose(lowered):
+        return "planning_prose"
     return ""
+
+
+def _planning_prose(lowered: str) -> bool:
+    """A chain-of-thought paragraph is not a search query."""
+    if any(phrase in lowered for phrase in _NARRATION):
+        return True
+    sentences = [part for part in re.split(r"[.!?]+", lowered) if part.strip()]
+    first_person = any(phrase in lowered for phrase in ("i'll", "i will", "the user", "let me", "i need", "i should", "the query would", "the search term", "the search query"))
+    if len(sentences) >= 2 and first_person:
+        return True
+    if len(lowered) > 160 and first_person:
+        return True
+    return False
+
+
+def quoted_queries(text: str) -> list[str]:
+    """Keep a short quoted search buried in planning prose. The prose itself is not a query."""
+    found = []
+    for match in _QUOTED.findall(text or ""):
+        item = match.strip()
+        if item and not reject_reasoning_query(item) and item not in found:
+            found.append(item)
+    return found
 
 
 def is_noise_hit(url: str = "", title: str = "", snippet: str = "") -> bool:
     blob = f"{url}\n{title}\n{snippet}".lower()
-    if reject_reasoning_query(url) or reject_reasoning_query(title):
+    if (url and reject_reasoning_query(url)) or (title and reject_reasoning_query(title)):
         return True
     if "think.mp3" in blob or "<think" in blob:
         return True
     path = urlparse(url or "").path.lower()
     if path.endswith(_MEDIA):
         return True
-    name = path.rstrip("/").rsplit("/", 1)[-1]
-    if name in _NOISE_EXACT:
-        return True
+    for part in [piece for piece in path.split("/") if piece]:
+        stem = re.split(r"[._(\-]", part, maxsplit=1)[0]
+        if stem in _NOISE_EXACT or part in _NOISE_EXACT:
+            return True
     return False
 
 
@@ -376,11 +408,15 @@ def queries_from_plan_text(text: str) -> list[str]:
         for line in separate_channels(text).executable.splitlines():
             item = line.strip().lstrip("-*0123456789.) ").strip()
             if item:
-                found.append(item[:180])
+                found.append(item)
     kept = []
     for query in found:
         if reject_reasoning_query(query):
+            for salvaged in quoted_queries(query):
+                if salvaged not in kept:
+                    kept.append(salvaged[:180])
             continue
-        if query not in kept:
-            kept.append(query)
+        short = query[:180]
+        if short not in kept:
+            kept.append(short)
     return kept[:8]
