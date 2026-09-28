@@ -56,6 +56,12 @@ def _now() -> str:
 
 
 def _set_agent(agent_id: str, **fields) -> None:
+    from .campus_view import set_visual
+
+    visual = fields.pop("visual_state", "")
+    if visual:
+        set_visual(agent_id, visual, **fields)
+        return
     conn = connect()
     sets = ", ".join(f"{k}=?" for k in fields)
     conn.execute(f"UPDATE agents SET {sets} WHERE id=?", [*fields.values(), agent_id])
@@ -160,6 +166,9 @@ class Programme:
         self.material_challenges: list[dict] = []
         self.document: dict | None = None
         self.calculation: dict | None = None
+        self.paused = ""
+        self.resume_id = ""
+        self.clarification_answer = ""
         from .observability import new_trace_id
 
         self.trace_id = new_trace_id()
@@ -174,14 +183,38 @@ class Programme:
             reset_trace(token)
 
     def _prepare_all(self) -> str:
-        _set_agent(MANAGER, status="working", last_summary="Planning the work package", progress=0.2, current_tool=None)
-        self.parent_id = insert_package(
-            project_id=self.project_id, task_id=self.task_id, title="Research programme", objective=self.objective,
-            origin="milo", agent_id=MANAGER, tier="MANAGER", model_role="MANAGER", stage="planning", status="planning",
-        )
-        events.emit("package.created", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="planning", summary="Manager opened parent work package")
-        log_transition(self.parent_id, "IN_PROGRESS", "work package opened")
-        events.emit("agent.planning", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="planning", summary=f"Classified as {self.task_class}")
+        from .campus_view import mark_stage
+        from .clarification import blocking_question
+
+        _set_agent(MANAGER, visual_state="PLANNING", status="working", last_summary="Planning the work package", progress=0.2, current_tool=None)
+        if self.resume_id:
+            self.parent_id = self.resume_id
+            mark_stage(self.parent_id, "PLANNING", project_id=self.project_id, task_id=self.task_id or "")
+        else:
+            self.parent_id = insert_package(
+                project_id=self.project_id, task_id=self.task_id, title="Research programme", objective=self.objective,
+                origin="milo", agent_id=MANAGER, tier="MANAGER", model_role="MANAGER", stage="planning", status="planning",
+            )
+            events.emit("package.created", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="planning", summary="Manager opened parent work package")
+            log_transition(self.parent_id, "IN_PROGRESS", "work package opened")
+            mark_stage(self.parent_id, "REQUEST", project_id=self.project_id, task_id=self.task_id or "")
+            mark_stage(self.parent_id, "PLANNING", project_id=self.project_id, task_id=self.task_id or "")
+        events.emit("agent.planning", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="PLANNING", summary=f"Classified as {self.task_class}")
+        question = blocking_question(self.objective) if not self.clarification_answer else ""
+        if question:
+            self.paused = "clarification"
+            update_package(
+                self.parent_id,
+                clarification_question=question,
+                status="needs_clarification",
+                next_action="Lee must answer before this package continues",
+                campus_stage="CLARIFICATION",
+            )
+            log_transition(self.parent_id, "AWAITING_CLARIFICATION", question)
+            _set_agent(MANAGER, visual_state="WAITING", status="waiting", last_summary=question, progress=0.3)
+            _set_agent("milo", visual_state="WAITING", status="waiting", last_summary=question, progress=0.3)
+            events.emit("package.needs_clarification", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="AWAITING_CLARIFICATION", summary=question)
+            return self.parent_id
         plan_id = save_plan(self.parent_id, self.plan)
         for skill in self.skills:
             save_skill(self.parent_id, skill.name, skill.version, f"selected for {self.task_class}")
@@ -198,7 +231,9 @@ class Programme:
         if "research" in self.plan["stages"]:
             from .recovery import run_bounded
 
-            _set_agent("research-e3", status="researching", current_tool="web_search", last_summary="Collecting evidence", progress=0.35)
+            mark_stage(self.parent_id, "RESEARCH", project_id=self.project_id, task_id=self.task_id or "")
+            _set_agent("research-e3", visual_state="RESEARCHING", status="researching", current_tool="web_search", last_summary="Collecting evidence", progress=0.35)
+            _set_agent("research-e3", visual_state="USING_TOOL", status="using_tool", current_tool="web_search", last_summary="Opening sources", progress=0.4)
             researched, err = run_bounded(
                 "research",
                 lambda: research(self.task_class, self.objective, self.parent_id, "research-e3", project_id=self.project_id, skills=self.skills),
@@ -238,10 +273,13 @@ class Programme:
                 )
             for item in self.research.get("evidence") or []:
                 save_source(self.parent_id, item.get("source_url") or "", item.get("source_title") or "", item.get("extracted_content") or "", "opened_page")
+            mark_stage(self.parent_id, "EVIDENCE", project_id=self.project_id, task_id=self.task_id or "")
         self.plan["unknowns"] = list(self.research.get("gaps") or [])
         if self.quote:
             self.plan["unknowns"].extend(self.quote["missing_fields"][:6])
+        mark_stage(self.parent_id, "EMPLOYEE", project_id=self.project_id, task_id=self.task_id or "")
         for spec in self.plan["children"]:
+            _set_agent(spec["agent_id"], visual_state="WRITING", status="working", last_summary=f"Drafting {spec['focus']}", progress=0.55)
             child_id = insert_package(
                 project_id=self.project_id, task_id=self.task_id, title=spec["title"], objective=self.objective,
                 origin="manager", agent_id=spec["agent_id"], parent_id=self.parent_id, tier="EMPLOYEE",
@@ -262,7 +300,8 @@ class Programme:
             save_verification(child_id, "verifier", spec["agent_id"], "PASS" if verification["pass_rate"] == 1 else "REVISE", verification)
             update_package(child_id, findings=report, stage="supervisor", status="review", task_class=self.task_class, attempt_count=1, selected_skills=",".join(s.name for s in self.skills))
             self.children.append({**spec, "id": child_id, "report": report, "critique": critique_payload, "verification": verification})
-        _set_agent("research-e3", status="idle", current_tool=None, last_summary="Evidence stored", progress=0.5)
+        mark_stage(self.parent_id, "DRAFT", project_id=self.project_id, task_id=self.task_id or "")
+        _set_agent("research-e3", visual_state="IDLE", status="idle", current_tool=None, last_summary="Evidence stored", progress=0.5)
         return self.parent_id
 
     def _facts(self) -> dict:
@@ -396,9 +435,13 @@ class Programme:
         self.removed.extend(grounded["removed"])
         self.removed_by.setdefault(package_id, []).extend(grounded["removed"])
         update_package(package_id, selected_model=meta.get("model") or route_for(self.task_class, "draft")["model_id"])
-        _set_agent(child["agent_id"], status="idle", last_summary="Ledger draft submitted", progress=0.7, current_tool=None)
+        _set_agent(child["agent_id"], visual_state="COMPLETED", status="idle", last_summary="Ledger draft submitted", progress=0.7, current_tool=None)
 
     def _bind_supervisor(self, package_id: str, text: str, meta: dict) -> None:
+        from .campus_view import mark_stage
+
+        mark_stage(self.parent_id, "SUPERVISOR", project_id=self.project_id, task_id=self.task_id or "")
+        _set_agent(SUPERVISOR, visual_state="REVIEWING", status="working", last_summary="Reviewing the draft", progress=0.75)
         child = next(item for item in self.children if item["id"] == package_id)
         save_model_call(package_id, "SUPERVISOR", self.task_class, meta, text)
         self.tokens += int(meta.get("completion_tokens") or 0)
@@ -442,10 +485,18 @@ class Programme:
             section=child["report"],
         )
         self.repairs.extend(repair["actions"])
+        challenge_by_claim = {item.get("claim_id"): item for item in challenges if item.get("claim_id")}
+        for action in repair["actions"]:
+            source = challenge_by_claim.get(action.get("claim_id")) or {}
+            action["problem"] = (source.get("resolution") or source.get("challenge") or action.get("detail") or "")[:300]
         self.retries += int(repair["attempted"] or 0)
         if repair.get("evidence"):
             self.research.setdefault("evidence", []).extend(repair["evidence"])
         if repair["actions"]:
+            from .campus_view import mark_stage
+
+            mark_stage(self.parent_id, "REPAIR", project_id=self.project_id, task_id=self.task_id or "")
+            _set_agent(SUPERVISOR, visual_state="REPAIRING", status="working", last_summary=f"Repairing {len(repair['actions'])} supervisor findings", progress=0.78)
             log_transition(package_id, "REPAIRING", "rejected material claims repaired locally")
             child["report"] = repair.get("section") or render_focus(child["focus"], self._facts())
             save_verification(package_id, "supervisor_recheck", SUPERVISOR, "RECHECKED", {"repairs": repair["actions"]})
@@ -506,7 +557,7 @@ class Programme:
             status=decision.lower(), summary=f"Supervisor {decision} on {child['focus']}",
         )
         self.audits.append(audit)
-        _set_agent(SUPERVISOR, status="working", last_summary=f"{decision} {child['focus']}", progress=0.8)
+        _set_agent(SUPERVISOR, visual_state="REVIEWING", status="working", last_summary=f"{decision} {child['focus']}", progress=0.8)
 
     def _supervisor_independent(self, package_id: str) -> None:
         """Calculator for a quote, then a bounded search the supervisor writes from the claim."""
@@ -553,6 +604,10 @@ class Programme:
                 claim_ledger.challenge(row["claim_id"], SUPERVISOR, "Independent page contradicted the claim.", "CONTRADICTED")
 
     def _bind_manager(self, text: str, meta: dict) -> None:
+        from .campus_view import mark_stage
+
+        mark_stage(self.parent_id, "MANAGER", project_id=self.project_id, task_id=self.task_id or "")
+        _set_agent(MANAGER, visual_state="REVIEWING", status="working", last_summary="Manager is deciding", progress=0.9)
         save_model_call(self.parent_id, "MANAGER", self.task_class, meta, text)
         self.tokens += int(meta.get("completion_tokens") or 0)
         if meta.get("error"):
@@ -673,7 +728,13 @@ class Programme:
                 requires_approval=1 if approval_required else 0,
             )
             events.emit("package.escalation_required", project_id=self.project_id, agent_id=MANAGER, department_id="research", status="escalation_required", summary="Escalation recorded. No frontier API was called.")
-            _set_agent(MANAGER, status="needs_approval" if approval_required else "idle", last_summary="Escalation disabled")
+            if approval_required:
+                from .campus_view import mark_stage
+
+                mark_stage(self.parent_id, "APPROVAL", project_id=self.project_id, task_id=self.task_id or "")
+                _set_agent(MANAGER, visual_state="NEEDS_APPROVAL", status="needs_approval", last_summary="Escalation needs Lee", progress=1)
+            else:
+                _set_agent(MANAGER, visual_state="WAITING", status="idle", last_summary="Escalation disabled", progress=1)
             return
         log_transition(self.parent_id, final_state, decision)
         clarification = bool(approval_required)
@@ -684,17 +745,21 @@ class Programme:
             selected_model=route_for(self.task_class, "manager")["model_id"],
         )
         if clarification:
-            conn = connect()
-            conn.execute(
-                "INSERT INTO approvals(id,task_id,project_id,agent_id,summary,status,created_at) VALUES(?,?,?,?,?,?,?)",
-                (str(uuid.uuid4()), self.task_id or self.parent_id, self.project_id, MANAGER, _approval_summary(self.task_class), "pending", _now()),
-            )
-            conn.commit()
-            conn.close()
-            events.emit("approval.requested", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="command", status="pending", summary=_approval_summary(self.task_class))
+            _create_approval(self, _approval_summary(self.task_class), _approval_context(self, decision))
         route(self.parent_id)
-        _set_agent(MANAGER, status="needs_approval" if clarification else "idle", last_summary=decision, progress=1)
-        _set_agent(SUPERVISOR, status="idle", last_summary="Audit complete", progress=1)
+        from .campus_view import mark_stage
+
+        if clarification:
+            mark_stage(self.parent_id, "APPROVAL", project_id=self.project_id, task_id=self.task_id or "")
+            _set_agent(MANAGER, visual_state="NEEDS_APPROVAL", status="needs_approval", last_summary=decision, progress=1)
+        elif final_state == "COMPLETED":
+            mark_stage(self.parent_id, "COMPLETE", project_id=self.project_id, task_id=self.task_id or "")
+            _set_agent(MANAGER, visual_state="COMPLETED", status="idle", last_summary=decision, progress=1)
+            _set_agent("milo", visual_state="COMPLETED", status="idle", last_summary="Package complete", progress=1)
+        else:
+            mark_stage(self.parent_id, "MANAGER", project_id=self.project_id, task_id=self.task_id or "")
+            _set_agent(MANAGER, visual_state="IDLE", status="idle", last_summary=decision, progress=1)
+        _set_agent(SUPERVISOR, visual_state="COMPLETED", status="idle", last_summary="Audit complete", progress=1)
 
 
 def _calculation_from_objective(objective: str) -> dict | None:
@@ -773,11 +838,107 @@ def run_objective(project_id: str, objective: str, task_id: str | None = None) -
             return existing
     programme = Programme(project_id, objective, task_id)
     programme.prepare_all()
+    if programme.paused:
+        return programme.parent_id
+    _finish_roles(programme)
+    return programme.parent_id
+
+
+def _finish_roles(programme: Programme) -> None:
     for role in ("EMPLOYEE", "SUPERVISOR", "MANAGER"):
         for prompt in programme.prompts(role):
             text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=320 if role != "MANAGER" else 480, programme=programme, package_id=prompt["id"])
             programme.bind(role, prompt["id"], text, meta)
-    return programme.parent_id
+
+
+def answer_clarification(package_id: str, answer: str) -> str:
+    """Store Lee's answer and continue the same parent package."""
+    from .store import package
+    from .think import strip_think
+
+    row = package(package_id)
+    if not row:
+        raise KeyError("package not found")
+    if (row.get("workflow_state") or "") != "AWAITING_CLARIFICATION":
+        raise ValueError("package is not waiting for clarification")
+    cleaned = strip_think(answer or "").strip()
+    if not cleaned:
+        raise ValueError("answer is empty")
+    update_package(package_id, clarification_answer=cleaned)
+    log_transition(package_id, "IN_PROGRESS", "Lee answered; the same package continues")
+    programme = Programme(row["project_id"], row.get("objective") or "", row.get("task_id"))
+    programme.resume_id = package_id
+    programme.parent_id = package_id
+    programme.clarification_answer = cleaned
+    programme.objective = (row.get("objective") or "").rstrip() + "\nLee answered: " + cleaned
+    programme.task_class = classify(programme.objective)
+    programme.skills = select_skills(programme.task_class, programme.objective)
+    programme.plan = build_plan(programme.objective, programme.task_class, [skill.name for skill in programme.skills])
+    programme.quote = quote_internal_doors(programme.objective) if programme.task_class == "internal_door_quote" else None
+    programme.prepare_all()
+    if programme.paused:
+        return package_id
+    _finish_roles(programme)
+    return package_id
+
+
+def resume_approved_package(package_id: str) -> str:
+    """After the approval row is recorded, the same package completes. Nothing is sent."""
+    from .campus_view import mark_stage
+    from .store import package
+
+    row = package(package_id) or {}
+    if (row.get("workflow_state") or "") != "APPROVED":
+        return row.get("workflow_state") or ""
+    log_transition(package_id, "ACTIONING", "Lee approved; the same package continues. Nothing is sent.")
+    log_transition(package_id, "COMPLETED", "Approved package completed. Nothing was sent.")
+    update_package(
+        package_id,
+        stage="results",
+        status="complete",
+        destination="command",
+        next_action="Complete",
+    )
+    mark_stage(package_id, "COMPLETE", project_id=row.get("project_id") or "", task_id=row.get("task_id") or "")
+    _set_agent(MANAGER, visual_state="COMPLETED", status="idle", last_summary="Approved work is complete. Nothing was sent.", progress=1)
+    _set_agent("milo", visual_state="COMPLETED", status="idle", last_summary="Package complete after approval", progress=1)
+    events.emit(
+        "package.completed",
+        project_id=row.get("project_id"),
+        task_id=row.get("task_id"),
+        agent_id=MANAGER,
+        department_id="research",
+        status="COMPLETED",
+        summary="Approved work package completed. Nothing was sent.",
+    )
+    if row.get("project_id"):
+        conn = connect()
+        conn.execute(
+            "UPDATE projects SET status=?, result=? WHERE id=?",
+            ("complete", row.get("findings") or "Approved. Nothing was sent.", row["project_id"]),
+        )
+        conn.commit()
+        conn.close()
+    return "COMPLETED"
+
+
+def resume_packages_for_approval(approval_id: str) -> list[str]:
+    conn = connect()
+    approval = conn.execute("SELECT * FROM approvals WHERE id=?", (approval_id,)).fetchone()
+    if not approval:
+        conn.close()
+        return []
+    rows = conn.execute(
+        "SELECT id FROM work_packages WHERE workflow_state='APPROVED' AND parent_id IS NULL AND (task_id=? OR project_id=?)",
+        (approval["task_id"], approval["project_id"]),
+    ).fetchall()
+    conn.close()
+    landed = []
+    for row in rows:
+        state = resume_approved_package(row["id"])
+        if state:
+            landed.append(state)
+    return landed
 
 
 def _employee_system(programme: Programme) -> str:
@@ -850,11 +1011,40 @@ def _memory_text(programme: Programme, decision: str) -> str:
     return f"{programme.task_class}: manager {decision}. {gaps}".strip()
 
 
-def _create_approval(programme: Programme, summary: str) -> None:
+def _approval_context(programme: Programme, decision: str) -> dict:
+    from .think import strip_think
+
+    evidence = []
+    for item in (programme.research.get("evidence") or [])[:3]:
+        evidence.append({
+            "source": (item.get("source_url") or item.get("source_title") or "opened page")[:180],
+            "note": (item.get("source_title") or "")[:160],
+        })
+    reason = strip_think((programme.resolution.get("reason") or programme.resolution.get("rationale") or "") )
+    return {
+        "what": _approval_summary(programme.task_class),
+        "why": (reason or "A person must approve the next external action.")[:400],
+        "if_approved": "The same work package continues to completion. Nothing is sent externally.",
+        "if_rejected": "The work package ends rejected. Nothing is sent.",
+        "evidence": evidence,
+        "decision": decision,
+    }
+
+
+def _create_approval(programme: Programme, summary: str, context: dict | None = None) -> None:
     conn = connect()
     conn.execute(
-        "INSERT INTO approvals(id,task_id,project_id,agent_id,summary,status,created_at) VALUES(?,?,?,?,?,?,?)",
-        (str(uuid.uuid4()), programme.task_id or programme.parent_id, programme.project_id, MANAGER, summary, "pending", _now()),
+        "INSERT INTO approvals(id,task_id,project_id,agent_id,summary,status,created_at,context_json) VALUES(?,?,?,?,?,?,?,?)",
+        (
+            str(uuid.uuid4()),
+            programme.task_id or programme.parent_id,
+            programme.project_id,
+            MANAGER,
+            summary,
+            "pending",
+            _now(),
+            json.dumps(context or _approval_context(programme, ""), default=str),
+        ),
     )
     conn.commit()
     conn.close()

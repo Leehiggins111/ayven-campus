@@ -4,8 +4,10 @@ html, body, #root { margin: 0; height: 100%; overflow: hidden; }
 .overlay { position: absolute; inset: 0; pointer-events: none; }
 .scene-fallback { position: absolute; inset: 0; display: flex; align-items: flex-end; justify-content: flex-end; padding: 18px; color: #8eaa99; font-size: 12px; }
 .panel { pointer-events: auto; background: rgba(8,18,14,.86); border: 1px solid #1f3d2e; border-radius: 14px; padding: 12px 14px; backdrop-filter: blur(8px); }
-.top { position: absolute; left: 16px; top: 16px; width: 340px; max-height: 48vh; overflow: auto; }
-.right { position: absolute; right: 16px; top: 16px; width: 300px; max-height: 78vh; overflow: auto; }
+.top { position: absolute; left: 16px; top: 16px; width: 360px; max-height: 42vh; overflow: auto; }
+.right { position: absolute; right: 16px; top: 16px; width: 380px; max-height: 82vh; overflow: auto; }
+.needs-you, .needs-clarify { position: absolute; left: 50%; top: 16px; transform: translateX(-50%); width: min(440px, 42vw); z-index: 4; pointer-events: auto; background: rgba(28, 18, 6, .94); border: 2px solid #ffb03d; border-radius: 14px; padding: 12px 14px; }
+.needs-clarify { background: rgba(12, 22, 28, .94); border-color: #7eb6ff; }
 .feed { position: absolute; left: 16px; bottom: 16px; width: 430px; max-height: 28vh; overflow: auto; font-size: 12px; }
 .brand { font-size: 15px; letter-spacing: .18em; font-weight: 700; }
 h1 { font-size: 16px; margin: 8px 0; }
@@ -24,3 +26,14 @@ textarea { width: 100%; min-height: 68px; background: #0c1a14; color: #e8f0ea; b
 .bld-label { font-family: ui-sans-serif, system-ui; font-size: 11px; letter-spacing: .14em; color: #e8f0ea; background: rgba(8,18,14,.78); border: 1px solid #2a4a38; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
 .bld-label[data-hot="1"] { color: #ffd27a; border-color: #c4a056; }
 .agent-chip { font-size: 11px; background: rgba(8,18,14,.85); border: 1px solid #2a4a38; padding: 2px 7px; border-radius: 999px; color: #e8f0ea; }
+.workflow { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+.workflow span { font-size: 10px; letter-spacing: .03em; padding: 3px 6px; border-radius: 999px; border: 1px solid #2a4a38; color: #8eaa99; }
+.workflow span[data-state="done"] { background: #1d6b45; color: #fff; border-color: #1d6b45; }
+.workflow span[data-state="current"] { background: #c4a056; color: #1a1204; border-color: #c4a056; }
+.workflow span[data-state="rejected"] { background: #8a3a2a; color: #fff; border-color: #ff5a3d; }
+.workflow span[data-state="skipped"] { opacity: .4; }
+.pkg-btn { display: block; width: 100%; text-align: left; margin-top: 4px; background: #22332b; }
+.pkg-btn[data-hot="1"] { outline: 1px solid #c4a056; }
+.repair { margin-top: 8px; border: 1px solid #c4a056; border-radius: 10px; padding: 8px; font-size: 12px; }
+.evidence, .result { margin-top: 8px; font-size: 12px; line-height: 1.4; }
+.evidence div, .result div { margin-top: 4px; }

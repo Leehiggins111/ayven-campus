@@ -10,7 +10,7 @@ The branch tip on `cursor/ayven-v2-workable-a9eb` is the commit that contains th
 
 ## VERSION
 
-2.0.1. `GPU_VALIDATED` is false. `VALIDATION_STATUS` is `V2_LOCAL_CONTROL_PLANE_GPU_PENDING`.
+2.0.2. `GPU_VALIDATED` is false. `VALIDATION_STATUS` is `V2_LOCAL_CONTROL_PLANE_GPU_PENDING`. The campus operating picture is in `docs/V2_PRE_GPU_FINAL_AUDIT.md`.
 
 ## ARCHITECTURE CHANGES
 
@@ -206,7 +206,7 @@ The served Campus (`apps/api/static/r3f/campus-app.jsx`) shows doing, why, stage
 
 ## TEST COUNT
 
-103 passed, 0 failed, on v2.0.1. Command: `PYTHONPATH=/workspace:/workspace/apps/api python3 -m pytest apps/api/tests -q` from the repo root. No GPU and no paid API. The finishing audit is `docs/V2_FINISHING_AUDIT.md`.
+110 passed, 0 failed, on v2.0.2 locally, including the campus API tests and the headless campus UI test. Command: `PYTHONPATH=/workspace:/workspace/apps/api python3 -m pytest apps/api/tests -q` from the repo root. No GPU and no paid API. The finishing audit is `docs/V2_FINISHING_AUDIT.md`. The pre-GPU campus audit is `docs/V2_PRE_GPU_FINAL_AUDIT.md`.
 
 ## TEST RESULTS
 

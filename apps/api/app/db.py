@@ -46,6 +46,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_v10(conn)
     migrate_v20(conn)
     migrate_v21(conn)
+    migrate_v22(conn)
 
 
 SEED_AGENTS = [
@@ -272,4 +273,17 @@ def migrate_v21(conn: sqlite3.Connection) -> None:
     _add_columns(conn, "tool_calls", {"trace_id": "TEXT"})
     _add_columns(conn, "sources", {"trace_id": "TEXT"})
     _add_columns(conn, "traces", {"trace_id": "TEXT"})
+    conn.commit()
+
+
+def migrate_v22(conn: sqlite3.Connection) -> None:
+    """Campus visual state, clarification, and approval context. Additive only."""
+    _add_columns(conn, "agents", {"visual_state": "TEXT"})
+    _add_columns(conn, "work_packages", {
+        "campus_stage": "TEXT",
+        "clarification_question": "TEXT",
+        "clarification_answer": "TEXT",
+    })
+    _add_columns(conn, "approvals", {"context_json": "TEXT"})
+    conn.execute("UPDATE agents SET visual_state='IDLE' WHERE visual_state IS NULL OR visual_state=''")
     conn.commit()

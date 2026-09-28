@@ -1,6 +1,6 @@
 # STATUS
 
-CURRENT PHASE: v2.0.1 local control plane. `VALIDATION_STATUS` is `V2_LOCAL_CONTROL_PLANE_GPU_PENDING`. `GPU_VALIDATED` is false. Model intelligence is unverified.
+CURRENT PHASE: v2.0.2 local control plane. The campus reads the same work-package state. `VALIDATION_STATUS` is `V2_LOCAL_CONTROL_PLANE_GPU_PENDING`. `GPU_VALIDATED` is false. Model intelligence is unverified.
 
 WHAT WORKS
 - FastAPI campus at /campus, including a status brief (doing, why, stage, stuck, needs you, finished, trust)

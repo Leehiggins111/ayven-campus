@@ -18,9 +18,9 @@ const CAT = Object.fromEntries(CATALOG.map((d) => [d.id, d]));
 
 let state = {
   departments: CATALOG.map((d) => ({ id: d.id, name: d.name, x: d.x, z: d.z })),
-  agents: [], events: [], tasks: [], approvals: [], projects: [], work_packages: [], sources: [], campus_brief: null,
-  selectedId: "milo", focus: { kind: "campus" },
-  brief: "Find manufacturers who can supply internal doors suitable for joinery work, including custom hinge positions. Compare trade pricing, delivery to Scotland, minimum orders and trade-account requirements.",
+  agents: [], events: [], tasks: [], approvals: [], projects: [], work_packages: [], sources: [], campus_brief: null, campus_view: null,
+  selectedId: "milo", selectedPackageId: "", focus: { kind: "campus" },
+  brief: "Compare public suppliers of office stationery. List a price only when a page states it, and say what is still unknown.",
 };
 const listeners = new Set();
 function set(partial) {
@@ -40,6 +40,11 @@ useCampus.focusAgent = (id) => set({ focus: { kind: "agent", id }, selectedId: i
 useCampus.hydrate = async () => {
   const s = await (await fetch("/state")).json();
   const byId = Object.fromEntries((s.departments || []).map((d) => [d.id, d]));
+  const selected = state.selectedPackageId;
+  let view = s.campus_view || null;
+  if (selected) {
+    view = await (await fetch(`/campus/view?package_id=${encodeURIComponent(selected)}`)).json();
+  }
   set({
     departments: CATALOG.map((c) => ({ id: c.id, name: byId[c.id]?.name || c.name, x: byId[c.id]?.x ?? c.x, z: byId[c.id]?.z ?? c.z })),
     agents: s.agents || [],
@@ -49,11 +54,23 @@ useCampus.hydrate = async () => {
     projects: s.projects || [],
     work_packages: s.work_packages || [],
     campus_brief: s.campus_brief || null,
+    campus_view: view,
     sources: s.sources || [],
   });
 };
+useCampus.selectPackage = async (id) => {
+  const view = await (await fetch(`/campus/view?package_id=${encodeURIComponent(id)}`)).json();
+  set({ selectedPackageId: id, campus_view: view, focus: { kind: "campus" } });
+};
 
-const STATUS = { idle: "#8fb3a3", working: "#3db4ff", researching: "#3dffb0", using_tool: "#7ee0ff", needs_approval: "#ffb03d", error: "#ff5a3d", waiting: "#c9c14a", completed: "#9ad47a" };
+const VISUAL = {
+  IDLE: "#8fb3a3", PLANNING: "#7eb6ff", RESEARCHING: "#3dffb0", USING_TOOL: "#7ee0ff",
+  WRITING: "#e2c56b", REVIEWING: "#c9a0ff", REPAIRING: "#ffb03d", WAITING: "#c9c14a",
+  NEEDS_APPROVAL: "#ffb03d", COMPLETED: "#9ad47a", FAILED: "#ff5a3d",
+};
+function visualOf(agent) {
+  return VISUAL[agent.visual_state] ? agent.visual_state : "IDLE";
+}
 
 function Mass({ color, args, position }) {
   return (
@@ -93,21 +110,13 @@ function agentPos(dept, index, isMilo) {
 }
 
 function Avatar({ agent, position, selected, onClick }) {
-  const ref = useRef();
-  const color = STATUS[agent.status] || "#889";
-  const busy = ["working", "researching", "using_tool"].includes(agent.status);
-  useFrame(({ clock }) => {
-    if (!ref.current) return;
-    ref.current.position.y = busy ? 0.02 + Math.sin(clock.elapsedTime * 6) * 0.05 : 0.02;
-  });
+  const color = VISUAL[visualOf(agent)] || "#889";
   return (
     <group position={position} onClick={(e) => { e.stopPropagation(); onClick(); }}>
-      <group ref={ref}>
-        <mesh position={[0, 0.55, 0]} castShadow>
-          <capsuleGeometry args={[agent.id === "milo" ? 0.28 : 0.22, agent.id === "milo" ? 0.72 : 0.55, 4, 8]} />
-          <meshStandardMaterial color={selected ? "#fff" : color} emissive={color} emissiveIntensity={0.2} />
-        </mesh>
-      </group>
+      <mesh position={[0, 0.55, 0]} castShadow>
+        <capsuleGeometry args={[agent.id === "milo" ? 0.28 : 0.22, agent.id === "milo" ? 0.72 : 0.55, 4, 8]} />
+        <meshStandardMaterial color={selected ? "#fff" : color} emissive={color} emissiveIntensity={0.25} />
+      </mesh>
     </group>
   );
 }
@@ -145,16 +154,100 @@ function packagePos(pkg, departments) {
 }
 
 function CampusNow() {
-  const brief = useCampus((s) => s.campus_brief) || {};
+  const view = useCampus((s) => s.campus_view) || {};
+  const tools = (view.tools || []).join(", ") || "—";
+  const skills = (view.skills || []).join(", ") || "—";
+  const research = (view.research || []).slice(0, 3).join(" · ") || "—";
   return (
-    <div className="cmd-block">
+    <div className="cmd-block" data-testid="campus-glance" data-package={view.package_id || ""}>
       <div className="muted">What Ayven is doing</div>
-      <div><b>Doing</b> {brief.doing || "Idle"}</div>
-      <div><b>Why</b> {brief.why ? String(brief.why).slice(0, 180) : "—"}</div>
-      <div><b>Stage</b> {brief.stage || "—"} · <b>Skills</b> {brief.skills || "—"}</div>
-      <div><b>Stuck</b> {brief.stuck ? "Yes" : "No"} · <b>Needs you</b> {brief.needs_you ? "Yes" : "No"} · <b>Finished</b> {brief.finished ? "Yes" : "No"}</div>
-      <div><b>Trust</b> {brief.trust || "—"}</div>
-      <div className="muted">Repairs {brief.repairs || 0} · Sources {brief.sources || 0}</div>
+      <div data-testid="glance-doing"><b>Doing</b> {view.doing || "Idle"}</div>
+      <div data-testid="glance-who"><b>Who</b> {view.who || "—"}</div>
+      <div data-testid="glance-why"><b>Why</b> {view.why || "—"}</div>
+      <div data-testid="glance-stage"><b>Stage</b> {view.stage_label || view.stage || "—"}</div>
+      <div><b>Tools</b> {tools}</div>
+      <div><b>Skills</b> {skills}</div>
+      <div><b>Research</b> {research}</div>
+      <div data-testid="glance-trust"><b>Trust</b> {view.trust || "—"}</div>
+      <div><b>Supervisor rejected</b> {view.supervisor_rejected || 0}</div>
+      <div><b>Repairing</b> {view.repairing ? "Yes" : "No"}</div>
+      <div><b>Manager</b> {view.manager || "—"}</div>
+      <div data-testid="glance-needs"><b>Needs you</b> {view.needs_you ? "Yes" : "No"} · <b>Clarification</b> {view.needs_clarification ? "Yes" : "No"}</div>
+      <div data-testid="glance-finished"><b>Finished</b> {view.finished ? "Yes" : "No"} · <b>Time</b> {view.elapsed || "unknown"} · <b>Cost</b> {view.cost || "unknown"}</div>
+    </div>
+  );
+}
+
+function WorkflowStrip() {
+  const view = useCampus((s) => s.campus_view) || {};
+  const steps = view.workflow || [];
+  if (!steps.length) return null;
+  return (
+    <div className="workflow" data-testid="workflow">
+      {steps.map((step) => (
+        <span key={step.id} data-testid="workflow-step" data-stage={step.id} data-state={step.state}>{step.id}</span>
+      ))}
+    </div>
+  );
+}
+
+function RepairPanel() {
+  const view = useCampus((s) => s.campus_view) || {};
+  const repairs = view.repairs || [];
+  if (!repairs.length) return null;
+  const open = repairs.some((item) => item.status !== "repaired");
+  return (
+    <div className="repair" data-testid="repairs">
+      <strong>{`SUPERVISOR FOUND ${repairs.length} ISSUE${repairs.length === 1 ? "" : "S"} — ${open ? "REPAIRING" : "REPAIRED"}`}</strong>
+      {repairs.map((item, index) => (
+        <div key={index} data-testid="repair-issue">
+          <div>{item.claim}</div>
+          <div className="muted">{item.repair_type} · {item.status}</div>
+          <div>{item.resolution}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EvidencePanel() {
+  const view = useCampus((s) => s.campus_view) || {};
+  const [open, setOpen] = useState(false);
+  const rows = view.evidence || [];
+  if (!view.package_id) return null;
+  return (
+    <div className="evidence">
+      <button className="ghost" data-testid="evidence-toggle" onClick={() => setOpen((value) => !value)}>Evidence</button>
+      {open && (
+        <div data-testid="evidence-list">
+          {rows.length === 0 && <div className="muted">No claims on this package.</div>}
+          {rows.map((row, index) => (
+            <div key={index} data-testid="evidence-claim">
+              <div>{row.claim}</div>
+              <div className="muted">{row.support} · {row.source_type || "source"} · {row.authority || "authority unset"}</div>
+              <div className="muted">{row.source || "no source url"}</div>
+              <div className="muted">locator {row.locator || "—"} · hash {row.file_hash ? String(row.file_hash).slice(0, 12) : "—"} · supervisor {row.supervisor || "—"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ResultPanel() {
+  const view = useCampus((s) => s.campus_view) || {};
+  const result = view.result;
+  if (!result) return null;
+  return (
+    <div className="result" data-testid="final-result">
+      <strong>{view.rejected ? "Rejected" : "Final result"}</strong>
+      <div data-testid="result-summary">{result.summary}</div>
+      <div><b>Deliverable</b> {result.deliverable || "—"}</div>
+      <div><b>Findings</b> {result.findings || "—"}</div>
+      <div><b>Gaps</b> {(result.gaps || []).join("; ") || "none recorded"}</div>
+      <div><b>Confidence</b> {result.confidence === 0 || result.confidence ? String(result.confidence) : "unknown"} · <b>Evidence</b> {result.evidence_status || "—"}</div>
+      <div><b>Manager</b> {result.manager || "—"} · <b>Time</b> {result.time || "unknown"} · <b>Cost</b> {result.cost || "unknown"}</div>
     </div>
   );
 }
@@ -173,16 +266,16 @@ function TraceDrill() {
   );
 }
 
-function WorkCrate({ pkg, departments }) {
+function WorkCrate({ pkg, departments, onSelect }) {
   const ref = useRef();
   const dest = packagePos(pkg, departments);
   useFrame(() => {
     if (!ref.current) return;
     ref.current.position.lerp(new THREE.Vector3(dest[0], dest[1], dest[2]), 0.08);
   });
-  const hot = pkg.status === "needs_approval" || pkg.stage === "approval";
+  const hot = pkg.status === "needs_approval" || pkg.stage === "approval" || pkg.workflow_state === "AWAITING_APPROVAL" || pkg.workflow_state === "AWAITING_CLARIFICATION";
   return (
-    <mesh ref={ref} position={dest} castShadow>
+    <mesh ref={ref} position={dest} castShadow onClick={(e) => { e.stopPropagation(); onSelect(pkg.parent_id || pkg.id); }}>
       <boxGeometry args={[0.7, 0.45, 0.55]} />
       <meshStandardMaterial color={hot ? "#d4b45a" : "#c4a07a"} emissive={hot ? "#c4a056" : "#000"} emissiveIntensity={hot ? 0.35 : 0} />
     </mesh>
@@ -218,7 +311,7 @@ function Scene() {
       {departments.map((d) => agents.filter((a) => a.department_id === d.id).map((a, i) => (
         <Avatar key={a.id} agent={a} position={agentPos(d, i, a.id === "milo")} selected={selectedId === a.id} onClick={() => useCampus.focusAgent(a.id)} />
       )))}
-      {(work_packages || []).map((p) => <WorkCrate key={p.id} pkg={p} departments={departments} />)}
+      {(work_packages || []).map((p) => <WorkCrate key={p.id} pkg={p} departments={departments} onSelect={(id) => useCampus.selectPackage(id)} />)}
       <CameraRig />
     </>
   );
@@ -230,6 +323,8 @@ function humanEvent(e) {
     "package.routed": "Distribution routed package", "package.waiting_approval": "Package in approval bay",
     "agent.using_tool": "Using a tool", "agent.researching": "Researching", "approval.requested": "Approval requested",
     "approval.resolved": "Approval resolved", "milo.synthesized": "Milo published findings",
+    "agent.visual": "Agent state", "package.stage": "Stage", "package.needs_clarification": "Needs clarification",
+    "package.completed": "Package completed",
   };
   return `${map[e.type] || e.type}${e.summary ? " — " + e.summary : ""}`;
 }
@@ -250,14 +345,55 @@ class SceneBoundary extends React.Component {
   }
 }
 
+function NeedsYou() {
+  const view = useCampus((s) => s.campus_view) || {};
+  const card = view.approval;
+  if (!view.needs_you || !card) return null;
+  const decide = (decision) => fetch(`/approvals/${card.id}/resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision }),
+  }).then(() => useCampus.hydrate());
+  return (
+    <div className="needs-you" data-testid="needs-you">
+      <strong>NEEDS YOU</strong>
+      <p>{card.what}</p>
+      <p><b>Why</b> {card.why}</p>
+      <p><b>If approved</b> {card.if_approved}</p>
+      <p><b>If rejected</b> {card.if_rejected}</p>
+      {(card.evidence || []).map((item, index) => <p key={index} className="muted">{item.source} {item.note}</p>)}
+      <button data-testid="approve" onClick={() => decide("approved")}>Approve</button>
+      <button className="ghost" data-testid="reject" onClick={() => decide("rejected")}>Reject</button>
+    </div>
+  );
+}
+
+function NeedsClarification() {
+  const view = useCampus((s) => s.campus_view) || {};
+  const [answer, setAnswer] = useState("");
+  if (!view.needs_clarification || !view.package_id) return null;
+  return (
+    <div className="needs-clarify" data-testid="needs-clarification">
+      <strong>NEEDS CLARIFICATION</strong>
+      <p data-testid="clarify-question">{view.question}</p>
+      <textarea data-testid="clarify-input" value={answer} onChange={(e) => setAnswer(e.target.value)} />
+      <button data-testid="clarify-submit" onClick={() => fetch(`/work-packages/${view.package_id}/clarification`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answer }),
+      }).then(() => useCampus.selectPackage(view.package_id))}>Answer</button>
+    </div>
+  );
+}
+
 function App() {
   const agents = useCampus((s) => s.agents);
   const events = useCampus((s) => s.events);
-  const tasks = useCampus((s) => s.tasks);
   const approvals = useCampus((s) => s.approvals);
-  const projects = useCampus((s) => s.projects);
   const work_packages = useCampus((s) => s.work_packages);
   const selectedId = useCampus((s) => s.selectedId);
+  const selectedPackageId = useCampus((s) => s.selectedPackageId);
+  const view = useCampus((s) => s.campus_view) || {};
   const brief = useCampus((s) => s.brief);
   const [text, setText] = useState(brief);
   useEffect(() => {
@@ -269,10 +405,8 @@ function App() {
   }, []);
   const selected = agents.find((a) => a.id === selectedId);
   const pending = approvals.filter((a) => a.status === "pending");
-  const project = projects[0];
-  const currentTask = tasks.filter((t) => t.agent_id === selected?.id)[0];
-  const waiting = selected?.status === "needs_approval" ? "Lee approval before any external send" : selected?.status === "error" ? "Recovery / retry" : "—";
-  const pkg = (work_packages || [])[0];
+  const parents = (work_packages || []).filter((pkg) => !pkg.parent_id);
+  const visual = selected ? visualOf(selected) : "";
   return (
     <>
       <SceneBoundary>
@@ -280,49 +414,53 @@ function App() {
           <Scene />
         </Canvas>
       </SceneBoundary>
-      <div className="overlay">
+      <div className="overlay" data-testid="campus-root">
+        <NeedsYou />
+        <NeedsClarification />
         <div className="panel top">
           <div className="brand">AYVEN CAMPUS</div>
           <div className="muted">Headquarters · live company state</div>
-          <textarea value={text} onChange={(e) => setText(e.target.value)} />
+          <textarea data-testid="objective" value={text} onChange={(e) => setText(e.target.value)} />
           <div className="row">
-            <button onClick={() => fetch("/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ objective: text }) })}>Ask Milo</button>
+            <button data-testid="ask-milo" onClick={() => fetch("/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ objective: text }) }).then(() => useCampus.hydrate())}>Ask Milo</button>
             <button className="ghost" onClick={() => useCampus.focusCampus()}>Campus view</button>
           </div>
           <div className="row">
             <button className="ghost" onClick={() => fetch("/demo/fail", { method: "POST" }).then(() => useCampus.hydrate())}>Demo fail</button>
             <button className="ghost" onClick={() => fetch("/demo/retry", { method: "POST" }).then(() => useCampus.hydrate())}>Recover</button>
           </div>
-          {pending.map((p) => (
-            <div key={p.id} className="approval">
-              <strong>Approval required</strong>
-              <p className="muted">{p.summary}</p>
-              <button onClick={() => fetch(`/approvals/${p.id}/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "approved" }) }).then(() => useCampus.hydrate())}>Approve</button>
-              <button className="ghost" onClick={() => fetch(`/approvals/${p.id}/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "rejected" }) }).then(() => useCampus.hydrate())}>Reject</button>
-            </div>
-          ))}
           <CampusNow />
-          <TraceDrill />
-          <div className="cmd-block">
-            <div className="muted">Command</div>
-            <div>Working: {agents.filter((a) => ["working", "researching", "using_tool"].includes(a.status)).length}</div>
-            <div>Approvals waiting: {pending.length}</div>
-            <div>Package: {pkg ? `${pkg.stage} / ${pkg.status}` : "none"}</div>
-            {project && <p className="muted">{project.result ? String(project.result).slice(0, 280) : project.title}</p>}
-          </div>
         </div>
         <div className="panel right">
+          <h1>Work packages</h1>
+          {parents.map((pkg) => (
+            <button key={pkg.id} className="pkg-btn" data-testid="work-package" data-package={pkg.id} data-hot={pkg.id === (selectedPackageId || view.package_id) ? "1" : "0"} onClick={() => useCampus.selectPackage(pkg.id)}>
+              {(pkg.workflow_state || pkg.stage || "package").slice(0, 42)}
+            </button>
+          ))}
+          <WorkflowStrip />
+          <RepairPanel />
+          <EvidencePanel />
+          <ResultPanel />
+          <TraceDrill />
           <h1>Departments</h1>
           {CATALOG.map((d) => <div key={d.id} className="dept-line" onClick={() => useCampus.focusBuilding(d.id)}><span className="swatch" style={{ background: d.theme }} />{d.shortName}</div>)}
+          <div data-testid="agent-board">
+            {agents.map((agent) => (
+              <div key={agent.id} data-testid="agent-state" data-agent={agent.id} data-visual={visualOf(agent)} onClick={() => useCampus.focusAgent(agent.id)}>
+                {agent.name}: {visualOf(agent)}
+              </div>
+            ))}
+          </div>
           {selected && (
             <div className="inspector">
               <h1>{selected.name}</h1>
               <div className="muted">{selected.role}</div>
-              <p><b>Status</b> {selected.status}</p>
-              <p><b>Waiting for</b> {waiting}</p>
+              <p data-testid="selected-visual"><b>State</b> {visual}</p>
               <p className="muted">{selected.last_summary}</p>
             </div>
           )}
+          <div className="muted">Approvals waiting: {pending.length}</div>
         </div>
         <div className="panel feed">
           <strong>Activity</strong>

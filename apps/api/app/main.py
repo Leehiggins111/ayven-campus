@@ -82,6 +82,7 @@ def state():
         "sources": _rows("SELECT * FROM sources ORDER BY created_at DESC LIMIT 40"),
         "intelligence": _intelligence_state(),
         "campus_brief": _campus_brief(),
+        "campus_view": _campus_view(),
     }
 
 
@@ -122,6 +123,12 @@ def _campus_brief() -> dict:
     if row.get("workflow_state") == "COMPLETED":
         brief["finished"] = True
     return brief
+
+
+def _campus_view(package_id: str = "") -> dict:
+    from .intelligence.campus_view import campus_view
+
+    return campus_view(package_id)
 
 
 def _intelligence_state() -> dict:
@@ -225,6 +232,25 @@ def project_evaluation(pid: str):
     }
 
 
+@app.get("/campus/view")
+def campus_view_route(package_id: str = ""):
+    return _campus_view(package_id)
+
+class ClarificationIn(BaseModel):
+    answer: str
+
+@app.post("/work-packages/{package_id}/clarification")
+def answer_clarification(package_id: str, body: ClarificationIn):
+    from .intelligence.execution import answer_clarification as resume_clarification
+
+    try:
+        resumed = resume_clarification(package_id, body.answer)
+    except KeyError:
+        raise HTTPException(404)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "package_id": resumed}
+
 @app.get("/approvals")
 def list_approvals():
     return {"approvals": _rows("SELECT * FROM approvals ORDER BY created_at DESC LIMIT 50")}
@@ -237,7 +263,12 @@ def resolve(aid: str, body: ApprovalIn):
         orchestrator.resolve_approval(aid, body.decision)
     except KeyError:
         raise HTTPException(404)
-    return {"ok": True}
+    resumed = []
+    if body.decision == "approved":
+        from .intelligence.execution import resume_packages_for_approval
+
+        resumed = resume_packages_for_approval(aid)
+    return {"ok": True, "resumed": resumed}
 
 @app.post("/demo/fail")
 def demo_fail():
