@@ -29,7 +29,11 @@ def render_focus(focus: str, facts: dict) -> str:
     if focus == "evidence":
         if task == "internal_door_quote":
             return _suppliers(facts)
-        return _routes(facts) if task == "football_tickets" else _prospects(facts)
+        if task == "football_tickets":
+            return _routes(facts)
+        if task == "vending_prospects":
+            return _prospects(facts)
+        return _general_evidence(facts)
     return _gaps(facts)
 
 
@@ -93,6 +97,9 @@ def _mode_label(mode: str | None) -> str:
 
 
 def _scenarios(facts: dict) -> str:
+    calc = facts.get("calculation") or {}
+    if calc.get("value"):
+        return f"Deterministic result: {calc['expression']} = {calc['value']}. Nothing was sent."
     quote = facts.get("quote")
     if not quote:
         return "No deterministic calculation was required for this focus."
@@ -216,6 +223,24 @@ def _prospects(facts: dict) -> str:
             lines.append(f"- Reviewed {item.get('source_url')}. It is a register or a notice search, not a placement prospect.")
     for gap in facts["research"].get("gaps") or []:
         lines.append(f"- {gap}")
+    return "\n".join(lines)
+
+
+def _general_evidence(facts: dict) -> str:
+    lines = ["Opened pages are the only facts. A question with no opened page stays a gap."]
+    evidence = facts["research"].get("evidence") or []
+    if not evidence:
+        lines.append("No page was opened. No fact is asserted from memory.")
+    for item in evidence:
+        lines.append(f"- {item.get('source_title') or 'page'}: {item.get('source_url')}")
+        excerpt = (item.get("extracted_content") or "")[:400]
+        if excerpt:
+            lines.append(excerpt)
+    for gap in facts["research"].get("gaps") or []:
+        lines.append(f"- Gap: {gap}")
+    if not evidence and not (facts["research"].get("gaps") or []):
+        lines.append("Gap: the requested fact was not on an opened page.")
+    lines.append("Nothing was sent. No purchase was made.")
     return "\n".join(lines)
 
 

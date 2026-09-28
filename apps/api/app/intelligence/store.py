@@ -15,6 +15,12 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _trace_id() -> str:
+    from .observability import current_trace
+
+    return current_trace()
+
+
 def insert_package(**kw) -> str:
     pid = kw.get("id") or str(uuid.uuid4())
     ts = now()
@@ -95,13 +101,14 @@ def save_model_call(package_id: str, role: str, task_class: str, meta: dict, tex
     conn.execute(
         """INSERT INTO model_calls(
             id,package_id,role,model_id,provider,task_class,prompt_tokens,completion_tokens,
-            latency_s,est_cost_usd,backend,created_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            latency_s,est_cost_usd,backend,created_at,trace_id
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             str(uuid.uuid4()), package_id, role, meta.get("model") or meta.get("model_id") or "",
             meta.get("provider") or meta.get("backend") or "", task_class, usage_prompt, usage_completion,
             float(meta.get("elapsed_s") or meta.get("generation_s") or 0), float(meta.get("est_cost_usd") or 0),
             meta.get("backend") or meta.get("execution") or "", now(),
+            meta.get("trace_id") or _trace_id(),
         ),
     )
     conn.commit()
@@ -112,8 +119,8 @@ def save_model_call(package_id: str, role: str, task_class: str, meta: dict, tex
 def save_source(package_id: str, url: str, title: str, snippet: str, note: str) -> None:
     conn = connect()
     conn.execute(
-        "INSERT INTO sources(id,package_id,url,title,snippet,note,created_at) VALUES(?,?,?,?,?,?,?)",
-        (str(uuid.uuid4()), package_id, url, title, strip_think(snippet)[:500], note, now()),
+        "INSERT INTO sources(id,package_id,url,title,snippet,note,created_at,trace_id) VALUES(?,?,?,?,?,?,?,?)",
+        (str(uuid.uuid4()), package_id, url, title, strip_think(snippet)[:500], note, now(), _trace_id()),
     )
     conn.commit()
     conn.close()

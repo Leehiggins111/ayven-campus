@@ -1,8 +1,19 @@
-import { useEffect, useState } from "react";
+import { Component, useEffect, useState, type ReactNode } from "react";
 import { Canvas } from "@react-three/fiber";
 import Campus from "./world/Campus";
 import { API, connectStream, humanEvent, useCampus } from "./state/store";
 import { catalogById } from "./config/departments";
+
+class SceneBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  render() {
+    if (this.state.failed) return <div className="muted">3D campus unavailable. The status panel stays live.</div>;
+    return this.props.children;
+  }
+}
 
 export default function App() {
   const hydrate = useCampus((s) => s.hydrate);
@@ -29,12 +40,15 @@ export default function App() {
   const selTasks = tasks.filter((t) => t.agent_id === selected?.id);
   const currentTask = selTasks.find((t) => ["queued", "needs_approval", "running"].includes(t.status)) || selTasks[0];
   const project = projects[0];
+  const briefState = useCampus((s) => s.campusBrief) || {};
   const waiting = selected?.status === "needs_approval" ? "Lee approval before any external send" : selected?.status === "error" ? "Recovery / retry" : "—";
   return (
     <>
-      <Canvas shadows camera={{ position: [36, 28, 36], fov: 42 }}>
-        <Campus />
-      </Canvas>
+      <SceneBoundary>
+        <Canvas shadows camera={{ position: [36, 28, 36], fov: 42 }}>
+          <Campus />
+        </Canvas>
+      </SceneBoundary>
       <div className="overlay">
         <div className="panel top">
           <div className="brand">AYVEN CAMPUS</div>
@@ -56,6 +70,13 @@ export default function App() {
               <button className="ghost" onClick={() => resolve(p.id, "rejected")}>Reject</button>
             </div>
           ))}
+          <div className="cmd-block">
+            <div className="muted">What Ayven is doing</div>
+            <div>Doing: {briefState.doing || "Idle"}</div>
+            <div>Stage: {briefState.stage || "—"}</div>
+            <div>Needs you: {briefState.needs_you ? "Yes" : "No"} · Finished: {briefState.finished ? "Yes" : "No"}</div>
+            <div className="muted">{briefState.trust || "—"}</div>
+          </div>
           <div className="cmd-block">
             <div className="muted">Command</div>
             <div>Working: {agents.filter((a) => ["working", "researching"].includes(a.status)).length}</div>

@@ -83,7 +83,15 @@ def status() -> dict:
         "network": "off" if level == "unshare-user-net-pid" else "not-namespaced",
         "filesystem": "host-visible",
         "timeout": "parent timeout(1)",
-        "note": "Calculator remains the benchmark arithmetic tool.",
+        "note": "Calculator remains the benchmark arithmetic tool. rlimit alone is not a production sandbox and is not used to execute code.",
+        "evaluated": {
+            "daytonaio/daytona": "REJECTED",
+            "gvisor": "OPTIONAL",
+            "nsjail": "OPTIONAL",
+            "firecracker": "OPTIONAL",
+            "bubblewrap": "ADAPTED",
+            "docker": "OPTIONAL",
+        },
     }
 
 

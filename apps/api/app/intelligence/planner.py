@@ -88,7 +88,7 @@ def build_plan(objective: str, task_class: str, skill_names: list[str]) -> dict:
 
     tools = select_tools(tools)
     approval = task_class not in ("trivial", "calculation")
-    return {
+    plan = {
         "objective": objective,
         "task_class": task_class,
         "deliverable": _deliverable(task_class),
@@ -108,6 +108,10 @@ def build_plan(objective: str, task_class: str, skill_names: list[str]) -> dict:
         "children": child_plan(task_class),
         "budget": {"max_research_rounds": rounds, "max_attempts": attempts, "max_manager_loops": int(os.environ.get("AYVEN_MAX_MANAGER_LOOPS", "1"))},
     }
+    from .contracts import contract_for
+
+    plan["completion_contract"] = contract_for(task_class, plan)
+    return plan
 
 
 def _deliverable(task_class: str) -> str:

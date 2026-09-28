@@ -81,7 +81,54 @@ def state():
         "work_packages": _rows("SELECT * FROM work_packages ORDER BY updated_at DESC LIMIT 20"),
         "sources": _rows("SELECT * FROM sources ORDER BY created_at DESC LIMIT 40"),
         "intelligence": _intelligence_state(),
+        "campus_brief": _campus_brief(),
+        "campus_view": _campus_view(),
     }
+
+
+def _campus_brief() -> dict:
+    rows = _rows(
+        "SELECT id, title, stage, status, workflow_state, agent_id, manager_decision, supervisor_decision, "
+        "substr(findings,1,400) AS findings, selected_skills, task_class, observability_json "
+        "FROM work_packages WHERE parent_id IS NULL ORDER BY updated_at DESC LIMIT 1"
+    )
+    if not rows:
+        return {"doing": "Idle", "why": "No work package is open.", "stuck": False, "needs_you": False, "finished": False, "trust": "nothing in progress"}
+    row = rows[0]
+    try:
+        obs = json.loads(row.get("observability_json") or "{}")
+    except json.JSONDecodeError:
+        obs = {}
+    from .intelligence.observability import summarise
+
+    brief = summarise(obs)
+    decision = row.get("manager_decision") or row.get("stage") or "in progress"
+    brief.update({
+        "doing": decision,
+        "package_id": row["id"],
+        "stage": row.get("workflow_state") or row.get("stage"),
+        "status": row.get("status"),
+        "employee": row.get("agent_id"),
+        "skills": row.get("selected_skills") or "",
+        "task_class": row.get("task_class") or "",
+        "manager": row.get("manager_decision") or "",
+        "output": row.get("findings") or "",
+        "trust": "Evidence and the ledger" if not obs.get("errors") else "Degraded — see the gap list",
+        "needs_you": brief["needs_you"] or row.get("status") == "needs_approval" or row.get("workflow_state") in ("AWAITING_APPROVAL", "AWAITING_CLARIFICATION"),
+    })
+    if row.get("workflow_state") in ("APPROVED", "COMPLETED", "ACTIONING"):
+        brief["needs_you"] = False
+    if brief["needs_you"] or row.get("workflow_state") in ("AWAITING_APPROVAL", "AWAITING_CLARIFICATION", "REPAIRING", "IN_PROGRESS", "UNDER_REVIEW"):
+        brief["finished"] = False
+    if row.get("workflow_state") == "COMPLETED":
+        brief["finished"] = True
+    return brief
+
+
+def _campus_view(package_id: str = "") -> dict:
+    from .intelligence.campus_view import campus_view
+
+    return campus_view(package_id)
 
 
 def _intelligence_state() -> dict:
@@ -118,7 +165,24 @@ def package_intelligence(package_id: str):
         "verification": _rows("SELECT * FROM verification_results WHERE package_id=? ORDER BY created_at", (package_id,)),
         "quality": _rows("SELECT * FROM quality_results WHERE package_id=? ORDER BY created_at", (package_id,)),
         "model_calls": _rows("SELECT * FROM model_calls WHERE package_id=? ORDER BY created_at", (package_id,)),
+        "traces": _traces(package_id),
     }
+
+
+@app.get("/work-packages/{package_id}/traces")
+def package_traces(package_id: str):
+    from .intelligence.observability import traces_for
+
+    packages = _rows("SELECT id FROM work_packages WHERE id=?", (package_id,))
+    if not packages:
+        raise HTTPException(404)
+    return {"package_id": package_id, "traces": traces_for(package_id)}
+
+
+def _traces(package_id: str) -> list[dict]:
+    from .intelligence.observability import traces_for
+
+    return traces_for(package_id)
 
 @app.post("/projects")
 def create_project(body: ObjectiveIn):
@@ -139,6 +203,58 @@ def get_project(pid: str):
         raise HTTPException(404)
     return {**rows[0], "tasks": _rows("SELECT * FROM tasks WHERE project_id=?", (pid,)), "work_packages": _rows("SELECT * FROM work_packages WHERE project_id=?", (pid,))}
 
+
+@app.get("/projects/{pid}/evaluation")
+def project_evaluation(pid: str):
+    rows = _rows("SELECT * FROM projects WHERE id=?", (pid,))
+    if not rows:
+        raise HTTPException(404)
+    packages = _rows(
+        "SELECT id, status, workflow_state, manager_decision, findings, observability_json "
+        "FROM work_packages WHERE project_id=? AND parent_id IS NULL ORDER BY updated_at DESC LIMIT 1",
+        (pid,),
+    )
+    if not packages:
+        return {"project_id": pid, "status": rows[0]["status"], "evaluation": None}
+    package = packages[0]
+    try:
+        obs = json.loads(package.get("observability_json") or "{}")
+    except json.JSONDecodeError:
+        obs = {}
+    from .intelligence.recovery import final_evaluation
+
+    evaluation = obs.get("evaluation") or final_evaluation(obs, decision=package.get("manager_decision") or "", findings=package.get("findings") or "")
+    return {
+        "project_id": pid,
+        "package_id": package["id"],
+        "status": package.get("workflow_state") or package.get("status") or rows[0]["status"],
+        "evaluation": evaluation,
+    }
+
+
+@app.get("/campus/view")
+def campus_view_route(package_id: str = ""):
+    return _campus_view(package_id)
+
+class ClarificationIn(BaseModel):
+    answer: str
+
+@app.post("/work-packages/{package_id}/clarification")
+def answer_clarification(package_id: str, body: ClarificationIn):
+    from .intelligence.execution import answer_clarification as resume_clarification
+
+    try:
+        resumed = resume_clarification(package_id, body.answer)
+    except KeyError:
+        raise HTTPException(404)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "package_id": resumed}
+
+@app.get("/approvals")
+def list_approvals():
+    return {"approvals": _rows("SELECT * FROM approvals ORDER BY created_at DESC LIMIT 50")}
+
 @app.post("/approvals/{aid}/resolve")
 def resolve(aid: str, body: ApprovalIn):
     if body.decision not in ("approved", "rejected"):
@@ -147,7 +263,12 @@ def resolve(aid: str, body: ApprovalIn):
         orchestrator.resolve_approval(aid, body.decision)
     except KeyError:
         raise HTTPException(404)
-    return {"ok": True}
+    resumed = []
+    if body.decision == "approved":
+        from .intelligence.execution import resume_packages_for_approval
+
+        resumed = resume_packages_for_approval(aid)
+    return {"ok": True, "resumed": resumed}
 
 @app.post("/demo/fail")
 def demo_fail():

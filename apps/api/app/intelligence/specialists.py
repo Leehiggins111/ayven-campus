@@ -55,7 +55,7 @@ MATRIX = (
         "licence": "Apache-2.0",
         "capability": "memory extraction and vector recall",
         "decision": "REJECTED",
-        "reason": "Mem0's gain is embeddings. There is no local embedding model in this build, and the hosted path is a remote service. Token-overlap retrieval on Ayven's existing rows covers the required include/exclude behaviour without that dependency.",
+        "reason": "Mem0's default embedder is a hosted OpenAI-compatible call, and its store is a second memory server. Ayven already ranks SQLite rows with a local fastembed model (lexical fallback) under the same scopes and provenance rules. Adding Mem0 would duplicate that and can spend a paid API if the default provider is left on.",
     },
     {
         "project": "BerriAI/litellm",
@@ -78,7 +78,42 @@ MATRIX = (
         "decision": "REJECTED",
         "reason": "It would replace the employee/supervisor/manager loop. The loop is the product boundary, not a missing library.",
     },
+    {
+        "project": "guidance-ai/llguidance",
+        "licence": "MIT",
+        "capability": "JSON-schema constrained decoding",
+        "decision": "INTEGRATED",
+        "reason": "Tool arguments are accepted only when the schema grammar allows them. A reasoning prefix cannot be the first token.",
+    },
+    {
+        "project": "pydantic/pydantic-ai",
+        "licence": "MIT",
+        "capability": "typed agent runtime",
+        "decision": "INTEGRATED",
+        "reason": "Optional runtime only. A pydantic-ai Agent with FunctionModel and TestModel runs, then Ayven's validate_tool_call accepts or rejects the output. It does not own packages, approvals, or the ledger.",
+    },
+    {
+        "project": "unclecode/crawl4ai",
+        "licence": "Apache-2.0",
+        "capability": "markdown extraction and crawling",
+        "decision": "INTEGRATED",
+        "reason": "Rung 4. DefaultMarkdownGenerator extracts a local HTML page to markdown. Browser Use remains the interactive step. LiteLLM ships inside Crawl4AI and is not used as Ayven's gateway.",
+    },
 )
+
+
+def run_coding(agent_id: str, source: str, approved: bool = False) -> dict:
+    """The one coding specialist: Ayven's sandbox, behind the same permission gate."""
+    from .code_sandbox import run_code
+
+    result = run_code(agent_id, source, approved=approved)
+    return {
+        "engine": "ayven-code-sandbox",
+        "skill": "software-engineering",
+        "status": result.status,
+        "evidence": result.as_dict(),
+        "supervisor_sees": "stdout, stderr, exit code",
+    }
 
 
 def matrix() -> list[dict]:
