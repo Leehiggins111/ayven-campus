@@ -158,7 +158,24 @@ def package_intelligence(package_id: str):
         "verification": _rows("SELECT * FROM verification_results WHERE package_id=? ORDER BY created_at", (package_id,)),
         "quality": _rows("SELECT * FROM quality_results WHERE package_id=? ORDER BY created_at", (package_id,)),
         "model_calls": _rows("SELECT * FROM model_calls WHERE package_id=? ORDER BY created_at", (package_id,)),
+        "traces": _traces(package_id),
     }
+
+
+@app.get("/work-packages/{package_id}/traces")
+def package_traces(package_id: str):
+    from .intelligence.observability import traces_for
+
+    packages = _rows("SELECT id FROM work_packages WHERE id=?", (package_id,))
+    if not packages:
+        raise HTTPException(404)
+    return {"package_id": package_id, "traces": traces_for(package_id)}
+
+
+def _traces(package_id: str) -> list[dict]:
+    from .intelligence.observability import traces_for
+
+    return traces_for(package_id)
 
 @app.post("/projects")
 def create_project(body: ObjectiveIn):

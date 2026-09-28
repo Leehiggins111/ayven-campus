@@ -16,12 +16,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/ayven
-COPY apps/api/requirements.txt apps/api/requirements-frankenstein.txt apps/api/constraints.txt /opt/ayven/apps/api/
+COPY apps/api/requirements.txt apps/api/requirements-frankenstein.txt apps/api/requirements-documents.txt apps/api/constraints.txt /opt/ayven/apps/api/
 RUN python3 -m pip install --no-cache-dir -U pip \
     && python3 -m pip install --no-cache-dir \
         -r /opt/ayven/apps/api/requirements.txt \
         -r /opt/ayven/apps/api/requirements-frankenstein.txt \
+        -r /opt/ayven/apps/api/requirements-documents.txt \
         -c /opt/ayven/apps/api/constraints.txt \
+    && python3 -m pip install --no-cache-dir \
+        'click==8.3.3' 'pillow==12.3.0' 'pypdf==6.16.2' 'typing-extensions>=4.12,<5' \
     && python3 -m pip install --no-cache-dir llama-cpp-python \
         --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 

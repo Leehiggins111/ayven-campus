@@ -12,6 +12,43 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def record_trace(package_id: str, event: str, payload: dict | None = None) -> dict:
+    """Always persist a structured trace for a work package. A file sink is optional."""
+    import uuid
+
+    from ..db import connect
+
+    row = trace(event, package_id=package_id, **(payload or {}))
+    conn = connect()
+    conn.execute(
+        "INSERT INTO traces(id,package_id,event,payload,created_at) VALUES(?,?,?,?,?)",
+        (str(uuid.uuid4()), package_id, event, json.dumps(row, default=str), row["at"]),
+    )
+    conn.commit()
+    conn.close()
+    return row
+
+
+def traces_for(package_id: str) -> list[dict]:
+    from ..db import connect
+
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id, package_id, event, payload, created_at FROM traces WHERE package_id=? ORDER BY created_at",
+        (package_id,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["payload"] = json.loads(item["payload"] or "{}")
+        except json.JSONDecodeError:
+            item["payload"] = {}
+        out.append(item)
+    return out
+
+
 def trace(event: str, **fields) -> dict:
     row = {"at": _now(), "event": event, **fields}
     path = os.environ.get("AYVEN_TRACE_PATH", "")
@@ -45,6 +82,28 @@ def summarise(observability: dict) -> dict:
         "research_precision": precision,
         "tokens": observability.get("tokens") or 0,
         "errors": observability.get("errors") or [],
+    }
+
+
+def run_metrics(observability: dict) -> dict:
+    pages = [page for page in (observability.get("pages") or []) if page]
+    relevant = observability.get("relevant_opened") or 0
+    challenges = observability.get("material_challenges") or []
+    disproved = [row for row in challenges if row.get("result") in ("DISPROVED", "UNSUPPORTED")]
+    repairs = observability.get("repairs") or []
+    false_rejects = [row for row in repairs if row.get("false_rejection")]
+    precision = round(relevant / len(pages), 3) if pages else None
+    catch = round(len(disproved) / len(challenges), 3) if challenges else None
+    false_rate = round(len(false_rejects) / len(disproved), 3) if disproved else 0.0
+    return {
+        "research_precision": precision,
+        "repair_rate": observability.get("repair_rate"),
+        "supervisor_catch_rate": catch,
+        "false_rejection_rate": false_rate,
+        "retries": observability.get("retries") or 0,
+        "sources": len(pages),
+        "challenged": len(challenges),
+        "disproved": len(disproved),
     }
 
 

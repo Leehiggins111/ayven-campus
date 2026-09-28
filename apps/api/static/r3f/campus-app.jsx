@@ -159,6 +159,20 @@ function CampusNow() {
   );
 }
 
+function TraceDrill() {
+  const brief = useCampus((s) => s.campus_brief) || {};
+  const [rows, setRows] = useState(null);
+  if (!brief.package_id) return null;
+  return (
+    <div className="cmd-block">
+      <button className="ghost" onClick={() => fetch(`/work-packages/${brief.package_id}/traces`).then((r) => r.json()).then((body) => setRows(body.traces || []))}>Traces</button>
+      {rows && rows.slice(0, 8).map((row) => (
+        <div key={row.id} className="muted">{row.event} · {row.created_at}</div>
+      ))}
+    </div>
+  );
+}
+
 function WorkCrate({ pkg, departments }) {
   const ref = useRef();
   const dest = packagePos(pkg, departments);
@@ -288,6 +302,7 @@ function App() {
             </div>
           ))}
           <CampusNow />
+          <TraceDrill />
           <div className="cmd-block">
             <div className="muted">Command</div>
             <div>Working: {agents.filter((a) => ["working", "researching", "using_tool"].includes(a.status)).length}</div>

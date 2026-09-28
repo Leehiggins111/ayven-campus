@@ -29,7 +29,7 @@ from .skills import select_skills, skill_prompt
 from .toolkit import ToolResult, invoke, now as tool_now
 from .registry import route_for
 from .render import render_focus, render_parent
-from .repair import apply_repairs
+from .repair import apply_repairs, repair_rate
 from .research import research
 from .selfcheck import self_check
 from .contracts import evaluate_contract
@@ -156,6 +156,8 @@ class Programme:
         self.employee_session = None
         self.repairs: list[dict] = []
         self.self_checks: list[dict] = []
+        self.material_challenges: list[dict] = []
+        self.document: dict | None = None
 
     def prepare_all(self) -> str:
         _set_agent(MANAGER, status="working", last_summary="Planning the work package", progress=0.2, current_tool=None)
@@ -179,6 +181,10 @@ class Programme:
         if "research" in self.plan["stages"]:
             _set_agent("research-e3", status="researching", current_tool="web_search", last_summary="Collecting evidence", progress=0.35)
             self.research = research(self.task_class, self.objective, self.parent_id, "research-e3", project_id=self.project_id, skills=self.skills)
+            attached = _attached_document(self.objective)
+            self.document = attached
+            if attached:
+                self.research.setdefault("evidence", []).append(attached)
             for item in self.research.get("evidence") or []:
                 save_source(self.parent_id, item.get("source_url") or "", item.get("source_title") or "", item.get("extracted_content") or "", "opened_page")
         self.plan["unknowns"] = list(self.research.get("gaps") or [])
@@ -194,6 +200,8 @@ class Programme:
             log_transition(child_id, "IN_PROGRESS", f"assigned {spec['focus']}")
             self._claims_for(child_id, spec)
             report = render_focus(spec["focus"], self._facts())
+            if self.document and spec["focus"] in ("evidence", "gaps", "draft"):
+                report = (self.document.get("extracted_content") or "")[:1500] + "\n" + report
             critique_payload = critique(self.task_class, report, claim_ledger.list_claims(child_id), self.research, self.quote)
             verification = verify(self.objective, self.task_class, claim_ledger.list_claims(child_id), self.research)
             if verification["pass_rate"] < 1 and spec["focus"] == "scenarios":
@@ -335,12 +343,22 @@ class Programme:
         challenges = challenge_material_claims(
             claim_ledger.list_claims(package_id), evidence, self.quote, text,
         )
-        repair = apply_repairs(package_id, challenges)
+        self.material_challenges.extend(challenges)
+        repair = apply_repairs(
+            package_id,
+            challenges,
+            objective=self.objective,
+            agent_id=child["agent_id"],
+            section=child["report"],
+        )
         self.repairs.extend(repair["actions"])
         self.retries += int(repair["attempted"] or 0)
+        if repair.get("evidence"):
+            self.research.setdefault("evidence", []).extend(repair["evidence"])
         if repair["actions"]:
             log_transition(package_id, "REPAIRING", "rejected material claims repaired locally")
-            child["report"] = render_focus(child["focus"], self._facts())
+            child["report"] = repair.get("section") or render_focus(child["focus"], self._facts())
+            save_verification(package_id, "supervisor_recheck", SUPERVISOR, "RECHECKED", {"repairs": repair["actions"]})
             log_transition(package_id, "UNDER_REVIEW", "repaired section returned to the supervisor")
         settled = {
             item["claim_id"]
@@ -514,6 +532,8 @@ class Programme:
             "unsupported_removed": self.removed,
             "retries": self.retries,
             "repairs": self.repairs,
+            "repair_rate": repair_rate(self.repairs),
+            "material_challenges": self.material_challenges,
             "self_checks": self.self_checks,
             "completion_contract": self.plan.get("completion_contract"),
             "contract_evaluation": evaluate_contract(self.plan.get("completion_contract") or {}, report=findings, research=self.research, claims=all_claims),
@@ -529,6 +549,17 @@ class Programme:
             "quality": quality,
         }
         save_observability(self.parent_id, observability)
+        from .observability import record_trace
+
+        record_trace(self.parent_id, "work_package", {
+            "manager_decision": decision,
+            "retries": self.retries,
+            "repair_rate": observability.get("repair_rate"),
+            "tokens": self.tokens,
+            "task_class": self.task_class,
+        })
+        for action in self.repairs:
+            record_trace(self.parent_id, "repair", action)
         approval_required = decision in ("CLARIFY", "APPROVAL_REQUIRED") or (
             bool(self.plan.get("human_approval_required")) and decision in ("ESCALATE", "RETURN", "RESEARCH_MORE", "CLARIFY")
         )
@@ -567,6 +598,35 @@ class Programme:
         route(self.parent_id)
         _set_agent(MANAGER, status="needs_approval" if clarification else "idle", last_summary=decision, progress=1)
         _set_agent(SUPERVISOR, status="idle", last_summary="Audit complete", progress=1)
+
+
+def _attached_document(objective: str) -> dict | None:
+    """A test or caller can point AYVEN_DOCUMENT_PATH at a local file. Web text cannot set it."""
+    import os
+
+    path = os.environ.get("AYVEN_DOCUMENT_PATH", "").strip()
+    if not path:
+        return None
+    if not any(word in (objective or "").lower() for word in ("document", "pdf", "spreadsheet", "sheet", "docx")):
+        return None
+    from .documents import extract
+
+    doc = extract(path=path)
+    if not doc.get("ok"):
+        return None
+    return {
+        "source_url": "file://" + path,
+        "source_title": doc.get("source") or path,
+        "extracted_content": doc.get("text") or "",
+        "metadata": {
+            "evidence_level": "page",
+            "relevant": True,
+            "freshness": "INPUT",
+            "source_rank": "PRIMARY_DOCUMENT",
+            "page": doc.get("page"),
+            "sheet": doc.get("sheet"),
+        },
+    }
 
 
 def run_objective(project_id: str, objective: str, task_id: str | None = None) -> str:

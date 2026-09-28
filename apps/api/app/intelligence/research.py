@@ -551,6 +551,12 @@ def research(
     }
 
 
+def _injection(text: str) -> list[str]:
+    from .security import injection_signals
+
+    return injection_signals(text)
+
+
 def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=None, browser_left=None) -> bool:
     url = hit.get("url") or ""
     if url in seen:
@@ -582,7 +588,8 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 metadata={"mode": mode, "attempts": attempts, "round": depth},
             )
         text = page.get("text") or ""
-        if mode == "live" and len(text) < 40 and not page.get("error"):
+        looks_html = "<" in text and ">" in text
+        if looks_html or (mode == "live" and len(text) < 40 and not page.get("error")):
             from .crawl_adapter import extract as crawl_extract
 
             crawled = crawl_extract(page.get("url") or u, text)
@@ -590,7 +597,7 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 text = crawled["text"]
                 page = dict(page)
                 page["text"] = text
-                page["via_crawl"] = True
+                page["via_crawl"] = crawled.get("engine") or True
         if _js_wall(text):
             from .fallbacks import on_http_result
 
@@ -656,6 +663,9 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 "unsupported_reseller": unsupported_reseller_claim(final_url, text, query=query, title=page_title),
                 "authority_class": _authority(final_url, text, page_title),
                 "rerank_score": (h.get("rerank_score") if isinstance(h, dict) else None),
+                "injection_signals": _injection(text),
+                "action_from_web": False,
+                "via_crawl": bool(page.get("via_crawl")),
             },
         )
 

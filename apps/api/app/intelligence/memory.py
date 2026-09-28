@@ -60,10 +60,52 @@ def _tokens(text: str) -> set[str]:
     return {part for part in "".join(ch.lower() if ch.isalnum() else " " for ch in text).split() if len(part) > 2}
 
 
-def retrieve(query: str, *, scopes: tuple[str, ...] | list[str] | None = None, subject_id: str | None = None, limit: int = 4, threshold: int = 1) -> list[dict]:
-    """Rank memories by token overlap. Score 0, expired, and superseded rows stay out."""
+_EMBEDDER = {"model": None, "error": ""}
+
+
+def _embed(texts: list[str]) -> list[list[float]] | None:
+    """Local fastembed vectors. A failure falls back to lexical overlap."""
+    if _EMBEDDER["error"] == "disabled":
+        return None
+    try:
+        if _EMBEDDER["model"] is None and not _EMBEDDER["error"]:
+            from fastembed import TextEmbedding
+
+            _EMBEDDER["model"] = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        model = _EMBEDDER["model"]
+        if model is None:
+            return None
+        return [list(float(value) for value in vector) for vector in model.embed(texts)]
+    except Exception as exc:
+        _EMBEDDER["error"] = f"{type(exc).__name__}: {exc}"
+        return None
+
+
+def _cosine(left: list[float], right: list[float]) -> float:
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = sum(a * a for a in left) ** 0.5
+    right_norm = sum(b * b for b in right) ** 0.5
+    if not left_norm or not right_norm:
+        return 0.0
+    return dot / (left_norm * right_norm)
+
+
+def retrieve(
+    query: str,
+    *,
+    scopes: tuple[str, ...] | list[str] | None = None,
+    subject_id: str | None = None,
+    limit: int = 4,
+    threshold: float = 1,
+    semantic_threshold: float = 0.55,
+    budget_chars: int = 1200,
+) -> list[dict]:
+    """Semantic rank when a local embedder loads, otherwise token overlap.
+
+    Expired and superseded rows stay out. The context budget drops the tail.
+    """
     wanted = _tokens(query)
-    if not wanted:
+    if not wanted and not query.strip():
         return []
     conn = connect()
     sql = "SELECT * FROM memories WHERE (superseded_by IS NULL OR superseded_by='')"
@@ -78,18 +120,34 @@ def retrieve(query: str, *, scopes: tuple[str, ...] | list[str] | None = None, s
     rows = [dict(row) for row in conn.execute(sql, args).fetchall()]
     conn.close()
     ts = now()
+    live = [row for row in rows if not row.get("expires_at") or row["expires_at"] > ts]
+    vectors = _embed([query, *[row.get("content") or "" for row in live]]) if live else None
     ranked = []
-    for row in rows:
-        if row.get("expires_at") and row["expires_at"] <= ts:
-            continue
+    lexical_floor = int(threshold) if threshold >= 1 else 1
+    for index, row in enumerate(live):
         overlap = wanted & _tokens(row.get("content") or "")
-        if len(overlap) < threshold:
+        semantic = _cosine(vectors[0], vectors[index + 1]) if vectors else 0.0
+        lexical_ok = len(overlap) >= lexical_floor
+        semantic_ok = bool(vectors) and semantic >= semantic_threshold
+        if not lexical_ok and not semantic_ok:
             continue
-        row["score"] = len(overlap)
+        row["score"] = round(semantic, 4) if semantic_ok else len(overlap)
+        row["semantic_score"] = round(semantic, 4)
+        row["retrieval"] = "semantic" if semantic_ok else "lexical"
         row["last_used"] = ts
         ranked.append(row)
-    ranked.sort(key=lambda item: (-item["score"], item.get("created_at") or ""), reverse=False)
-    return ranked[:limit]
+    ranked.sort(key=lambda item: (-(item.get("semantic_score") or 0), -(item["score"] if isinstance(item["score"], int) else 0), item.get("created_at") or ""))
+    kept = []
+    used = 0
+    for row in ranked:
+        text = row.get("content") or ""
+        if len(text) > budget_chars or used + len(text) > budget_chars:
+            continue
+        used += len(text)
+        kept.append(row)
+        if len(kept) >= limit:
+            break
+    return kept
 
 
 def format_for_prompt(rows: list[dict]) -> str:

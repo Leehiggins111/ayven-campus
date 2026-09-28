@@ -42,9 +42,9 @@ The 24 claim rows themselves were not available. They were not reconstructed.
 | Typed boundary | ACTIVE | Every tool call |
 | llguidance | ACTIVE when installed (it is in requirements) | Grammar mask and `response_format` on the local OpenAI path |
 | Qwen-Agent | ACTIVE when imported | Employee tool loop, after the gate |
-| Pydantic runtime | ACTIVE as a schema runtime, not Pydantic AI | Optional `AYVEN_AGENT_RUNTIME=pydantic` |
+| Pydantic runtime | ACTIVE | `AYVEN_AGENT_RUNTIME=pydantic` runs pydantic-ai 2.51.0 FunctionModel through the tool gate |
 | Research v2 | ACTIVE | Targets, filter, authority, rerank |
-| Crawl4AI | OPTIONAL_NOT_INSTALLED | Ladder hook only |
+| Crawl4AI | ACTIVE in this environment (0.7.4) | Markdown extraction on fetched or local HTML |
 | Browser Use | ACTIVE when Chrome and the package exist | JavaScript / interaction only |
 | Claim ledger v2 | ACTIVE | Extra columns on `claims` |
 | Repair loop | ACTIVE | Capped, local |
@@ -59,7 +59,7 @@ The 24 claim rows themselves were not available. They were not reconstructed.
 | DSPy | OPTIONAL | Offline candidate only |
 | MCP | ACTIVE when the SDK and servers are configured | Registry, not every employee |
 | Code sandbox | ACTIVE only with unshare or bubblewrap, allow flag, and approval | Otherwise reported and idle |
-| Documents | ACTIVE for text, CSV, HTML | PDF unavailable |
+| Documents | ACTIVE | PDF (pypdf), DOCX, XLSX, CSV, HTML, with page or sheet provenance |
 | Coding specialist | ACTIVE contract, sandbox engine | One specialist |
 | Observability | ACTIVE | Package JSON and optional trace file |
 | Langfuse | OPTIONAL | Not installed |
@@ -90,7 +90,7 @@ ACTIVE in this environment (1.3.0). `first_token_is_schema` allows byte 123 (`{`
 
 ## PYDANTIC AI DECISION
 
-ADAPTED, not adopted. Ayven is not a Pydantic AI app. Schemas, structured decisions, and approval records are Ayven’s.
+INTEGRATED as an optional runtime. pydantic-ai-slim 2.51.0 is installed. `PydanticRuntime.employee_turn` runs a `FunctionModel` and a `TestModel`, then `validate_tool_call`. A reasoning-wrapped tool line is rejected. Ayven still owns packages, approvals, and the ledger.
 
 ## QWEN-AGENT STATUS
 
@@ -102,7 +102,7 @@ ACTIVE. Entity targets are stored. Noise URLs are not opened. Model-originated h
 
 ## CRAWL4AI STATUS
 
-OPTIONAL_NOT_INSTALLED. Live HTTP text shorter than 40 characters calls the adapter, which returns not-installed and does not invent a page.
+ACTIVE here. `crawl4ai` 0.7.4 `DefaultMarkdownGenerator` extracts HTML, including a `file://` page used by the test. Live or HTML fetches on the ladder call it. LiteLLM is imported by Crawl4AI and is not Ayven's gateway.
 
 ## BROWSER USE STATUS
 
@@ -122,7 +122,7 @@ ACTIVE. Columns: origin, contradicting evidence, authority, repair history, veri
 
 ## REPAIR LOOP STATUS
 
-ACTIVE. Cap `AYVEN_MAX_REPAIRS` (default 3). Actions include REMOVE_CLAIM, RECALCULATE, RESEARCH_MORE, and UNRESOLVED_GAP. A repaired claim is `UNVERIFIED`, not left published as supported. Retries increment.
+ACTIVE. Cap `AYVEN_MAX_REPAIRS` (default 3). `RESEARCH_MORE` and `REPLACE_SOURCE` run a bounded `research()` call (search, filter, fetch, extract). If the opened page supports the claim and the supervisor recheck does not disprove it, the ledger status becomes `SUPPORTED` and only that section is rewritten. `RECALCULATE` uses the calculator. `REMOVE_CLAIM`, `DOWNGRADE_TO_INFERENCE`, and `REWRITE` change the ledger and the section. A repair that finds nothing stays `UNVERIFIED` and is not counted as corrected. Retries increment. Repair rate is corrected / rejected.
 
 ## EMPLOYEE SELF-CHECK STATUS
 
@@ -146,7 +146,7 @@ ACTIVE. SQLite scopes, provenance, confidence, supersedes, threshold. Reasoning-
 
 ## MEM0 DECISION
 
-REJECTED. Local overlap ranking is enough, and Mem0’s gain needs vectors we are not downloading.
+REJECTED. Mem0's default embedder is a hosted call and it would be a second memory server. Retrieval uses local fastembed `BAAI/bge-small-en-v1.5` when it loads, with lexical overlap as the fallback, a score threshold, and a character budget.
 
 ## MODEL ROUTER STATUS
 
@@ -170,7 +170,7 @@ Unchanged execution rule: unshare or bubblewrap, or the call does not run. Dayto
 
 ## DOCUMENT INTELLIGENCE STATUS
 
-ACTIVE for UTF-8 text, CSV, and HTML, with source name on the result. PDF returns `pdf_extractor_not_installed`. PyMuPDF is not imported.
+ACTIVE. pypdf 6.16.2 (BSD, same pin as browser-use), python-docx, and openpyxl. Results carry page, paragraph, or sheet. PyMuPDF is not imported.
 
 ## SPECIALIST ENGINE STATUS
 
@@ -178,7 +178,7 @@ ACTIVE for UTF-8 text, CSV, and HTML, with source name on the result. PDF return
 
 ## OBSERVABILITY STATUS
 
-The parent package JSON now includes repairs, self-checks, the contract, targets, and relevant-open counts. `AYVEN_TRACE_PATH` appends JSON lines. Langfuse is not required.
+Every work package writes rows to the `traces` table. `GET /work-packages/{id}/traces` returns them. Campus has a Traces drill-down on the status panel. `AYVEN_TRACE_PATH` still appends JSON lines. Langfuse is not required.
 
 ## SECURITY STATUS
 
@@ -194,7 +194,7 @@ OPTIONAL. `scripts/run_security_eval.sh` exits 0 unless `AYVEN_RUN_GARAK=1` and 
 
 ## RESULT PERSISTENCE STATUS
 
-`validation/export_results.py`. A local tar is not VERIFIED. Git, S3, rclone, or a Hugging Face dataset must be configured and read back. Otherwise the harness and the shell print `DO NOT STOP POD — RESULTS NOT EXPORTED`. No model weights are committed.
+`validation/export_results.py`. A local tar is not VERIFIED. Git push of the small text bundle, including to a local bare repo, is read back before `verified` is true. `AYVEN_EXPORT_GIT_TOKEN` is used for an https remote and is not written into the status location. S3, rclone, and a Hugging Face dataset remain optional. Otherwise the harness prints `DO NOT STOP POD — RESULTS NOT EXPORTED`. No model weights are committed. A test against a local bare repo returns VERIFIED.
 
 ## CAMPUS STATUS
 
@@ -206,20 +206,22 @@ The served Campus (`apps/api/static/r3f/campus-app.jsx`) shows doing, why, stage
 
 ## TEST COUNT
 
-73 passed, 0 failed. Command: `PYTHONPATH=. python3 -m pytest tests -q` from `apps/api`. Warnings only: FastAPI `on_event` deprecation and a dashscope assistants deprecation from qwen-agent.
+80 passed, 0 failed. Command: `PYTHONPATH=. python3 -m pytest tests -q` from `apps/api` (with the repo root on `PYTHONPATH` so the export test can import `validation`). No GPU and no paid API.
 
 ## TEST RESULTS
 
-Local pytest was run with `AYVEN_LLM_STUB=1`, `AYVEN_ALLOW_ESCALATION=0`, and fixture research. Result: **73 passed**. No GPU and no paid API. Frozen exam files were not edited.
+Local pytest was run with `AYVEN_LLM_STUB=1`, `AYVEN_ALLOW_ESCALATION=0`, and fixture research. Result: **80 passed**. Frozen exam files were not edited. `scripts/check_dependency_lock.py` printed `CORE RESOLVES`.
 
 ## UNSEEN EVAL RESULTS
 
-`benchmarks/unseen/tasks.json` plus `tests/test_unseen.py`. Checks are behavioural: ambiguous work stays inside a manager decision, contradictory fixture values are both kept, an empty search does not fall back to memory, and a page that says “ignore previous instructions” does not become the system prompt. This does not measure Qwen.
+All 13 categories in `benchmarks/unseen/tasks.json` run through `execution.run_objective`. On fixture mode with stub models, novel objectives opened no web pages, so research precision is null except document analysis (1.0, one attached spreadsheet). Repair rate on those runs is null because nothing was rejected. Supervisor catch rate is 0.0 where claims were challenged and none were disproved, and false rejection rate is 0.0. Calculation recorded retries 1. A separate test shows repair rate 1.0 when a rejected claim is supported by a fixture page. A page that says “ignore previous instructions” and tries to authorise a purchase is stored with `action_from_web: false` and does not create a send or purchase tool call. This does not measure Qwen.
 
 ## KNOWN LIMITATIONS
 
-- Crawl4AI, Mem0, LiteLLM, DSPy, Langfuse, Garak, llm-guard, and a PDF parser are not installed.
-- The repair’s `RESEARCH_MORE` records a question and demotes the claim. It does not launch a second full research programme inside the supervisor.
+- Mem0, LiteLLM-as-gateway, DSPy, Langfuse, Garak, and llm-guard are not on the request path. Crawl4AI's install pulls LiteLLM in as a library; `gateway.py` does not call it.
+- Repair research is one bounded round for the rejected claim. It does not restart the whole programme.
+- Crawl4AI extraction here is the markdown generator on HTML already fetched or on a local file. It does not launch a browser crawl.
+- fastembed's pin wants `pillow<12` while browser-use wants `pillow==12.3.0`. The constraint file keeps pillow 12.3.0 and click 8.3.3. Reapply those pins after the memory or crawl extra.
 - Workflow transitions that the table forbids are stored as forced rather than crashing a package. That is visible in the verification row.
 - Relevance filtering is strict for model-originated queries only. An operator-supplied query can still open a weak page and label it irrelevant.
 - Entity extraction is capitalisation and keywords. It will miss lowercase names and will split awkwardly on titles.

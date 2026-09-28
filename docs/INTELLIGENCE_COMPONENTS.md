@@ -14,7 +14,7 @@ Updated 2026-09-28 for v2.0.0. Nothing in this tree was vendored from the projec
 | Native / Pydantic runtime | INTEGRATED | Yes when Qwen-Agent is off or the call falls back |
 | HTTP search and fetch | INTEGRATED | Yes |
 | Entity targets, authority class, local rerank | INTEGRATED | Yes |
-| Crawl4AI | OPTIONAL | Only if `crawl4ai` imports. It does not in the default install |
+| Crawl4AI | INTEGRATED | Yes. `DefaultMarkdownGenerator` extracts HTML, including a local page. It is an optional extra, and this environment has it installed |
 | Browser Use | INTEGRATED when installed | Read-only, after HTTP or a JavaScript wall |
 | Calculator | INTEGRATED | Yes |
 | Code sandbox (`unshare` / bubblewrap) | INTEGRATED when the kernel allows it | Yes only with `AYVEN_ALLOW_CODE=1`, approval, and real isolation. rlimit does not run code |
@@ -39,11 +39,11 @@ Updated 2026-09-28 for v2.0.0. Nothing in this tree was vendored from the projec
 | Qwen-Agent | QwenLM/Qwen-Agent | Apache-2.0 | 0.0.34 | Yes | Function-calling loop | INTEGRATED | Kept behind `QwenAgentRuntime`. Ayven still authorises every call |
 | llguidance | guidance-ai/llguidance | MIT | 1.3.0 | Yes | Constrained decoding | INTEGRATED | Grammar mask. First legal byte of a tool request is `{`, not `<` |
 | Pydantic | pydantic/pydantic | MIT | 2.13.5 | Yes | Typed models | INTEGRATED | Already required. Schemas are the tool boundary |
-| Pydantic AI | pydantic/pydantic-ai | MIT | not pinned | Yes | Agent framework | ADAPTED | Patterns only (typed tools, structured output, approval-shaped requests). It is not the application runtime |
-| Crawl4AI | unclecode/crawl4ai | Apache-2.0 | not pinned | Yes | Crawl and markdown extraction | OPTIONAL | Ladder step after HTTP. Not installed by default |
+| Pydantic AI | pydantic/pydantic-ai | MIT | pydantic-ai-slim 2.51.0 | Yes | Agent framework | INTEGRATED as an optional runtime | `FunctionModel` and `TestModel` run, then `validate_tool_call`. Ayven still owns packages and approvals |
+| Crawl4AI | unclecode/crawl4ai | Apache-2.0 | 0.7.4 | Yes | Markdown extraction | INTEGRATED | Rung 4 after HTTP. LiteLLM is only a transitive dependency and is not the gateway |
 | Browser Use | browser-use/browser-use | MIT | 0.13.10 | Yes | Interactive browser | INTEGRATED | Escalation when the page needs interaction or JavaScript |
 | MCP Python SDK | modelcontextprotocol/python-sdk | MIT | 2.1.1 | Yes | stdio and Streamable HTTP client | INTEGRATED | Pinned beside browser-use. Tools enter the registry after discovery |
-| Mem0 | mem0ai/mem0 | Apache-2.0 | not pinned | Yes | Vector memory | REJECTED | Needs an embedder or a hosted service. SQLite with scope, provenance, threshold, and overlap ranking stays local |
+| Mem0 | mem0ai/mem0 | Apache-2.0 | not pinned | Yes | Vector memory | REJECTED | Default embedder is a hosted model call and Mem0 is a second store. Ayven uses local fastembed (`BAAI/bge-small-en-v1.5`) with a lexical fallback on the existing SQLite rows |
 | LiteLLM | BerriAI/litellm | MIT for non-enterprise; `enterprise/` is separate | not pinned | Yes | Provider router | REJECTED | Split licence and a large install. `gateway.py` records route, cooldown, and cost |
 | DSPy | stanfordnlp/dspy | MIT | not pinned | Yes | Prompt optimisation | OPTIONAL | Offline candidate prompts only. Production does not rewrite prompts |
 | Langfuse | langfuse/langfuse | MIT | not pinned | Yes | Hosted traces | OPTIONAL | Local traces are mandatory. Langfuse is a sink if a host is configured later |

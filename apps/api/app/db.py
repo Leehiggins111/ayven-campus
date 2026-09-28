@@ -252,4 +252,13 @@ def migrate_v20(conn: sqlite3.Connection) -> None:
         "last_used": "TEXT",
         "supersedes": "TEXT",
     })
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS traces (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            event TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
     conn.commit()

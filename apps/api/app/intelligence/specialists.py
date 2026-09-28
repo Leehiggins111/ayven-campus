@@ -55,7 +55,7 @@ MATRIX = (
         "licence": "Apache-2.0",
         "capability": "memory extraction and vector recall",
         "decision": "REJECTED",
-        "reason": "Mem0's gain is embeddings. There is no local embedding model in this build, and the hosted path is a remote service. Token-overlap retrieval on Ayven's existing rows covers the required include/exclude behaviour without that dependency.",
+        "reason": "Mem0's default embedder is a hosted OpenAI-compatible call, and its store is a second memory server. Ayven already ranks SQLite rows with a local fastembed model (lexical fallback) under the same scopes and provenance rules. Adding Mem0 would duplicate that and can spend a paid API if the default provider is left on.",
     },
     {
         "project": "BerriAI/litellm",
@@ -89,15 +89,15 @@ MATRIX = (
         "project": "pydantic/pydantic-ai",
         "licence": "MIT",
         "capability": "typed agent runtime",
-        "decision": "ADAPTED",
-        "reason": "Pydantic schemas are the tool boundary. Pydantic AI is not the application runtime, so Ayven keeps packages, approvals, and the ledger.",
+        "decision": "INTEGRATED",
+        "reason": "Optional runtime only. A pydantic-ai Agent with FunctionModel and TestModel runs, then Ayven's validate_tool_call accepts or rejects the output. It does not own packages, approvals, or the ledger.",
     },
     {
         "project": "unclecode/crawl4ai",
         "licence": "Apache-2.0",
         "capability": "markdown extraction and crawling",
-        "decision": "OPTIONAL",
-        "reason": "The ladder calls it only when it is installed and HTTP text is missing. It is not a required dependency.",
+        "decision": "INTEGRATED",
+        "reason": "Rung 4. DefaultMarkdownGenerator extracts a local HTML page to markdown. Browser Use remains the interactive step. LiteLLM ships inside Crawl4AI and is not used as Ayven's gateway.",
     },
 )
 

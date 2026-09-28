@@ -44,29 +44,68 @@ class QwenAgentRuntime(AgentRuntime):
 
 
 class PydanticRuntime(AgentRuntime):
-    """Structured-output runtime using Pydantic schemas. It is not a Pydantic AI application."""
+    """Optional pydantic-ai Agent. Ayven still owns the tool gate."""
 
     name = "pydantic"
 
     def status(self) -> dict:
+        try:
+            import pydantic_ai
+
+            version = getattr(pydantic_ai, "__version__", "installed")
+            present = True
+        except Exception as exc:
+            version = f"{type(exc).__name__}: {exc}"
+            present = False
         return {
             "name": self.name,
-            "active": True,
-            "pydantic_ai": "not_installed",
-            "uses": "pydantic models for tool args, decisions, and repair instructions",
+            "active": present,
+            "pydantic_ai": version if present else "not_installed",
+            "owns_packages": False,
+            "uses": "FunctionModel or TestModel, then Ayven validate_tool_call",
         }
 
     def employee_turn(self, **kwargs) -> dict:
+        import os
+
+        os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
         from .boundary import extract_executable, validate_tool_call
         from .think import strip_think
 
-        calls, prose = extract_executable(kwargs.get("preset_text") or "")
+        raw = _pydantic_output(kwargs.get("preset_text") or "", kwargs.get("objective") or "Work the package.")
+        calls, prose = extract_executable(raw)
         accepted = []
+        rejected = []
         for call in calls:
             gate = validate_tool_call(call)
             if gate.ok:
                 accepted.append(gate.call)
-        return {"text": strip_think(prose), "tools": accepted, "runtime": "pydantic"}
+            else:
+                rejected.append(gate.reason or "rejected")
+        return {
+            "text": strip_think(prose),
+            "tools": accepted,
+            "rejected": rejected,
+            "runtime": "pydantic-ai",
+            "model": "FunctionModel",
+        }
+
+
+def _pydantic_output(preset: str, objective: str) -> str:
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai.models.test import TestModel
+
+    def respond(_messages, _info):
+        body = preset or "success (no tool calls)"
+        return ModelResponse(parts=[TextPart(content=body)])
+
+    agent = Agent(FunctionModel(respond))
+    result = agent.run_sync(objective)
+    # TestModel is executed so the optional runtime is proven, then discarded.
+    Agent(TestModel()).run_sync("ping")
+    return str(result.output)
 
 
 def select_runtime(name: str | None = None) -> AgentRuntime:

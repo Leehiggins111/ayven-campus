@@ -99,23 +99,41 @@ def _rclone(run_dir: Path) -> dict:
 
 
 def _git(run_dir: Path) -> dict:
+    """Push the small artifact bundle and read it back. A local bare repo is a valid remote."""
     remote = destinations()["git_remote"]
-    branch = destinations()["git_branch"]
+    branch = destinations()["git_branch"] or "ayven-results"
     if not shutil.which("git"):
         return {"status": "NOT_EXPORTED", "verified": False, "reason": "git is not installed"}
-    work = run_dir / ".export-git"
+    token = os.environ.get("AYVEN_EXPORT_GIT_TOKEN", "")
+    push_remote = remote
+    if token and remote.startswith("https://") and "@" not in remote.split("://", 1)[-1].split("/")[0]:
+        push_remote = remote.replace("https://", f"https://x-access-token:{token}@", 1)
+    work = Path(run_dir) / ".export-git"
     if work.exists():
         shutil.rmtree(work)
-    subprocess.run(["git", "clone", "--depth", "1", "-b", branch, remote, str(work)], check=True, capture_output=True, text=True)
-    dest = work / run_dir.name
-    dest.mkdir(parents=True, exist_ok=True)
+    work.mkdir(parents=True)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "Ayven", "GIT_AUTHOR_EMAIL": "ayven@localhost", "GIT_COMMITTER_NAME": "Ayven", "GIT_COMMITTER_EMAIL": "ayven@localhost"}
+    subprocess.run(["git", "init", str(work)], check=True, capture_output=True, text=True, env=env)
+    subprocess.run(["git", "-C", str(work), "checkout", "-b", branch], check=True, capture_output=True, text=True, env=env)
+    bundle = work / run_dir.name
+    bundle.mkdir(parents=True, exist_ok=True)
     for path in _small_files(run_dir):
-        target = dest / path.relative_to(run_dir)
+        if ".export-git" in path.parts:
+            continue
+        target = bundle / path.relative_to(run_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-    subprocess.run(["git", "-C", str(work), "add", run_dir.name], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(work), "commit", "-m", f"Ayven validation {run_dir.name}"], check=True, capture_output=True, text=True)
-    subprocess.run(["git", "-C", str(work), "push", "origin", branch], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(work), "add", run_dir.name], check=True, capture_output=True, text=True, env=env)
+    subprocess.run(["git", "-C", str(work), "commit", "-m", f"Ayven validation {run_dir.name}"], check=True, capture_output=True, text=True, env=env)
+    subprocess.run(["git", "-C", str(work), "push", push_remote, f"HEAD:refs/heads/{branch}"], check=True, capture_output=True, text=True, env=env)
+    readback = Path(run_dir) / ".export-readback"
+    if readback.exists():
+        shutil.rmtree(readback)
+    subprocess.run(["git", "clone", "--branch", branch, remote, str(readback)], check=True, capture_output=True, text=True, env=env)
+    original = (run_dir / "manifest.json").read_text(encoding="utf-8")
+    copied = readback / run_dir.name / "manifest.json"
+    if not copied.is_file() or copied.read_text(encoding="utf-8") != original:
+        return {"status": "NOT_EXPORTED", "verified": False, "reason": "git read-back did not match the manifest"}
     return {"status": "VERIFIED", "verified": True, "location": f"{remote}#{branch}/{run_dir.name}"}
 
 

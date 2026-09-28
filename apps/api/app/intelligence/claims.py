@@ -156,6 +156,22 @@ def challenge(claim_id: str, challenger: str, reason: str, new_status: str) -> N
     conn.close()
 
 
+def update_claim(claim_id: str, **fields) -> None:
+    allowed = {
+        "claim_text", "claim_type", "evidence_text", "source_url", "source_type",
+        "freshness", "status", "confidence", "authority", "origin", "verification_status",
+    }
+    chosen = {key: value for key, value in fields.items() if key in allowed}
+    if not chosen:
+        return
+    chosen["updated_at"] = now()
+    conn = connect()
+    sets = ", ".join(f"{key}=?" for key in chosen)
+    conn.execute(f"UPDATE claims SET {sets} WHERE id=?", [*chosen.values(), claim_id])
+    conn.commit()
+    conn.close()
+
+
 def mark_verified(claim_id: str, status: str) -> None:
     conn = connect()
     conn.execute(
