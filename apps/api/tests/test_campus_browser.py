@@ -16,7 +16,9 @@ from app.intelligence.claims import add_claim
 from app.intelligence.execution import run_objective
 from app.intelligence.repair import apply_repairs
 
-SHOTS = Path("/workspace/docs/campus-screenshots")
+ROOT = Path(__file__).resolve().parents[3]
+API_DIR = Path(__file__).resolve().parents[1]
+SHOTS = ROOT / "docs" / "campus-screenshots"
 ARTIFACTS = Path("/opt/cursor/artifacts/campus-screenshots")
 
 
@@ -42,10 +44,13 @@ def _free_port() -> int:
 
 def _shot(page, name: str) -> None:
     SHOTS.mkdir(parents=True, exist_ok=True)
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
     target = SHOTS / name
     page.screenshot(path=str(target), full_page=False)
-    shutil.copy(target, ARTIFACTS / name)
+    try:
+        ARTIFACTS.mkdir(parents=True, exist_ok=True)
+        shutil.copy(target, ARTIFACTS / name)
+    except OSError:
+        pass
 
 
 def test_campus_ui_approve_reject_clarify_repair_and_evidence():
@@ -86,10 +91,10 @@ def test_campus_ui_approve_reject_clarify_repair_and_evidence():
         env["AYVEN_LLM_STUB"] = "1"
         env["AYVEN_ALLOW_ESCALATION"] = "0"
         env["AYVEN_RESEARCH_MODE"] = "fixtures"
-        env["PYTHONPATH"] = "/workspace:/workspace/apps/api"
+        env["PYTHONPATH"] = f"{ROOT}:{API_DIR}"
         server = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
-            cwd="/workspace/apps/api",
+            cwd=str(API_DIR),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
