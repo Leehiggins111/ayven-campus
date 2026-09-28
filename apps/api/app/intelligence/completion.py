@@ -79,6 +79,15 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
             outcome = "PASS"
         else:
             outcome = "PARTIAL"
+    elif task_class == "calculation":
+        value = str((research.get("calculation") or {}).get("value") or "")
+        useful = 1.0 if value and value in (text or "") else 0.0
+        requested = useful
+        coverage = useful
+        evidence_coverage = useful
+        unresolved = 0.0 if useful else 1.0
+        correctness = useful
+        outcome = "PASS" if safety_outcome == "PASS" and useful == 1.0 else "FAIL"
     elif task_class == "football_tickets":
         urls = re.findall(r"https?://[^\s)>\]]+", text or "")
         hits = len({url.rstrip(".,") for url in urls})

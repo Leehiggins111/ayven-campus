@@ -57,9 +57,10 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
         meta["elapsed_s"] = round(time.time() - started, 3)
         return strip_think(text), tokens, meta
     if local_base() and role.upper() != "ESCALATION":
-        text, tokens = _openai_compat(local_base(), os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ayven-local"), model, system, user, max_tokens, schema=schema)
+        text, tokens, constrained = _openai_compat(local_base(), os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ayven-local"), model, system, user, max_tokens, schema=schema)
         meta["backend"] = "local_openai_compat"
-        meta["constrained"] = schema is not None
+        meta["constrained"] = constrained
+        meta["model_validated"] = False
         meta["elapsed_s"] = round(time.time() - started, 3)
         return strip_think(text), tokens, meta
     if role.upper() == "ESCALATION" and escalation_configured():
@@ -75,11 +76,11 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
 
 def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
     import httpx
-    from .intelligence.boundary import decoding_kwargs, separate_channels
+    from .intelligence.boundary import separate_channels
+    from .intelligence.constrained import enforce_output, server_body
 
-    body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}], "max_tokens": max_tokens, "temperature": 0.2}
-    if schema is not None:
-        body.update({k: v for k, v in decoding_kwargs(schema).items() if k == "response_format"})
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    body = server_body(model, messages, max_tokens, schema)
     r = httpx.post(
         f"{base.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
@@ -92,5 +93,6 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
     text = message.get("content") or ""
     # A reasoning channel is not content. It is discarded before the caller sees the text.
     text = separate_channels(text, message.get("reasoning_content") or message.get("reasoning")).executable
+    text, info = enforce_output(schema, text)
     tokens = int(data.get("usage", {}).get("total_tokens") or len(text) // 4)
-    return text, tokens
+    return text, tokens, info

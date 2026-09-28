@@ -10,7 +10,7 @@ The branch tip on `cursor/ayven-v2-workable-a9eb` is the commit that contains th
 
 ## VERSION
 
-2.0.0. `GPU_VALIDATED` is false. `VALIDATION_STATUS` is `V2_LOCAL_CONTROL_PLANE_GPU_PENDING`.
+2.0.1. `GPU_VALIDATED` is false. `VALIDATION_STATUS` is `V2_LOCAL_CONTROL_PLANE_GPU_PENDING`.
 
 ## ARCHITECTURE CHANGES
 
@@ -194,7 +194,7 @@ OPTIONAL. `scripts/run_security_eval.sh` exits 0 unless `AYVEN_RUN_GARAK=1` and 
 
 ## RESULT PERSISTENCE STATUS
 
-`validation/export_results.py`. A local tar is not VERIFIED. Git push of the small text bundle, including to a local bare repo, is read back before `verified` is true. `AYVEN_EXPORT_GIT_TOKEN` is used for an https remote and is not written into the status location. S3, rclone, and a Hugging Face dataset remain optional. Otherwise the harness prints `DO NOT STOP POD — RESULTS NOT EXPORTED`. No model weights are committed. A test against a local bare repo returns VERIFIED.
+`validation/export_results.py`. A local tar is not VERIFIED. Before any model download, `scripts/run_ayven_validation.sh` calls `preflight_export()`. The primary durable target is `AYVEN_EXPORT_DIR` or `AYVEN_EXPORT_HTTP_URL`: a tarball plus a sha256 manifest (archive, manifest, scorecard, traces, claims, logs) must read back. Git remains a secondary read-back and still does not need to be the thing that saves the run. S3 and rclone stay optional. A Hugging Face upload is VERIFIED only after a download matches. Otherwise the script prints `DO NOT STOP POD — RESULTS NOT EXPORTED`. No model weights are committed. Tests cover a local directory, a local HTTP server, and a local bare git repo.
 
 ## CAMPUS STATUS
 
@@ -206,7 +206,7 @@ The served Campus (`apps/api/static/r3f/campus-app.jsx`) shows doing, why, stage
 
 ## TEST COUNT
 
-85 passed, 0 failed. Command: `PYTHONPATH=. python3 -m pytest tests -q` from `apps/api` (with the repo root on `PYTHONPATH` so the export test can import `validation`). No GPU and no paid API.
+103 passed, 0 failed, on v2.0.1. Command: `PYTHONPATH=/workspace:/workspace/apps/api python3 -m pytest apps/api/tests -q` from the repo root. No GPU and no paid API. The finishing audit is `docs/V2_FINISHING_AUDIT.md`.
 
 ## TEST RESULTS
 

@@ -2,10 +2,37 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+_TRACE: contextvars.ContextVar[str] = contextvars.ContextVar("ayven_trace_id", default="")
+
+
+def current_trace() -> str:
+    return _TRACE.get()
+
+
+def bind_trace(trace_id: str):
+    return _TRACE.set(trace_id or "")
+
+
+def reset_trace(token) -> None:
+    _TRACE.reset(token)
+
+
+def new_trace_id() -> str:
+    return str(uuid.uuid4())
+
+
+def redact(text: str) -> str:
+    canary = os.environ.get("AYVEN_SECRET_CANARY", "")
+    if canary and canary in (text or ""):
+        return text.replace(canary, "[REDACTED]")
+    return text or ""
 
 
 def _now() -> str:
@@ -18,11 +45,13 @@ def record_trace(package_id: str, event: str, payload: dict | None = None) -> di
 
     from ..db import connect
 
-    row = trace(event, package_id=package_id, **(payload or {}))
+    safe = {key: redact(value) if isinstance(value, str) else value for key, value in (payload or {}).items()}
+    safe.pop("trace_id", None)
+    row = trace(event, package_id=package_id, trace_id=current_trace(), **safe)
     conn = connect()
     conn.execute(
-        "INSERT INTO traces(id,package_id,event,payload,created_at) VALUES(?,?,?,?,?)",
-        (str(uuid.uuid4()), package_id, event, json.dumps(row, default=str), row["at"]),
+        "INSERT INTO traces(id,package_id,event,payload,created_at,trace_id) VALUES(?,?,?,?,?,?)",
+        (str(uuid.uuid4()), package_id, event, redact(json.dumps(row, default=str)), row["at"], current_trace()),
     )
     conn.commit()
     conn.close()
@@ -50,13 +79,13 @@ def traces_for(package_id: str) -> list[dict]:
 
 
 def trace(event: str, **fields) -> dict:
-    row = {"at": _now(), "event": event, **fields}
+    row = {"at": _now(), "event": event, "trace_id": fields.get("trace_id") or current_trace(), **fields}
     path = os.environ.get("AYVEN_TRACE_PATH", "")
     if path:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row, default=str) + "\n")
+            handle.write(redact(json.dumps(row, default=str)) + "\n")
     return row
 
 

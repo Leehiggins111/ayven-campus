@@ -36,7 +36,7 @@ def classify_repair(challenge_row: dict) -> str:
     ]).lower()
     if challenge_row.get("result") not in ("DISPROVED", "UNSUPPORTED"):
         return ""
-    if "calculator" in text or "arithmetic" in text or "pence" in text:
+    if "calculator" in text or "arithmetic" in text or "pence" in text or "currency" in text or "unit mismatch" in text:
         return "RECALCULATE"
     if "url" in text and "opened" in text:
         return "REMOVE_CLAIM"
@@ -48,6 +48,12 @@ def classify_repair(challenge_row: dict) -> str:
         return "REWRITE"
     if "current availability" in text or "stale" in text:
         return "REPLACE_SOURCE"
+    if "entity mismatch" in text or "wrong entity" in text:
+        return "RESEARCH_MORE"
+    if "partial source" in text or "incomplete source" in text:
+        return "RESEARCH_MORE"
+    if "conflict" in text:
+        return "RESEARCH_MORE"
     return "RESEARCH_MORE"
 
 

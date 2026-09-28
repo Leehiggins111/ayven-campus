@@ -5,6 +5,6 @@ repair, approvals, and local traces. Real model quality is not claimed.
 A GPU run has not been started from this build.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 VALIDATION_STATUS = "V2_LOCAL_CONTROL_PLANE_GPU_PENDING"
 GPU_VALIDATED = False

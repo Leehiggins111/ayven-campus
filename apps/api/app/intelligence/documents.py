@@ -7,6 +7,7 @@ DOCX uses python-docx. XLSX uses openpyxl.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 from html.parser import HTMLParser
 from pathlib import Path
@@ -60,7 +61,7 @@ def _pdf(blob: bytes, source: str) -> dict:
     for index, page in enumerate(reader.pages, start=1):
         pages.append({"page": index, "text": page.extract_text() or ""})
     text = "\n".join(f"[page {item['page']}] {item['text']}" for item in pages)
-    return _ok(text, source, "pdf", pages=pages, page=1 if pages else None)
+    return _ok(text, source, "pdf", pages=pages, page=1 if pages else None, locator="page:1" if pages else "", sha256=_sha(blob))
 
 
 def _docx(blob: bytes, source: str) -> dict:
@@ -71,7 +72,8 @@ def _docx(blob: bytes, source: str) -> dict:
     document = Document(io.BytesIO(blob))
     paragraphs = [{"paragraph": index, "text": para.text} for index, para in enumerate(document.paragraphs, start=1) if para.text.strip()]
     text = "\n".join(f"[paragraph {item['paragraph']}] {item['text']}" for item in paragraphs)
-    return _ok(text, source, "docx", paragraphs=paragraphs)
+    locator = f"paragraph:{paragraphs[0]['paragraph']}" if paragraphs else ""
+    return _ok(text, source, "docx", paragraphs=paragraphs, locator=locator, sha256=_sha(blob))
 
 
 def _xlsx(blob: bytes, source: str) -> dict:
@@ -79,21 +81,46 @@ def _xlsx(blob: bytes, source: str) -> dict:
         from openpyxl import load_workbook
     except Exception as exc:
         return {"ok": False, "kind": "xlsx", "text": "", "error": f"openpyxl_import_failed: {type(exc).__name__}", "source": source}
-    book = load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
+    book = load_workbook(io.BytesIO(blob), data_only=True)
     tables = []
+    cells = []
     lines = []
     for sheet in book.worksheets:
         rows = []
-        for row in sheet.iter_rows(values_only=True):
-            rows.append(["" if cell is None else str(cell) for cell in row])
+        for row in sheet.iter_rows():
+            values = []
+            for cell in row:
+                if cell.value is None:
+                    values.append("")
+                    continue
+                values.append(str(cell.value))
+                cells.append({"sheet": sheet.title, "cell": cell.coordinate, "text": str(cell.value)})
+            rows.append(values)
         tables.append({"sheet": sheet.title, "rows": rows[:40]})
         lines.append(f"[sheet {sheet.title}]")
         lines.extend(" | ".join(row) for row in rows[:40])
     book.close()
-    return _ok("\n".join(lines), source, "xlsx", tables=tables, sheet=tables[0]["sheet"] if tables else "")
+    locator = ""
+    if cells:
+        locator = f"{cells[0]['sheet']}!{cells[0]['cell']}"
+    return _ok("\n".join(lines), source, "xlsx", tables=tables, sheet=tables[0]["sheet"] if tables else "", cells=cells, locator=locator, sha256=_sha(blob))
 
 
-def _ok(text: str, source: str, kind: str, tables: list | None = None, pages: list | None = None, paragraphs: list | None = None, page=None, sheet: str = "") -> dict:
+def _sha(blob: bytes) -> str:
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _ok(text: str, source: str, kind: str, tables: list | None = None, pages: list | None = None, paragraphs: list | None = None, page=None, sheet: str = "", cells: list | None = None, locator: str = "", sha256: str = "") -> dict:
+    locators = []
+    if locator:
+        locators.append(locator)
+    for item in pages or []:
+        locators.append(f"page:{item.get('page')}")
+    for item in paragraphs or []:
+        locators.append(f"paragraph:{item.get('paragraph')}")
+    for item in cells or []:
+        locators.append(f"{item.get('sheet')}!{item.get('cell')}")
+    digest = sha256 or _sha(text.encode("utf-8"))
     return {
         "ok": True,
         "kind": kind,
@@ -101,9 +128,14 @@ def _ok(text: str, source: str, kind: str, tables: list | None = None, pages: li
         "tables": tables or [],
         "pages": pages or [],
         "paragraphs": paragraphs or [],
+        "cells": cells or [],
         "source": source,
         "page": page,
         "sheet": sheet,
+        "locator": locator or (locators[0] if locators else ""),
+        "locators": locators[:40],
+        "sha256": digest,
+        "file_hash": digest,
     }
 
 

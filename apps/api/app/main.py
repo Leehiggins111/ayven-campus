@@ -196,6 +196,39 @@ def get_project(pid: str):
         raise HTTPException(404)
     return {**rows[0], "tasks": _rows("SELECT * FROM tasks WHERE project_id=?", (pid,)), "work_packages": _rows("SELECT * FROM work_packages WHERE project_id=?", (pid,))}
 
+
+@app.get("/projects/{pid}/evaluation")
+def project_evaluation(pid: str):
+    rows = _rows("SELECT * FROM projects WHERE id=?", (pid,))
+    if not rows:
+        raise HTTPException(404)
+    packages = _rows(
+        "SELECT id, status, workflow_state, manager_decision, findings, observability_json "
+        "FROM work_packages WHERE project_id=? AND parent_id IS NULL ORDER BY updated_at DESC LIMIT 1",
+        (pid,),
+    )
+    if not packages:
+        return {"project_id": pid, "status": rows[0]["status"], "evaluation": None}
+    package = packages[0]
+    try:
+        obs = json.loads(package.get("observability_json") or "{}")
+    except json.JSONDecodeError:
+        obs = {}
+    from .intelligence.recovery import final_evaluation
+
+    evaluation = obs.get("evaluation") or final_evaluation(obs, decision=package.get("manager_decision") or "", findings=package.get("findings") or "")
+    return {
+        "project_id": pid,
+        "package_id": package["id"],
+        "status": package.get("workflow_state") or package.get("status") or rows[0]["status"],
+        "evaluation": evaluation,
+    }
+
+
+@app.get("/approvals")
+def list_approvals():
+    return {"approvals": _rows("SELECT * FROM approvals ORDER BY created_at DESC LIMIT 50")}
+
 @app.post("/approvals/{aid}/resolve")
 def resolve(aid: str, body: ApprovalIn):
     if body.decision not in ("approved", "rejected"):

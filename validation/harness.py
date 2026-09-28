@@ -105,15 +105,26 @@ class HfSession:
         if self.tok.pad_token_id is None and self.tok.eos_token_id is not None:
             self.tok.pad_token = self.tok.eos_token
         self.device = _device_of(self.model)
-    def generate(self, system, user):
+    def generate(self, system, user, schema=None):
         t0 = time.time()
         input_ids, kwargs = encode_for_generate(self.tok, [{"role":"system","content":system},{"role":"user","content":user}], self.device)
-        out = self.model.generate(**kwargs, max_new_tokens=700, do_sample=False, pad_token_id=self.tok.pad_token_id or self.tok.eos_token_id)
+        processors = []
+        if schema is not None:
+            from app.intelligence.constrained import brace_processor
+            processors.append(brace_processor(self.tok))
+        gen = dict(max_new_tokens=700, do_sample=False, pad_token_id=self.tok.pad_token_id or self.tok.eos_token_id)
+        if processors:
+            gen["logits_processor"] = processors
+        out = self.model.generate(**kwargs, **gen)
         plen = input_ids.shape[-1]
         text = self.tok.decode(out[0][plen:], skip_special_tokens=True)
+        info = {"postcheck": "skipped", "model_validated": False}
+        if schema is not None:
+            from app.intelligence.constrained import enforce_output
+            text, info = enforce_output(schema, text)
         dt = time.time()-t0
         n = max(1, int(out.shape[-1]-plen))
-        return text, {"model": self.model_id, "quantization": "bf16", "execution": "real", "prompt_tokens": int(plen), "completion_tokens": n, "generation_s": round(dt,2), "tok_s": round(n/dt,2) if dt else 0, "peak_vram_gb": _vram()}
+        return text, {"model": self.model_id, "quantization": "bf16", "execution": "real", "prompt_tokens": int(plen), "completion_tokens": n, "generation_s": round(dt,2), "tok_s": round(n/dt,2) if dt else 0, "peak_vram_gb": _vram(), "constrained": info, "model_validated": False}
     def close(self):
         try:
             del self.model; del self.tok
@@ -126,14 +137,24 @@ class GgufSession:
         from llama_cpp import Llama
         self.path = path
         self.llm = Llama(model_path=path, n_gpu_layers=-1, n_ctx=4096, verbose=False)
-    def generate(self, system, user):
+    def generate(self, system, user, schema=None):
         t0=time.time()
-        resp=self.llm.create_chat_completion(messages=[{"role":"system","content":system},{"role":"user","content":user}], max_tokens=700, temperature=0.2)
+        extra = {}
+        if schema is not None:
+            from app.intelligence.constrained import llama_cpp_kwargs
+            extra = llama_cpp_kwargs(schema)
+        try:
+            resp=self.llm.create_chat_completion(messages=[{"role":"system","content":system},{"role":"user","content":user}], max_tokens=700, temperature=0.2, **extra)
+        except TypeError:
+            resp=self.llm.create_chat_completion(messages=[{"role":"system","content":system},{"role":"user","content":user}], max_tokens=700, temperature=0.2)
         text=resp["choices"][0]["message"]["content"]
+        if schema is not None:
+            from app.intelligence.constrained import enforce_output
+            text, _info = enforce_output(schema, text)
         u=resp.get("usage") or {}
         dt=time.time()-t0
         n=int(u.get("completion_tokens") or max(1,len(text)//4))
-        return text, {"model": Path(self.path).name, "quantization": "gguf-q4_k_m", "execution": "real", "prompt_tokens": int(u.get("prompt_tokens") or 0), "completion_tokens": n, "generation_s": round(dt,2), "tok_s": round(n/dt,2) if dt else 0, "peak_vram_gb": _vram(), "n_gpu_layers": -1}
+        return text, {"model": Path(self.path).name, "quantization": "gguf-q4_k_m", "execution": "real", "prompt_tokens": int(u.get("prompt_tokens") or 0), "completion_tokens": n, "generation_s": round(dt,2), "tok_s": round(n/dt,2) if dt else 0, "peak_vram_gb": _vram(), "n_gpu_layers": -1, "model_validated": False}
     def close(self):
         try:
             del self.llm
@@ -186,7 +207,7 @@ def _export(run_dir: Path) -> Path:
         "========================================",
         f"Run directory: {run_dir}",
         f"Archive: {chosen}",
-        "Automatic export already created the archive. Download it before you stop the pod.",
+        "This local tar is not a verified export. STOP POD is printed only after a read-back.",
         "Manual copy if you need another path:",
         f"  tar -czf \"$HOME/ayven-validation-{stamp}.tar.gz\" -C \"{run_dir.parent}\" \"{run_dir.name}\"",
         "========================================",
@@ -258,13 +279,16 @@ def run(rate=None):
             from app.intelligence.research import set_query_planner
 
             def _plan(objective, guidance, session=employee_session):
+                from app.intelligence.schemas import ResearchPlan
                 system = (
                     "Plan web search queries from the objective and the skill guidance. "
+                    "Return a JSON object with a queries array. "
                     "Search each named entity on its own site, in its local language, before aggregators. "
-                    "One query per line, each starting with '- '. Do not invent entities."
+                    "Do not invent entities."
                 )
                 user = f"Objective:\n{(objective or '')[:1500]}\n\nSkill guidance:\n{(guidance or '')[:1500]}"
-                text, _meta = session.generate(system, user)
+                text, meta = session.generate(system, user, schema=ResearchPlan)
+                (run_dir / "constrained-first-call.json").write_text(json.dumps({"model_validated": False, "constrained": (meta or {}).get("constrained")}, default=str))
                 return text or ""
 
             set_query_planner(_plan)

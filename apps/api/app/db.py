@@ -45,6 +45,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_v04(conn)
     migrate_v10(conn)
     migrate_v20(conn)
+    migrate_v21(conn)
 
 
 SEED_AGENTS = [
@@ -261,4 +262,14 @@ def migrate_v20(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         )"""
     )
+    conn.commit()
+
+
+def migrate_v21(conn: sqlite3.Connection) -> None:
+    """Trace links, document locators, and file hashes. Additive only."""
+    _add_columns(conn, "claims", {"locator": "TEXT", "file_hash": "TEXT", "trace_id": "TEXT"})
+    _add_columns(conn, "model_calls", {"trace_id": "TEXT"})
+    _add_columns(conn, "tool_calls", {"trace_id": "TEXT"})
+    _add_columns(conn, "sources", {"trace_id": "TEXT"})
+    _add_columns(conn, "traces", {"trace_id": "TEXT"})
     conn.commit()

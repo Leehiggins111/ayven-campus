@@ -450,6 +450,8 @@ def test_git_export_readback_is_verified(monkeypatch, tmp_path):
     (run / "scorecard.txt").write_text("overall local\n", encoding="utf-8")
     monkeypatch.setenv("AYVEN_EXPORT_GIT_REMOTE", str(bare))
     monkeypatch.setenv("AYVEN_EXPORT_GIT_BRANCH", "ayven-results")
+    monkeypatch.delenv("AYVEN_EXPORT_DIR", raising=False)
+    monkeypatch.delenv("AYVEN_EXPORT_HTTP_URL", raising=False)
     monkeypatch.delenv("AYVEN_EXPORT_S3_URI", raising=False)
     monkeypatch.delenv("AYVEN_EXPORT_RCLONE_TARGET", raising=False)
     monkeypatch.delenv("AYVEN_EXPORT_HF_DATASET", raising=False)

@@ -159,6 +159,86 @@ def format_for_prompt(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+_QUALITY_STOP = {"the", "and", "for", "are", "was", "with", "that", "this", "from", "into", "kept", "keep", "keeps"}
+
+
+def _quality_tokens(text: str) -> set[str]:
+    return {part for part in _tokens(text) if part not in _QUALITY_STOP}
+
+
+def _rank_lexical(query: str, documents: list[str]) -> int:
+    wanted = _quality_tokens(query)
+    scores = [len(wanted & _quality_tokens(doc)) for doc in documents]
+    return max(range(len(scores)), key=lambda index: scores[index]) if scores else -1
+
+
+def _rank_semantic(query: str, documents: list[str]) -> int | None:
+    vectors = _embed([query, *documents])
+    if not vectors:
+        return None
+    scores = [_cosine(vectors[0], vectors[index + 1]) for index in range(len(documents))]
+    return max(range(len(scores)), key=lambda index: scores[index])
+
+
+def retrieval_quality(cases: list[dict] | None = None) -> dict:
+    """Top-1 recall for paraphrase, near-duplicate, and unrelated distractors.
+
+    Semantic numbers are reported only when the local embedder loads. Lexical
+    numbers always run. A missing embedder does not count as a semantic pass.
+    """
+    samples = cases if cases is not None else [
+        {
+            "kind": "paraphrase",
+            "query": "where are the hinges stored",
+            "relevant": "The workshop keeps the hinges in the blue cupboard.",
+            "distractors": ["Tuesday soup is served in the canteen at noon."],
+        },
+        {
+            "kind": "near_duplicate",
+            "query": "The workshop keeps the hinges in the blue cupboard.",
+            "relevant": "Workshop keeps hinges in the blue cupboard.",
+            "distractors": ["A railway timetable lists evening services only."],
+        },
+        {
+            "kind": "unrelated",
+            "query": "where are the hinges stored",
+            "relevant": "The workshop keeps the hinges in the blue cupboard.",
+            "distractors": ["Paint colours for the lobby wall are still undecided.", "Tuesday soup is served in the canteen at noon."],
+        },
+    ]
+    semantic_hits = {kind: [] for kind in ("paraphrase", "near_duplicate", "unrelated")}
+    lexical_hits = {kind: [] for kind in ("paraphrase", "near_duplicate", "unrelated")}
+    semantic_on = False
+    for case in samples:
+        docs = [case["relevant"], *case["distractors"]]
+        lexical_hits[case["kind"]].append(_rank_lexical(case["query"], docs) == 0)
+        semantic_index = _rank_semantic(case["query"], docs)
+        if semantic_index is None:
+            continue
+        semantic_on = True
+        semantic_hits[case["kind"]].append(semantic_index == 0)
+
+    def _rate(hits: list[bool]) -> float | None:
+        if not hits:
+            return None
+        return round(sum(1 for item in hits if item) / len(hits), 3)
+
+    lexical = {kind: _rate(lexical_hits[kind]) for kind in lexical_hits}
+    semantic = {kind: _rate(semantic_hits[kind]) if semantic_on else None for kind in semantic_hits}
+    lexical_pass = (lexical["near_duplicate"] or 0) >= 1 and (lexical["unrelated"] or 0) >= 1
+    semantic_pass = True
+    if semantic_on:
+        semantic_pass = (semantic["paraphrase"] or 0) >= 0.5 and (semantic["near_duplicate"] or 0) >= 1 and (semantic["unrelated"] or 0) >= 1
+    return {
+        "semantic_available": semantic_on,
+        "embedder_error": _EMBEDDER.get("error") or "",
+        "lexical": lexical,
+        "semantic": semantic,
+        "thresholds": {"paraphrase_recall": 0.5, "near_duplicate": 1.0, "distractor_rejected": 1.0},
+        "pass": bool(lexical_pass and semantic_pass),
+    }
+
+
 def search(scope: str, query: str, subject_id: str | None = None, limit: int = 8) -> list[dict]:
     conn = connect()
     sql = "SELECT * FROM memories WHERE scope=? AND (superseded_by IS NULL OR superseded_by='') AND content LIKE ?"

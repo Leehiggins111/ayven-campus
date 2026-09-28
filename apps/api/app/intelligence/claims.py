@@ -27,6 +27,12 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _current_trace() -> str:
+    from .observability import current_trace
+
+    return current_trace()
+
+
 def confidence_for(source_type: str, freshness: str, evidence_level: str) -> tuple[float, str]:
     base = _RANK_CONFIDENCE.get(source_type, 0.2)
     status = "SUPPORTED"
@@ -60,6 +66,9 @@ def add_claim(
     origin: str = "evidence",
     authority: str = "",
     contradicting_evidence: str = "",
+    locator: str = "",
+    file_hash: str = "",
+    trace_id: str = "",
 ) -> dict:
     text = strip_think(claim_text)
     evidence = strip_think(evidence_text)
@@ -101,6 +110,9 @@ def add_claim(
         "authority": authority or source_type,
         "repair_history": "[]",
         "verification_history": "[]",
+        "locator": locator,
+        "file_hash": file_hash,
+        "trace_id": trace_id or _current_trace(),
     }
     conn = connect()
     conn.execute(
@@ -108,13 +120,14 @@ def add_claim(
             id,package_id,agent_id,claim_text,claim_type,source_id,evidence_text,source_url,
             source_type,retrieved_at,freshness,verification_status,confidence,challenged_by,
             challenge_reason,supersedes,status,created_at,updated_at,origin,contradicting_evidence,
-            authority,repair_history,verification_history
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            authority,repair_history,verification_history,locator,file_hash,trace_id
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [row[k] for k in (
             "id", "package_id", "agent_id", "claim_text", "claim_type", "source_id", "evidence_text",
             "source_url", "source_type", "retrieved_at", "freshness", "verification_status", "confidence",
             "challenged_by", "challenge_reason", "supersedes", "status", "created_at", "updated_at",
             "origin", "contradicting_evidence", "authority", "repair_history", "verification_history",
+            "locator", "file_hash", "trace_id",
         )],
     )
     if evidence or source_url:

@@ -613,13 +613,23 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
         raw_text = page.get("text") or ""
         text = raw_text
         looks_html = "<" in raw_text and ">" in raw_text
-        if looks_html or (mode == "live" and len(raw_text) < 40 and not page.get("error")):
-            from .crawl_adapter import extract as crawl_extract
+        from .crawl_adapter import crawl_live, extract as crawl_extract, route_fetch
 
+        route = route_fetch(html=raw_text if looks_html else "", javascript_wall=_js_wall(_plain_text(raw_text)))
+        page = dict(page)
+        page["fetch_route"] = route
+        if route == "crawl4ai_live":
+            crawled = crawl_live(page.get("url") or u)
+            if crawled.get("ok") and crawled.get("text"):
+                text = crawled["text"]
+                page["text"] = text
+                page["via_crawl"] = crawled.get("engine") or True
+            else:
+                page["fetch_route"] = "browser_use"
+        elif looks_html or (mode == "live" and len(raw_text) < 40 and not page.get("error")):
             crawled = crawl_extract(page.get("url") or u, raw_text)
             if crawled.get("ok") and crawled.get("text"):
                 text = crawled["text"]
-                page = dict(page)
                 page["text"] = text
                 page["via_crawl"] = crawled.get("engine") or True
         text = _plain_text(text)
@@ -691,6 +701,7 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 "injection_signals": _injection(text),
                 "action_from_web": False,
                 "via_crawl": bool(page.get("via_crawl")),
+                "fetch_route": page.get("fetch_route") or "",
             },
         )
 

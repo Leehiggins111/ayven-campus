@@ -138,6 +138,21 @@ if [[ "$PREFLIGHT_ONLY" -eq 1 ]]; then
   echo "Preflight finished. No model was downloaded."
   exit 0
 fi
+python3 - << PY
+import json, os, sys
+sys.path.insert(0, "${ROOT}/apps/api")
+sys.path.insert(0, "${ROOT}")
+from validation.export_results import banner, preflight_export
+from app.intelligence.constrained import write_probe
+result = preflight_export()
+open("${ROOT}/validation/.export_preflight", "w", encoding="utf-8").write(json.dumps(result))
+print("EXPORT PREFLIGHT", result.get("ok"), result.get("target") or result.get("reason"))
+probe = write_probe("${ROOT}/validation/.constrained_probe.json")
+print("CONSTRAINED", probe.get("status"), "guided_json" if probe.get("has_guided_json") else "no-guided-json")
+if not result.get("ok"):
+    print(banner(False))
+    raise SystemExit(2)
+PY
 python3 "$ROOT/validation/prepare.py"
 status=$?
 if [ "$status" -ne 0 ]; then

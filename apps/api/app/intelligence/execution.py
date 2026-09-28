@@ -159,8 +159,21 @@ class Programme:
         self.self_checks: list[dict] = []
         self.material_challenges: list[dict] = []
         self.document: dict | None = None
+        self.calculation: dict | None = None
+        from .observability import new_trace_id
+
+        self.trace_id = new_trace_id()
 
     def prepare_all(self) -> str:
+        from .observability import bind_trace, reset_trace
+
+        token = bind_trace(self.trace_id)
+        try:
+            return self._prepare_all()
+        finally:
+            reset_trace(token)
+
+    def _prepare_all(self) -> str:
         _set_agent(MANAGER, status="working", last_summary="Planning the work package", progress=0.2, current_tool=None)
         self.parent_id = insert_package(
             project_id=self.project_id, task_id=self.task_id, title="Research programme", objective=self.objective,
@@ -179,13 +192,50 @@ class Programme:
             selected_skills=",".join(skill.name for skill in self.skills),
             selected_model=route_for(self.task_class, "planning")["model_id"],
         )
+        if self.task_class == "calculation":
+            self.calculation = _calculation_from_objective(self.objective)
+            self.research["calculation"] = self.calculation or {}
         if "research" in self.plan["stages"]:
+            from .recovery import run_bounded
+
             _set_agent("research-e3", status="researching", current_tool="web_search", last_summary="Collecting evidence", progress=0.35)
-            self.research = research(self.task_class, self.objective, self.parent_id, "research-e3", project_id=self.project_id, skills=self.skills)
+            researched, err = run_bounded(
+                "research",
+                lambda: research(self.task_class, self.objective, self.parent_id, "research-e3", project_id=self.project_id, skills=self.skills),
+            )
+            if err:
+                self.errors.append(err)
+                self.research = {
+                    "mode": "timeout",
+                    "queries": [],
+                    "evidence": [],
+                    "failures": [{"stage": "research", "error": err}],
+                    "gaps": [f"Gap: {err}"],
+                    "skipped": False,
+                }
+            else:
+                self.research = researched or self.research
             attached = _attached_document(self.objective)
             self.document = attached
             if attached:
                 self.research.setdefault("evidence", []).append(attached)
+                meta = attached.get("metadata") or {}
+                claim_ledger.add_claim(
+                    self.parent_id,
+                    "research-e3",
+                    (attached.get("extracted_content") or "")[:500],
+                    "DOCUMENT",
+                    evidence_text=(attached.get("extracted_content") or "")[:500],
+                    source_url=attached.get("source_url") or "",
+                    source_type="PRIMARY_DOCUMENT",
+                    freshness="INPUT",
+                    evidence_level="page",
+                    source_title=attached.get("source_title") or "",
+                    status="SUPPORTED",
+                    locator=str(meta.get("locator") or ""),
+                    file_hash=str(meta.get("sha256") or ""),
+                    origin="document",
+                )
             for item in self.research.get("evidence") or []:
                 save_source(self.parent_id, item.get("source_url") or "", item.get("source_title") or "", item.get("extracted_content") or "", "opened_page")
         self.plan["unknowns"] = list(self.research.get("gaps") or [])
@@ -227,11 +277,24 @@ class Programme:
             "prospects": prospects,
             "synthesis": "\n\n".join(part for part in self.grounded.values() if part),
             "resolution": self.resolution,
+            "calculation": self.calculation,
         }
 
     def _claims_for(self, child_id: str, spec: dict) -> None:
         focus = spec["focus"]
         agent = spec["agent_id"]
+        if focus == "scenarios" and self.calculation:
+            claim_ledger.add_claim(
+                child_id, agent,
+                f"Calculator result {self.calculation['value']} from {self.calculation['expression']}.",
+                "CALCULATION",
+                evidence_text=f"{self.calculation['expression']} = {self.calculation['value']}",
+                source_type="DETERMINISTIC",
+                freshness="INPUT",
+                evidence_level="deterministic",
+                status="SUPPORTED",
+                origin="calculator",
+            )
         if focus == "scenarios" and self.quote:
             claim_ledger.claims_from_quote(child_id, agent, self.quote)
         elif focus == "gaps" and self.quote:
@@ -288,9 +351,19 @@ class Programme:
         return []
 
     def bind(self, role: str, package_id: str, text: str, meta: dict | None = None) -> None:
+        from .observability import bind_trace, reset_trace
+
+        token = bind_trace(self.trace_id)
+        try:
+            self._bind(role, package_id, text, meta)
+        finally:
+            reset_trace(token)
+
+    def _bind(self, role: str, package_id: str, text: str, meta: dict | None = None) -> None:
         meta = dict(meta or {})
         clean = strip_think(text or "")
         meta.setdefault("backend", meta.get("execution") or "stub")
+        meta["trace_id"] = self.trace_id
         if role == "EMPLOYEE":
             self._bind_employee(package_id, clean, meta)
         elif role == "SUPERVISOR":
@@ -561,10 +634,15 @@ class Programme:
             "skills_loaded": [{"name": skill.name, "tools": skill.tools, "evidence": skill.evidence, "checks": skill.checks, "permissions": skill.requested_permissions} for skill in self.skills],
             "frankenstein": frankenstein_status(),
             "errors": self.errors,
+            "trace_id": self.trace_id,
+            "calculation": self.calculation or {},
             "research_mode": self.research.get("mode"),
             "frontier_called": False,
             "quality": quality,
         }
+        from .recovery import final_evaluation
+
+        observability["evaluation"] = final_evaluation(observability, decision=decision, findings=findings)
         save_observability(self.parent_id, observability)
         from .observability import record_trace
 
@@ -574,6 +652,8 @@ class Programme:
             "repair_rate": observability.get("repair_rate"),
             "tokens": self.tokens,
             "task_class": self.task_class,
+            "trace_id": self.trace_id,
+            "verdict": observability["evaluation"]["verdict"],
         })
         for action in self.repairs:
             record_trace(self.parent_id, "repair", action)
@@ -617,6 +697,26 @@ class Programme:
         _set_agent(SUPERVISOR, status="idle", last_summary="Audit complete", progress=1)
 
 
+def _calculation_from_objective(objective: str) -> dict | None:
+    import re
+
+    from .calc import CalcError
+
+    match = re.search(r"sum of\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)", objective or "", re.I)
+    if match:
+        expression = f"{match.group(1)}+{match.group(2)}"
+    else:
+        found = re.search(r"\d+(?:\.\d+)?(?:\s*[\+\-\*/]\s*\d+(?:\.\d+)?)+", objective or "")
+        if not found:
+            return None
+        expression = re.sub(r"\s+", "", found.group(0))
+    try:
+        value = eval_arithmetic(expression)
+    except CalcError:
+        return None
+    return {"expression": expression, "value": value}
+
+
 def _attached_document(objective: str) -> dict | None:
     """A test or caller can point AYVEN_DOCUMENT_PATH at a local file. Web text cannot set it."""
     import os
@@ -627,14 +727,23 @@ def _attached_document(objective: str) -> dict | None:
     if not any(word in (objective or "").lower() for word in ("document", "pdf", "spreadsheet", "sheet", "docx")):
         return None
     from .documents import extract
+    from .security import injection_signals
 
     doc = extract(path=path)
     if not doc.get("ok"):
         return None
+    raw = doc.get("text") or ""
+    signals = injection_signals(raw)
+    published = raw
+    if signals:
+        kept = [line for line in raw.splitlines() if not injection_signals(line)]
+        published = "\n".join(kept).strip() or "The document contained an untrusted instruction and no remaining fact."
+    locator = str(doc.get("locator") or "")
+    digest = str(doc.get("sha256") or "")
     return {
         "source_url": "file://" + path,
         "source_title": doc.get("source") or path,
-        "extracted_content": doc.get("text") or "",
+        "extracted_content": f"file_hash={digest} locator={locator}\n{published}"[:4000],
         "metadata": {
             "evidence_level": "page",
             "relevant": True,
@@ -642,11 +751,26 @@ def _attached_document(objective: str) -> dict | None:
             "source_rank": "PRIMARY_DOCUMENT",
             "page": doc.get("page"),
             "sheet": doc.get("sheet"),
+            "locator": locator,
+            "sha256": digest,
+            "file_hash": digest,
+            "injection_signals": signals,
+            "action_from_document": False,
         },
     }
 
 
 def run_objective(project_id: str, objective: str, task_id: str | None = None) -> str:
+    import os
+
+    from .observability import record_trace
+    from .recovery import resume_parent
+
+    if os.environ.get("AYVEN_RESUME", "0") == "1":
+        existing = resume_parent(project_id)
+        if existing:
+            record_trace(existing, "resume", {"project_id": project_id})
+            return existing
     programme = Programme(project_id, objective, task_id)
     programme.prepare_all()
     for role in ("EMPLOYEE", "SUPERVISOR", "MANAGER"):
