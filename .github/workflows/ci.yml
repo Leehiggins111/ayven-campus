@@ -57,6 +57,13 @@ jobs:
           python -m pip install click==8.3.3 pillow==12.3.0
           python -m playwright install --with-deps chromium
 
+      - name: Allow the sandbox user namespace
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          unshare --user --map-root-user --net true
+
       - name: Dependency lock
         run: python scripts/check_dependency_lock.py
 
