@@ -13,7 +13,7 @@ TTL = 12 * 60 * 60
 
 
 def token() -> str:
-    return os.environ.get('AYVEN_API_TOKEN', '')
+    return os.environ.get('AYVEN_API_TOKEN') or os.environ.get('AYVEN_ACCESS_KEY', '')
 
 
 def session_value(now: int) -> str:
@@ -28,7 +28,7 @@ def authorized(request: Request) -> bool:
         return True  # Local development; public deployment fails startup without a key.
     supplied = request.headers.get('authorization', '')
     read_key = os.environ.get('AYVEN_READ_TOKEN', '')
-    if read_key and request.method == 'GET' and supplied.startswith('Bearer ') and hmac.compare_digest(supplied[7:].encode(), read_key.encode()):
+    if read_key and request.method == 'GET' and not request.url.path.startswith('/admin/') and supplied.startswith('Bearer ') and hmac.compare_digest(supplied[7:].encode(), read_key.encode()):
         return True
     if supplied.startswith('Bearer ') and hmac.compare_digest(supplied[7:].encode(), key.encode()):
         return True

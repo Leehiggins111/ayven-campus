@@ -20,7 +20,7 @@ from .version import VALIDATION_STATUS, __version__
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 app = FastAPI(title="Ayven Campus API", version=__version__)
-from .access import boundary, login, create_session, validate_public_configuration
+from .access import boundary, login, create_session, validate_public_configuration, token, session_value
 app.middleware("http")(boundary)
 app.add_api_route("/login", login, methods=["GET"])
 app.add_api_route("/session", create_session, methods=["POST"])
@@ -83,6 +83,9 @@ def health():
         "version": __version__,
         "validation_status": VALIDATION_STATUS,
         "gpu_validated": False,
+        "access_protected": bool(token()),
+        "research_mode": os.environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
+        "persistence": "local_sqlite_not_verified_durable",
         "runtime": "durable" if os.environ.get("AYVEN_DURABLE") == "1" else "ephemeral",
         "model_mode": "fixture" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" and not local_configured() else "configured",
         "workforce": {"roles": DEFAULT_MODELS, "local_endpoint": local_configured(), "escalation_enabled": escalation_configured()},
@@ -206,7 +209,9 @@ def _traces(package_id: str) -> list[dict]:
 
 @app.post("/projects")
 def create_project(body: ObjectiveIn, request: Request):
-    key = request.headers.get("Idempotency-Key", "").strip()
+    return _submit_project(body, request.headers.get("Idempotency-Key", "").strip())
+
+def _submit_project(body: ObjectiveIn, key: str):
     if len(key) > 200:
         raise HTTPException(400, "Idempotency key is too long")
     objective = body.objective.strip()
@@ -326,6 +331,59 @@ def demo_fail():
 def demo_retry():
     orchestrator.retry_agent("web-researcher")
     return {"ok": True}
+
+class LoginIn(BaseModel):
+    key: str
+
+
+@app.post("/login")
+def login_json(body: LoginIn, request: Request):
+    import hmac
+    import time
+    from fastapi.responses import JSONResponse
+    if not token() or not hmac.compare_digest(body.key.encode(), token().encode()):
+        raise HTTPException(401, "login required")
+    response = JSONResponse({"ok": True, "protected": True})
+    from .access import TTL
+    response.set_cookie("ayven_session", session_value(int(time.time())), max_age=TTL,
+                        httponly=True, secure=request.url.scheme == "https", samesite="strict")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/milo/jobs")
+def milo_submit(body: ObjectiveIn, request: Request, idempotency_key: str = ""):
+    header_key = request.headers.get("Idempotency-Key", "").strip()
+    if header_key and idempotency_key and header_key != idempotency_key:
+        raise HTTPException(400, "Conflicting idempotency keys")
+    receipt = _submit_project(body, header_key or idempotency_key)
+    return {**receipt, "duplicate": receipt["replayed"]}
+
+
+@app.get("/milo/jobs/{project_id}")
+def milo_status(project_id: str):
+    from .milo_handoff import job_status
+    try:
+        return job_status(project_id)
+    except KeyError:
+        raise HTTPException(404)
+
+
+@app.get("/admin/backup")
+def backup():
+    import hashlib
+    from .db import db_path
+    target = Path("/tmp/ayven-backup.db")
+    import sqlite3
+    conn = connect()
+    try:
+        with sqlite3.connect(target) as destination:
+            conn.backup(destination)
+    finally:
+        conn.close()
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    return {"ok": True, "path": str(target), "sha256": digest, "durable": False, "note": "Local copy only. No free remote store is connected."}
+
 
 @app.get("/events/stream")
 def stream():
