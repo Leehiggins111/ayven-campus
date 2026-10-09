@@ -937,15 +937,46 @@ def answer_clarification(package_id: str, answer: str) -> str:
 
 
 def resume_approved_package(package_id: str) -> str:
-    """After the approval row is recorded, the same package completes. Nothing is sent."""
+    """Approval authorises the next internal step. It does not prove the job succeeded."""
     from .campus_view import mark_stage
     from .store import package
 
     row = package(package_id) or {}
     if (row.get("workflow_state") or "") != "APPROVED":
         return row.get("workflow_state") or ""
-    log_transition(package_id, "ACTIONING", "Lee approved; the same package continues. Nothing is sent.")
-    log_transition(package_id, "COMPLETED", "Approved package completed. Nothing was sent.")
+    findings = row.get("findings") or ""
+    research_mode = ""
+    try:
+        import json as _json
+        research_mode = (_json.loads(row.get("research_json") or "{}") or {}).get("mode") or ""
+    except Exception:
+        research_mode = ""
+    fixture = "fixtures" in findings.lower() or research_mode in {"fixtures", "fixture", "stub"}
+    unsupported = fixture or ("no opened source" in findings.lower())
+    log_transition(package_id, "ACTIONING", "Lee approved the internal review. Nothing is sent.")
+    if unsupported:
+        log_transition(package_id, "UNRESOLVED", "Approved, but the required research has no opened sources.")
+        update_package(
+            package_id,
+            stage="results",
+            status="unresolved",
+            destination="command",
+            next_action="Unresolved: no opened sources",
+            findings=("UNRESOLVED. Approval did not create evidence.\n" + findings)[:8000],
+        )
+        mark_stage(package_id, "COMPLETE", project_id=row.get("project_id") or "", task_id=row.get("task_id") or "")
+        _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="Unresolved: no opened sources", progress=1)
+        _set_agent("milo", visual_state="WAITING", status="idle", last_summary="Package unresolved after approval", progress=1)
+        if row.get("project_id"):
+            conn = connect()
+            conn.execute(
+                "UPDATE projects SET status=?, result=? WHERE id=?",
+                ("unresolved", "Approved, but research was not supported by opened sources.", row["project_id"]),
+            )
+            conn.commit()
+            conn.close()
+        return "UNRESOLVED"
+    log_transition(package_id, "COMPLETED", "Approved package met its deliverable. Nothing was sent.")
     update_package(
         package_id,
         stage="results",
@@ -969,7 +1000,7 @@ def resume_approved_package(package_id: str) -> str:
         conn = connect()
         conn.execute(
             "UPDATE projects SET status=?, result=? WHERE id=?",
-            ("complete", row.get("findings") or "Approved. Nothing was sent.", row["project_id"]),
+            ("complete", findings or "Approved. Nothing was sent.", row["project_id"]),
         )
         conn.commit()
         conn.close()
@@ -1081,9 +1112,9 @@ def _approval_context(programme: Programme, decision: str) -> dict:
     reason = strip_think((programme.resolution.get("reason") or programme.resolution.get("rationale") or "") )
     return {
         "what": _approval_summary(programme.task_class),
-        "why": (reason or "A person must approve the next external action.")[:400],
-        "if_approved": "The same work package continues to completion. Nothing is sent externally.",
-        "if_rejected": "The work package ends rejected. Nothing is sent.",
+        "why": (reason or "A person must review this internal step. No external action is implemented.")[:400],
+        "if_approved": "The same package is reviewed again. Approval does not prove the job succeeded, and nothing is sent.",
+        "if_rejected": "The work package stops as rejected. Nothing is sent.",
         "evidence": evidence,
         "decision": decision,
     }
@@ -1114,4 +1145,4 @@ def _approval_summary(task_class: str) -> str:
         "internal_door_quote": "Confirm labour unit, VAT, measurements and spec before any customer quote. Nothing was sent.",
         "football_tickets": "Approve any enquiry before it is sent. No purchase was made.",
         "vending_prospects": "Approve outreach before contact. The draft was not sent.",
-    }.get(task_class, "Approve the next external action. Nothing was sent.")
+    }.get(task_class, "Review this internal result. No external action is implemented, and nothing was sent.")
