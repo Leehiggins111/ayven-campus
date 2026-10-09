@@ -19,6 +19,8 @@ from .version import VALIDATION_STATUS, __version__
 STATIC = Path(__file__).resolve().parent.parent / "static"
 app = FastAPI(title="Ayven Campus API", version=__version__)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+from .access import access_middleware, access_key, protected
+app.middleware("http")(access_middleware)
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
 
 def _campus_index() -> Path:
@@ -65,6 +67,9 @@ def health():
         "version": __version__,
         "validation_status": VALIDATION_STATUS,
         "gpu_validated": False,
+        "access_protected": protected(),
+        "research_mode": __import__("os").environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
+        "persistence": "local_sqlite_not_verified_durable",
         "workforce": {"roles": DEFAULT_MODELS, "local_endpoint": local_configured(), "escalation_enabled": escalation_configured()},
     }
 
@@ -279,6 +284,49 @@ def demo_fail():
 def demo_retry():
     orchestrator.retry_agent("web-researcher")
     return {"ok": True}
+
+class LoginIn(BaseModel):
+    key: str
+
+
+@app.post("/login")
+def login(body: LoginIn):
+    import hashlib
+    from fastapi.responses import JSONResponse
+    if not protected():
+        return {"ok": True, "protected": False}
+    if body.key != access_key():
+        raise HTTPException(401, "login required")
+    response = JSONResponse({"ok": True, "protected": True})
+    response.set_cookie("ayven_session", hashlib.sha256(access_key().encode()).hexdigest(), httponly=True, samesite="lax")
+    return response
+
+
+@app.post("/milo/jobs")
+def milo_submit(body: ObjectiveIn, idempotency_key: str = ""):
+    from .milo_handoff import submit_job
+    return submit_job(body.objective, idempotency_key)
+
+
+@app.get("/milo/jobs/{project_id}")
+def milo_status(project_id: str):
+    from .milo_handoff import job_status
+    try:
+        return job_status(project_id)
+    except KeyError:
+        raise HTTPException(404)
+
+
+@app.get("/admin/backup")
+def backup():
+    import hashlib
+    import shutil
+    from .db import db_path
+    target = Path("/tmp/ayven-backup.db")
+    shutil.copy(db_path(), target)
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    return {"ok": True, "path": str(target), "sha256": digest, "durable": False, "note": "Local copy only. No free remote store is connected."}
+
 
 @app.get("/events/stream")
 def stream():
