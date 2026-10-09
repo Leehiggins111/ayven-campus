@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import re
+
+from .calc import expression_from_objective
 
 
 def classify(objective: str) -> str:
@@ -14,6 +17,11 @@ def classify(objective: str) -> str:
     if "ticket" in text:
         return "football_tickets"
     if any(key in text for key in ("calculate", "what is the sum", "arithmetic")):
+        return "calculation"
+    if expression_from_objective(text) and (
+        re.match(r"^(?:what(?:'s| is)|work out|how much is|how many is)\b", text)
+        or re.fullmatch(r"[\d\s.+*/x×÷()-]+[?]?", text)
+    ):
         return "calculation"
     if len(text) < 24 and not any(key in text for key in ("price", "current", "latest", "who", "research")):
         return "trivial"

@@ -763,18 +763,11 @@ class Programme:
 
 
 def _calculation_from_objective(objective: str) -> dict | None:
-    import re
+    from .calc import CalcError, expression_from_objective
 
-    from .calc import CalcError
-
-    match = re.search(r"sum of\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)", objective or "", re.I)
-    if match:
-        expression = f"{match.group(1)}+{match.group(2)}"
-    else:
-        found = re.search(r"\d+(?:\.\d+)?(?:\s*[\+\-\*/]\s*\d+(?:\.\d+)?)+", objective or "")
-        if not found:
-            return None
-        expression = re.sub(r"\s+", "", found.group(0))
+    expression = expression_from_objective(objective)
+    if not expression:
+        return None
     try:
         value = eval_arithmetic(expression)
     except CalcError:

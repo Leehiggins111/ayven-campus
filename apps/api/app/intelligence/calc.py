@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from decimal import Decimal, ROUND_HALF_UP
 
 _BIN = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b, ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: a / b}
@@ -49,3 +50,16 @@ def sum_pence(amounts: list[int]) -> int:
             raise CalcError("pence must be integers")
         total += amount
     return total
+
+
+def expression_from_objective(objective: str) -> str | None:
+    """Recognise ordinary arithmetic wording; evaluation stays restricted."""
+    text = (objective or "").lower().replace("×", "*").replace("÷", "/")
+    match = re.search(r"sum of\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)", text)
+    if match:
+        return f"{match.group(1)}+{match.group(2)}"
+    for word, symbol in (("multiplied by", "*"), ("times", "*"), ("divided by", "/"), ("plus", "+"), ("minus", "-")):
+        text = re.sub(r"\b" + word + r"\b", symbol, text)
+    text = re.sub(r"(?<=\d)\s*x\s*(?=\d)", "*", text)
+    found = re.search(r"\d+(?:\.\d+)?(?:\s*[+*/-]\s*\d+(?:\.\d+)?)+", text)
+    return re.sub(r"\s+", "", found.group(0)) if found else None
