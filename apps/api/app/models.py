@@ -81,6 +81,8 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
     from .intelligence.boundary import separate_channels
     from .intelligence.constrained import enforce_output, server_body
 
+    if os.environ.get("AYVEN_PROVIDER_FORMAT") == "ollama":
+        return _ollama_chat(base, model, system, user, max_tokens, schema)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     body = server_body(model, messages, max_tokens, schema)
     if os.environ.get("AYVEN_PROVIDER_FORMAT", "qwen") in ("openai", "json_object"):
@@ -106,3 +108,31 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
     text, info = enforce_output(schema, text)
     tokens = int(data.get("usage", {}).get("total_tokens") or len(text) // 4)
     return text, tokens, info
+
+
+def _ollama_chat(base, model, system, user, max_tokens, schema=None):
+    """Native local API: explicit thinking control and model timings, no cloud fallback."""
+    import httpx
+    from urllib.parse import urlparse
+    from .intelligence.boundary import separate_channels
+    from .intelligence.constrained import enforce_output
+    parsed = urlparse(base)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ("localhost", "127.0.0.1", "::1") or "cloud" in model.lower():
+        raise ValueError("Ollama workforce mode permits local models only")
+    endpoint = f"{parsed.scheme}://{parsed.netloc}/api/chat"
+    body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "stream": False, "think": False, "keep_alive": "15m",
+            "options": {"num_predict": max_tokens, "temperature": 0.2}}
+    if schema is not None:
+        body["format"] = schema.model_json_schema()
+    response = httpx.post(endpoint, json=body, timeout=120, follow_redirects=False)
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("done") or data.get("done_reason") == "length":
+        raise RuntimeError("The local model did not finish its answer")
+    message = data.get("message") or {}
+    text = separate_channels(message.get("content") or "", message.get("thinking") or "").executable
+    text, info = enforce_output(schema, text)
+    info.update({"thinking_requested": False, "total_duration_s": round((data.get("total_duration") or 0) / 1e9, 3),
+                 "load_duration_s": round((data.get("load_duration") or 0) / 1e9, 3), "output_tokens": data.get("eval_count") or 0})
+    return text, int(data.get("prompt_eval_count") or 0) + int(data.get("eval_count") or 0), info

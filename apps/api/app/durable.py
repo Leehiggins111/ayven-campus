@@ -115,7 +115,7 @@ def execute_role(project_id: str, role: str, state: dict) -> dict:
         programme = restore(state)
         for prompt in programme.prompts(role):
             text, _, meta = _complete(role, prompt['system'], prompt['user'],
-                max_tokens=480 if role == 'MANAGER' else 320,
+                max_tokens=480 if role == 'MANAGER' else (1400 if role == 'EMPLOYEE' and programme.plan.get('planning_source') == 'live_model' else 320),
                 programme=programme, package_id=prompt['id'])
             if meta.get('error'):
                 raise RuntimeError('Workforce model call failed; no fixture fallback was used')

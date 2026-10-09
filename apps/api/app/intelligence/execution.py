@@ -6,6 +6,7 @@ Evidence defines the factual boundaries. The model may reason inside them.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -201,6 +202,15 @@ class Programme:
             mark_stage(self.parent_id, "PLANNING", project_id=self.project_id, task_id=self.task_id or "")
         events.emit("agent.planning", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="PLANNING", summary=f"Classified as {self.task_class}")
         question = blocking_question(self.objective) if not self.clarification_answer else ""
+        if self.task_class in ("business_research", "web_research") and os.environ.get("AYVEN_LLM_STUB", "1") == "0":
+            from .delivery_plan import plan_delivery
+            self.plan, planning_meta = plan_delivery(
+                self.objective + ("\nUser clarification: " + self.clarification_answer if self.clarification_answer else ""), self.plan,
+            )
+            save_model_call(self.parent_id, "PLANNING", self.task_class, planning_meta, json.dumps(self.plan))
+            self.tokens += int(planning_meta.get("completion_tokens") or 0)
+            if not question:
+                question = self.plan.get("clarification_question") or ""
         if self.task_class == "calculation":
             self.calculation = _calculation_from_objective(self.clarification_answer or self.objective)
             if not self.calculation and not question:
@@ -435,6 +445,9 @@ class Programme:
         evidence, deterministic = self._corpus()
         grounded = ground_text(text, evidence, deterministic)
         self.grounded[package_id] = grounded["text"]
+        if child["focus"] == "deliverable":
+            child["report"] = grounded["text"]
+            update_package(package_id, findings=child["report"])
         self.removed.extend(grounded["removed"])
         self.removed_by.setdefault(package_id, []).extend(grounded["removed"])
         update_package(package_id, selected_model=meta.get("model") or route_for(self.task_class, "draft")["model_id"])
@@ -646,9 +659,41 @@ class Programme:
         self.resolution["rationale"] = rationale
         self.resolution["model_judgement"] = not bool(verified_calculation)
         decision = self.resolution["decision"]
+        delivery_review = None
+        if self.plan.get("planning_source") == "live_model":
+            from .delivery_plan import review_delivery
+            deliverable = "\n\n".join(child["report"] for child in self.children if child["focus"] == "deliverable")
+            delivery_review = review_delivery(self.objective, self.plan, deliverable, self.research.get("evidence") or [])
+            if not delivery_review["passed"] and int(self.plan.get("budget", {}).get("max_attempts", 2)) > 1:
+                self.retries += 1
+                mark_stage(self.parent_id, "REPAIR", project_id=self.project_id, task_id=self.task_id or "")
+                child = next(item for item in self.children if item["focus"] == "deliverable")
+                repair_text, _, repair_meta = _complete(
+                    "EMPLOYEE", _employee_system(self),
+                    _employee_user(self, child) + "\nFix these reviewer findings and return the entire corrected deliverable:\n" + json.dumps({key: value for key, value in delivery_review.items() if key != "calls"}),
+                    max_tokens=1400, programme=self, package_id=child["id"],
+                )
+                if not repair_meta.get("error"):
+                    self._bind_employee(child["id"], repair_text, repair_meta)
+                    revised = review_delivery(self.objective, self.plan, child["report"], self.research.get("evidence") or [])
+                    revised["calls"] = delivery_review.get("calls", []) + revised.get("calls", [])
+                    delivery_review = revised
+                else:
+                    self.errors.append("Deliverable repair failed")
+            for review_meta in delivery_review.pop("calls", []):
+                self.tokens += int(review_meta.get("completion_tokens") or 0)
+                save_model_call(self.parent_id, "DELIVERY_REVIEW", self.task_class, review_meta, json.dumps(delivery_review))
+            save_verification(self.parent_id, "delivery_review", SUPERVISOR, "PASS" if delivery_review["passed"] else "FAIL", delivery_review)
         facts = self._facts()
         completion = score_task(self.task_class, render_parent(facts, self.audits, decision), self.research, self.quote)
+        if delivery_review is not None:
+            sources_required = "research" in self.plan.get("stages", [])
+            sources_present = any(item.get("source_url") and item.get("extracted_content") for item in self.research.get("evidence") or [])
+            delivered = delivery_review["passed"] and (not sources_required or sources_present) and not self.errors
+            completion.update({"outcome": "PASS" if delivered and completion["safety_outcome"] == "PASS" else "FAIL", "delivery_review": delivery_review})
         findings = render_parent(facts, self.audits, decision, completion)
+        if delivery_review is not None and not delivery_review["passed"]:
+            findings += "\n## Work still missing\n" + "\n".join("- " + item for item in delivery_review.get("missing_items", [])) + "\n"
         verification = verify(self.objective, self.task_class, all_claims, self.research)
         quality = quality_score(self.task_class, all_claims, self.research, verification, "ACCEPT", self.quote)
         save_verification(self.parent_id, "manager", MANAGER, decision, {
@@ -746,6 +791,11 @@ class Programme:
                 _set_agent(MANAGER, visual_state="NEEDS_APPROVAL", status="needs_approval", last_summary="Escalation needs Lee", progress=1)
             else:
                 _set_agent(MANAGER, visual_state="WAITING", status="idle", last_summary="Escalation disabled", progress=1)
+            return
+        if delivery_review is not None and completion["outcome"] != "PASS":
+            log_transition(self.parent_id, "FAILED", "Required deliverable did not pass its checks")
+            update_package(self.parent_id, findings=findings, status="failed", stage="delivery_incomplete", requires_approval=0, next_action="Review missing items and retry the job")
+            _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="The requested deliverable is incomplete", progress=1)
             return
         log_transition(self.parent_id, final_state, decision)
         clarification = bool(approval_required)
@@ -851,7 +901,7 @@ def run_objective(project_id: str, objective: str, task_id: str | None = None) -
 def _finish_roles(programme: Programme) -> None:
     for role in ("EMPLOYEE", "SUPERVISOR", "MANAGER"):
         for prompt in programme.prompts(role):
-            text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=320 if role != "MANAGER" else 480, programme=programme, package_id=prompt["id"])
+            text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=(1400 if role == "EMPLOYEE" and programme.plan.get("planning_source") == "live_model" else 320) if role != "MANAGER" else 480, programme=programme, package_id=prompt["id"])
             programme.bind(role, prompt["id"], text, meta)
 
 
@@ -965,7 +1015,11 @@ def _employee_user(programme: Programme, child: dict) -> str:
     return (
         "Ayven tool runtime. When you need a tool, emit a line "
         'TOOL ayven_tool {"tool":"record_review","payload":"why"} and then the answer.\n'
-        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\nPublished draft:\n{child['report'][:2500]}{block}"
+        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n"
+        f"Required output: {programme.plan.get('deliverable')}\n"
+        f"Required items: {programme.plan.get('requirements', [])}\n"
+        f"Evidence:\n{json.dumps(programme.research.get('evidence') or [], ensure_ascii=False)[:10000]}\n"
+        f"Published draft:\n{child['report'][:2500]}{block}"
     )
 
 
