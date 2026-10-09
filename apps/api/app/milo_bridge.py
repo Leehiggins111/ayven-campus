@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from .db import connect
 
 router = APIRouter(prefix='/api/v1')
-STATUS = {'complete':'COMPLETED','waiting':'BLOCKED','running':'RUNNING','rejected':'FAILED'}
+STATUS = {'complete':'COMPLETED','waiting':'BLOCKED','running':'RUNNING','rejected':'FAILED','unresolved':'UNRESOLVED'}
 
 
 def rows(sql, args=()):
