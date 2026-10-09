@@ -201,6 +201,10 @@ class Programme:
             mark_stage(self.parent_id, "PLANNING", project_id=self.project_id, task_id=self.task_id or "")
         events.emit("agent.planning", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="PLANNING", summary=f"Classified as {self.task_class}")
         question = blocking_question(self.objective) if not self.clarification_answer else ""
+        if self.task_class == "calculation":
+            self.calculation = _calculation_from_objective(self.clarification_answer or self.objective)
+            if not self.calculation and not question:
+                question = "Which numbers and operation should I calculate? I could not reliably interpret that expression."
         if question:
             self.paused = "clarification"
             update_package(
@@ -226,7 +230,6 @@ class Programme:
             selected_model=route_for(self.task_class, "planning")["model_id"],
         )
         if self.task_class == "calculation":
-            self.calculation = _calculation_from_objective(self.objective)
             self.research["calculation"] = self.calculation or {}
         if "research" in self.plan["stages"]:
             from .recovery import run_bounded
@@ -632,8 +635,16 @@ class Programme:
         )
         proposal, rationale = parse_manager_decision(strip_think(text))
         self.resolution = apply_manager_veto(proposal, safety)
+        verified_calculation = self.task_class == "calculation" and self.calculation and safety["decision"] == "SYNTHESISE"
+        if verified_calculation:
+            # Publishing a checked arithmetic result needs no external-action approval.
+            # Preserve the model proposal for audit without blocking the calculator.
+            self.resolution = {**safety, "safety_decision": safety["decision"],
+                "model_proposal": proposal, "decision_source": "deterministic-calculation",
+                "veto": proposal != "SYNTHESISE",
+                "reason": "The restricted calculator and safety checks settled the arithmetic. No external action is requested."}
         self.resolution["rationale"] = rationale
-        self.resolution["model_judgement"] = True
+        self.resolution["model_judgement"] = not bool(verified_calculation)
         decision = self.resolution["decision"]
         facts = self._facts()
         completion = score_task(self.task_class, render_parent(facts, self.audits, decision), self.research, self.quote)
@@ -763,21 +774,14 @@ class Programme:
 
 
 def _calculation_from_objective(objective: str) -> dict | None:
-    import re
+    from .calc import CalcError, expression_from_objective
 
-    from .calc import CalcError
-
-    match = re.search(r"sum of\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)", objective or "", re.I)
-    if match:
-        expression = f"{match.group(1)}+{match.group(2)}"
-    else:
-        found = re.search(r"\d+(?:\.\d+)?(?:\s*[\+\-\*/]\s*\d+(?:\.\d+)?)+", objective or "")
-        if not found:
-            return None
-        expression = re.sub(r"\s+", "", found.group(0))
+    expression = expression_from_objective(objective)
+    if not expression:
+        return None
     try:
         value = eval_arithmetic(expression)
-    except CalcError:
+    except (CalcError, ArithmeticError):
         return None
     return {"expression": expression, "value": value}
 
