@@ -76,10 +76,12 @@ def finalize_project(project_id: str) -> None:
         project_status = "waiting"
     elif state == "FAILED":
         project_status = "rejected"
+    elif state == "UNRESOLVED":
+        project_status = "unresolved"
     elif state == "COMPLETED":
         project_status = "complete"
     else:
-        project_status = "complete" if findings else "running"
+        project_status = "running"
     conn.execute("UPDATE projects SET status=?, result=? WHERE id=?", (project_status, findings, project_id))
     conn.execute("UPDATE tasks SET status=? WHERE id=?", (project_status, f"engine:{project_id}"))
     conn.commit()
