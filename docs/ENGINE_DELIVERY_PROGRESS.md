@@ -15,10 +15,10 @@ This is an engine implementation checkpoint, not a completed product or a live-m
 
 ## Verification
 
-51 focused engine/recovery/bridge tests passed before the native Ollama addition; 14 focused native-provider/planning/review/completion/hosted-provider tests passed afterwards. Controlled generator responses and mocked provider requests are used for the new planning paths. No live Qwen result is claimed. Existing process cleanup warnings remain in the older browser-related dependencies.
+79 focused planning/review/completion/provider/intelligence/recovery/bridge tests passed on the final engine changes. Controlled generator responses and mocked provider requests are used for the new planning paths. No live Qwen result is claimed. Existing process cleanup warnings remain in the older browser-related dependencies.
 
 ## Still required
 
 Real-model acceptance on the installed Windows runtime; wider arbitrary-job coverage; stronger evidence-entailment verification; clean result presentation and downloadable documents; natural Milo delegation/results; startup and update installation; approved-action connectors; persistent company profile selection; cloud delivery later.
 
-The old role audit still contains benchmark-specific checks for door scenarios; these must be replaced before claiming general quote quality. The new general planning path does not replace specialist door/ticket/vending paths yet.
+The role audit now uses the current quote and calculator instead of old example totals. The new general planning path does not replace specialist door/ticket/vending paths yet.

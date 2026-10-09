@@ -35,3 +35,11 @@ def test_generic_research_cannot_pass_with_safety_boilerplate():
     evidence = [{"source_url": "https://supplier.test", "extracted_content": "Supplier offers doors"}]
     result = score_task("business_research", "Supplier offers doors. Nothing was sent.", {"evidence": evidence})
     assert result["outcome"] == "PARTIAL"
+
+
+def test_supervisor_uses_actual_quote_and_calculator():
+    from app.intelligence.audit import authoritative_decision
+    quote, report = quote_report("3 internal doors door £50 labour £80 handles £10 hinges £5 delivery £20")
+    assert authoritative_decision(report, "internal_door_quote", "scenarios", 1, quote=quote) == "ACCEPT"
+    assert authoritative_decision(report.replace("455.00", "1533.00"), "internal_door_quote", "scenarios", 1, quote=quote) == "RETURN"
+    assert authoritative_decision("6*7=42.00", "calculation", "scenarios", 1, calculation={"value": "42.00"}) == "ACCEPT"

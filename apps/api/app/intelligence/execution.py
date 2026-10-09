@@ -530,7 +530,7 @@ class Programme:
         advisory = advisory_decision(text)
 
         def _decide(attempt: int, report=child["report"]) -> str:
-            return authoritative_decision(report, self.task_class, child["focus"], attempt, conflicts=conflicts or None)
+            return authoritative_decision(report, self.task_class, child["focus"], attempt, conflicts=conflicts or None, quote=self.quote, calculation=self.calculation)
 
         first = _decide(1)
         if first == "RETURN":
@@ -545,7 +545,7 @@ class Programme:
                 update_package(package_id, findings=child["report"], review_status=decision, attempt_count=outcome["attempts"], return_reason="Retry limit reached" if outcome["limited"] else "")
         elif first == "TAKE_OVER":
             child["report"] = render_focus(child["focus"], self._facts())
-            decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2, conflicts=conflicts or None)
+            decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2, conflicts=conflicts or None, quote=self.quote, calculation=self.calculation)
             if decision != "ACCEPT":
                 decision = "TAKE_OVER"
             update_package(package_id, findings=child["report"], review_status="TAKE_OVER", return_reason="Supervisor rewrote from the ledger")
