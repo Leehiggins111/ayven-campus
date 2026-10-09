@@ -54,6 +54,8 @@ def stub_complete(user: str) -> str:
     u = user.lower()
     if "research review" in u:
         return "SUFFICIENT\nreviewer: stub\nThe opened pages cover the planned queries."
+    if "manager judgement" in u and "calculate" in u and "Unknowns: []" in user:
+        return "SYNTHESISE\nRationale: return the verified calculation; no external action requested."
     if "manager judgement" in u:
         return "CLARIFY\nRationale: the evidence can support the briefing, and a person must approve any external action."
     prefix = ""

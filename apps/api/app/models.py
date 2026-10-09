@@ -7,9 +7,9 @@ import time
 from . import llm
 
 DEFAULT_MODELS = {
-    "EMPLOYEE": os.environ.get("AYVEN_EMPLOYEE_MODEL", "Qwen/Qwen3-8B"),
-    "SUPERVISOR": os.environ.get("AYVEN_SUPERVISOR_MODEL", "Qwen/Qwen3-32B"),
-    "MANAGER": os.environ.get("AYVEN_MANAGER_MODEL", "Qwen/Qwen3-30B-A3B"),
+    "EMPLOYEE": (os.environ.get("AYVEN_EMPLOYEE_MODEL") or "Qwen/Qwen3-8B"),
+    "SUPERVISOR": (os.environ.get("AYVEN_SUPERVISOR_MODEL") or "Qwen/Qwen3-32B"),
+    "MANAGER": (os.environ.get("AYVEN_MANAGER_MODEL") or "Qwen/Qwen3-30B-A3B"),
     "ESCALATION": os.environ.get("AYVEN_ESCALATION_MODEL", ""),
 }
 
@@ -23,7 +23,7 @@ def set_role_generator(fn):
 
 
 def role_model(role: str) -> str:
-    return DEFAULT_MODELS.get(role.upper(), DEFAULT_MODELS["EMPLOYEE"])
+    return os.environ.get(f"AYVEN_{role.upper()}_MODEL") or DEFAULT_MODELS.get(role.upper(), DEFAULT_MODELS["EMPLOYEE"])
 
 
 def local_base() -> str:
@@ -68,6 +68,8 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
         meta["backend"] = "frontier"
         meta["elapsed_s"] = round(time.time() - started, 3)
         return strip_think(text), tokens, meta
+    if os.environ.get("AYVEN_LLM_STUB", "1") == "0":
+        raise RuntimeError("No workforce endpoint configured; fixture fallback is disabled")
     text, tokens = llm.complete(f"[{role}/{model}] {system}", user, max_tokens=max_tokens)
     meta["elapsed_s"] = round(time.time() - started, 3)
     meta["backend"] = "stub"
@@ -81,6 +83,14 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     body = server_body(model, messages, max_tokens, schema)
+    if os.environ.get("AYVEN_PROVIDER_FORMAT", "qwen") in ("openai", "json_object"):
+        # Standard hosted providers reject vLLM/llama.cpp extension fields.
+        body.pop("guided_json", None)
+        body.pop("grammar", None)
+        if schema is not None and os.environ.get("AYVEN_PROVIDER_FORMAT") == "json_object":
+            import json
+            body["response_format"] = {"type": "json_object"}
+            body["messages"][0]["content"] += "\nReturn JSON matching this schema: " + json.dumps(schema.model_json_schema())
     r = httpx.post(
         f"{base.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},

@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - "cursor/**"
+      - "codex/**"
 
 jobs:
   non-gpu:
