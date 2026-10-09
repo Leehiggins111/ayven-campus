@@ -12,6 +12,8 @@ def _money_lines(lines: list[dict]) -> list[str]:
 
 def render_focus(focus: str, facts: dict) -> str:
     task = facts["task_class"]
+    if focus == "deliverable":
+        return "The requested deliverable has not been written yet. Nothing was sent."
     if focus == "trivial":
         return "No current facts were required. Nothing was researched and nothing was sent."
     if focus == "scenarios":
@@ -108,7 +110,7 @@ def _scenarios(facts: dict) -> str:
     lines = [
         "These totals are provisional arithmetic. They are not a final quote.",
         f"Door count: {quote['door_count']}. Sizes: {quote['size_counts'] or 'not parsed'}.",
-        f"Labour unit: {quote['labour_unit']}. The input does not prove per-door or per-job, so both scenarios are shown and neither is selected.",
+        f"Labour unit: {quote['labour_unit']}. " + ("The input does not prove per-door or per-job, so both scenarios are shown and neither is selected." if quote["labour_unit"] == "AMBIGUOUS" else "Use the stated labour unit; the other scenario is shown for comparison only."),
         f"Hinges: {quote['hinges_unit']}.",
         _vat_line(quote),
         "",

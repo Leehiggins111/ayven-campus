@@ -22,7 +22,12 @@ def _set_agent(agent_id: str, **fields) -> None:
 
 
 def run_project(project_id: str) -> None:
-    threading.Thread(target=_run_project, args=(project_id,), daemon=True).start()
+    from .durable import enabled, enqueue_project
+
+    if enabled():
+        enqueue_project(project_id)
+    else:
+        threading.Thread(target=_run_project, args=(project_id,), daemon=True).start()
 
 
 def _run_project(project_id: str) -> None:
@@ -54,6 +59,10 @@ def _run_project(project_id: str) -> None:
         run_workforce(project_id, objective, tid)
     except Exception:
         run_package(pid)
+    finalize_project(project_id)
+
+
+def finalize_project(project_id: str) -> None:
     conn = connect()
     pkg = conn.execute(
         "SELECT * FROM work_packages WHERE project_id=? AND tier='MANAGER' AND findings IS NOT NULL ORDER BY updated_at DESC",
@@ -61,7 +70,7 @@ def _run_project(project_id: str) -> None:
     ).fetchone()
     if not pkg:
         pkg = conn.execute("SELECT * FROM work_packages WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchone()
-    findings = pkg["findings"] if pkg else brief
+    findings = pkg["findings"] if pkg else ""
     state = (pkg["workflow_state"] if pkg and pkg["workflow_state"] else "") or ""
     if state in ("AWAITING_APPROVAL", "AWAITING_CLARIFICATION", "ESCALATED"):
         project_status = "waiting"
@@ -72,6 +81,7 @@ def _run_project(project_id: str) -> None:
     else:
         project_status = "complete" if findings else "running"
     conn.execute("UPDATE projects SET status=?, result=? WHERE id=?", (project_status, findings, project_id))
+    conn.execute("UPDATE tasks SET status=? WHERE id=?", (project_status, f"engine:{project_id}"))
     conn.commit()
     conn.close()
     if state == "AWAITING_CLARIFICATION":
@@ -93,6 +103,11 @@ def resolve_approval(approval_id: str, decision: str) -> None:
     if not row:
         conn.close()
         raise KeyError("approval not found")
+    if row["status"] != "pending":
+        conn.close()
+        if row["status"] != decision:
+            raise ValueError("approval already resolved with another decision")
+        return
     conn.execute("UPDATE approvals SET status=? WHERE id=?", (decision, approval_id))
     if row["task_id"]:
         conn.execute("UPDATE tasks SET approval_status=?, status=? WHERE id=?", (decision, "complete" if decision == "approved" else "rejected", row["task_id"]))

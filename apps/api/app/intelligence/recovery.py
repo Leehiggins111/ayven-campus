@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextvars import copy_context
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 TERMINAL = {"COMPLETED", "FAILED", "APPROVED"}
@@ -19,7 +20,7 @@ def run_bounded(stage: str, fn, timeout: float | None = None):
     """Run ``fn`` on a worker. On expiry return ``(None, '<stage>_timeout')``."""
     limit = stage_timeout(stage) if timeout is None else timeout
     pool = ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(fn)
+    future = pool.submit(copy_context().run, fn)
     try:
         return future.result(timeout=limit), None
     except FuturesTimeout:

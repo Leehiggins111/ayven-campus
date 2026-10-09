@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from .db import connect, init_db
@@ -18,9 +20,14 @@ from .version import VALIDATION_STATUS, __version__
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 app = FastAPI(title="Ayven Campus API", version=__version__)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-from .access import access_middleware, access_key, protected
-app.middleware("http")(access_middleware)
+from .access import boundary, login, create_session, validate_public_configuration, token, session_value
+app.middleware("http")(boundary)
+app.add_api_route("/login", login, methods=["GET"])
+app.add_api_route("/session", create_session, methods=["POST"])
+origins = [x.strip() for x in os.environ.get("AYVEN_CORS_ORIGINS", "").split(",") if x.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
+from .milo_bridge import router as milo_router
+app.include_router(milo_router)
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
 
 def _campus_index() -> Path:
@@ -40,10 +47,19 @@ def campus_legacy():
     return FileResponse(STATIC / "campus.html")
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
+    validate_public_configuration()
     conn = connect()
     init_db(conn)
     conn.close()
+    from .durable import enabled, initialize
+    if enabled():
+        await run_in_threadpool(initialize)
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    from .durable import shutdown as stop_worker
+    await run_in_threadpool(stop_worker)
 
 class ObjectiveIn(BaseModel):
     objective: str
@@ -67,9 +83,11 @@ def health():
         "version": __version__,
         "validation_status": VALIDATION_STATUS,
         "gpu_validated": False,
-        "access_protected": protected(),
-        "research_mode": __import__("os").environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
+        "access_protected": bool(token()),
+        "research_mode": os.environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
         "persistence": "local_sqlite_not_verified_durable",
+        "runtime": "durable" if os.environ.get("AYVEN_DURABLE") == "1" else "ephemeral",
+        "model_mode": "fixture" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" and not local_configured() else "configured",
         "workforce": {"roles": DEFAULT_MODELS, "local_endpoint": local_configured(), "escalation_enabled": escalation_configured()},
     }
 
@@ -190,16 +208,31 @@ def _traces(package_id: str) -> list[dict]:
     return traces_for(package_id)
 
 @app.post("/projects")
-def create_project(body: ObjectiveIn):
-    pid = str(uuid.uuid4())
-    title = body.title or body.objective[:80]
+def create_project(body: ObjectiveIn, request: Request):
+    return _submit_project(body, request.headers.get("Idempotency-Key", "").strip())
+
+def _submit_project(body: ObjectiveIn, key: str):
+    if len(key) > 200:
+        raise HTTPException(400, "Idempotency key is too long")
+    objective = body.objective.strip()
+    if not objective:
+        raise HTTPException(400, "Objective is empty")
+    pid = str(uuid.uuid5(uuid.NAMESPACE_URL, "ayven-project:" + key)) if key else str(uuid.uuid4())
+    title = body.title or objective[:80]
     conn = connect()
-    conn.execute("INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)", (pid, title, body.objective, "running", datetime.now(timezone.utc).isoformat()))
+    conn.execute("BEGIN IMMEDIATE")
+    existing = conn.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
+    if existing:
+        conn.close()
+        if existing["objective"] != objective or existing["title"] != title:
+            raise HTTPException(409, "Idempotency key already belongs to another request")
+        return {"project_id": pid, "replayed": True}
+    conn.execute("INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)", (pid, title, objective, "running", datetime.now(timezone.utc).isoformat()))
     conn.commit()
     conn.close()
     events.emit("project.created", project_id=pid, agent_id="milo", department_id="command", status="running", summary=f"Project opened: {title}")
     orchestrator.run_project(pid)
-    return {"project_id": pid}
+    return {"project_id": pid, "replayed": False}
 
 @app.get("/projects/{pid}")
 def get_project(pid: str):
@@ -246,7 +279,11 @@ class ClarificationIn(BaseModel):
 
 @app.post("/work-packages/{package_id}/clarification")
 def answer_clarification(package_id: str, body: ClarificationIn):
-    from .intelligence.execution import answer_clarification as resume_clarification
+    from .durable import enabled
+    if enabled():
+        from .durable import answer_clarification as resume_clarification
+    else:
+        from .intelligence.execution import answer_clarification as resume_clarification
 
     try:
         resumed = resume_clarification(package_id, body.answer)
@@ -264,10 +301,20 @@ def list_approvals():
 def resolve(aid: str, body: ApprovalIn):
     if body.decision not in ("approved", "rejected"):
         raise HTTPException(400, "decision must be approved|rejected")
+    from .durable import enabled, resolve_approval as durable_resolve
+    if enabled():
+        try:
+            return {"ok": True, "resumed": durable_resolve(aid, body.decision)}
+        except KeyError:
+            raise HTTPException(404)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
     try:
         orchestrator.resolve_approval(aid, body.decision)
     except KeyError:
         raise HTTPException(404)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
     resumed = []
     if body.decision == "approved":
         from .intelligence.execution import resume_packages_for_approval
@@ -290,22 +337,27 @@ class LoginIn(BaseModel):
 
 
 @app.post("/login")
-def login(body: LoginIn):
-    import hashlib
+def login_json(body: LoginIn, request: Request):
+    import hmac
+    import time
     from fastapi.responses import JSONResponse
-    if not protected():
-        return {"ok": True, "protected": False}
-    if body.key != access_key():
+    if not token() or not hmac.compare_digest(body.key.encode(), token().encode()):
         raise HTTPException(401, "login required")
     response = JSONResponse({"ok": True, "protected": True})
-    response.set_cookie("ayven_session", hashlib.sha256(access_key().encode()).hexdigest(), httponly=True, samesite="lax")
+    from .access import TTL
+    response.set_cookie("ayven_session", session_value(int(time.time())), max_age=TTL,
+                        httponly=True, secure=request.url.scheme == "https", samesite="strict")
+    response.headers["Cache-Control"] = "no-store"
     return response
 
 
 @app.post("/milo/jobs")
-def milo_submit(body: ObjectiveIn, idempotency_key: str = ""):
-    from .milo_handoff import submit_job
-    return submit_job(body.objective, idempotency_key)
+def milo_submit(body: ObjectiveIn, request: Request, idempotency_key: str = ""):
+    header_key = request.headers.get("Idempotency-Key", "").strip()
+    if header_key and idempotency_key and header_key != idempotency_key:
+        raise HTTPException(400, "Conflicting idempotency keys")
+    receipt = _submit_project(body, header_key or idempotency_key)
+    return {**receipt, "duplicate": receipt["replayed"]}
 
 
 @app.get("/milo/jobs/{project_id}")
@@ -320,10 +372,15 @@ def milo_status(project_id: str):
 @app.get("/admin/backup")
 def backup():
     import hashlib
-    import shutil
     from .db import db_path
     target = Path("/tmp/ayven-backup.db")
-    shutil.copy(db_path(), target)
+    import sqlite3
+    conn = connect()
+    try:
+        with sqlite3.connect(target) as destination:
+            conn.backup(destination)
+    finally:
+        conn.close()
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     return {"ok": True, "path": str(target), "sha256": digest, "durable": False, "note": "Local copy only. No free remote store is connected."}
 

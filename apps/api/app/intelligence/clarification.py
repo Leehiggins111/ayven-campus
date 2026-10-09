@@ -7,17 +7,6 @@ import re
 from .think import strip_think
 
 _ASK = re.compile(r"(?im)^\s*(?:NEED|ASK LEE|CLARIFICATION)\s*:\s*(.+?)\s*$")
-
-
-"""A work package pauses when a required fact is missing and only Lee can supply it."""
-
-from __future__ import annotations
-
-import re
-
-from .think import strip_think
-
-_ASK = re.compile(r"(?im)^\s*(?:NEED|ASK LEE|CLARIFICATION)\s*:\s*(.+?)\s*$")
 _VAGUE = re.compile(r"(?i)^(research|find out|look up|check|draft)\s*(it|this|that)?\s*\.?!?$")
 
 
