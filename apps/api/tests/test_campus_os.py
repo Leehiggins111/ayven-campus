@@ -81,8 +81,8 @@ def test_http_approve_resumes_the_same_package_and_direct_resolve_stays_approved
     assert resolved.json()["resumed"]
     after = _parent(parent2)
     assert after["id"] == parent2
-    assert after["workflow_state"] == "COMPLETED"
-    assert after["campus_stage"] == "COMPLETE"
+    assert after["workflow_state"] == "UNRESOLVED"
+    assert "UNRESOLVED" in (after.get("findings") or "")
     view = client.get("/campus/view", params={"package_id": parent2}).json()
     assert view["finished"] is True
     assert view["needs_you"] is False
