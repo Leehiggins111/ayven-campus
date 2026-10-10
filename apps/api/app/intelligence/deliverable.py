@@ -309,6 +309,7 @@ _SCRATCH = (
     "okay, the user", "the user wants", "the user needs", "the user specified", "the user provided",
     "looking at the context", "looking at the details", "i should", "i must", "hmm,", "hmm ",
     "they need the", "they want me", "important constraint", "the key is",
+    "the user has", "the user is", "/no_think", "two or three sentences",
 )
 _REFUSAL = (
     "doesn't state", "does not state", "doesn't specify", "does not specify",
@@ -339,6 +340,11 @@ def _narration_line(line: str) -> bool:
     if lowered.startswith(("unresolved -", "unresolved:")):
         return True
     if any(phrase in lowered for phrase in _SCRATCH):
+        return True
+    compact = re.sub(r"\s+", "", lowered)
+    if re.search(r"(.{1,4})\1{6,}", compact):
+        return True
+    if any(phrase in lowered for phrase in ("mortgage", "loan-to-value", "24/7", "always ready")):
         return True
     refusal = any(phrase in lowered for phrase in _REFUSAL)
     if refusal and not any(phrase in lowered for phrase in ("assumption", "recommend", "the offer is", "should ")):

@@ -1240,18 +1240,18 @@ def _price_notes(programme: Programme) -> str:
 
 
 _SECTION_JOBS = (
-    ("service", "Service", "Finish the sentence.", "Alba Kitchen Refresh paints "),
-    ("target customer", "Target customer", "Finish the sentence.", "The customer is a UK homeowner who "),
-    ("problem", "Problem", "Finish the sentence about painting cabinets instead of replacing the kitchen.", "A full kitchen replacement "),
-    ("offer and positioning", "Offer and positioning", "Finish the sentence. Say how painting the existing cabinets differs from replacing the kitchen.", "The offer is "),
+    ("service", "Service", "Alba Kitchen Refresh paints kitchen cabinets in the customer's home.", "Alba Kitchen Refresh paints "),
+    ("target customer", "Target customer", "The person wants the cabinets painted and does not want the kitchen ripped out.", "The customer is a UK homeowner who wants "),
+    ("problem", "Problem", "Painting cabinets costs less and takes less time than replacing the kitchen.", "A full kitchen replacement "),
+    ("offer and positioning", "Offer and positioning", "What is sold is cabinet painting. It differs from replacing the kitchen because the existing kitchen stays.", "The offer is "),
     ("competitor and market research", "Competitor and market research", "Name two opened UK pages and the £ prices those pages state.", "Opened UK pages state "),
-    ("pricing", "Pricing", "Cite one £ range from the prices below and say a visit has to count the doors before a quote.", "Assumption: "),
-    ("channels", "Channels", "Finish the sentence about reaching nearby homeowners. End with: Nothing was sent.", "Homeowners nearby are reached through "),
-    ("advert", "Advert", "Write the headline, then a Body: line, then a Call to action: line.", "Headline: "),
-    ("call to action", "Call to action", "Finish the sentence. No booking was made.", "Ask for a visit and a written scope "),
-    ("next steps", "Next steps", "Finish the sentence, including the towns to cover. End with: Nothing was sent.", "Next, the owner "),
-    ("assumptions", "Assumptions", "Finish the sentence about what a visit still has to confirm.", "The plan assumes "),
-    ("unresolved", "Unresolved", "Finish the sentence about the towns and the cabinet condition.", "Still open: "),
+    ("pricing", "Pricing", "Cite one £ range from the prices below. A visit has to count the doors before a quote.", "Assumption: "),
+    ("channels", "Channels", "Local search and a conversation with homeowners. Nothing was sent.", "Homeowners nearby are reached through "),
+    ("advert", "Advert", "A headline about painting the cabinets they already own. Then a line starting Body: . Then a line starting Call to action: that asks for a visit.", "Headline: "),
+    ("call to action", "Call to action", "Ask for a visit and a written scope. No booking was made.", "Ask for a visit and a written scope "),
+    ("next steps", "Next steps", "Confirm the towns to cover, then count the doors on a visit. Nothing was sent.", "Next, the owner "),
+    ("assumptions", "Assumptions", "The service and the UK location come from the request. A visit still has to see the cabinets.", "The plan assumes "),
+    ("unresolved", "Unresolved", "The towns and the cabinet condition are still open.", "Still open: "),
 )
 
 
@@ -1283,7 +1283,7 @@ def _write_one_section(programme: Programme, title: str, instruction: str, prefi
     prices = ""
     if title in ("Pricing", "Competitor and market research"):
         prices = f"\nPrices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
-    user = f"{instruction}\nTwo or three sentences.{prices}"
+    user = f"{instruction}{prices}"
     text, _tokens, _meta = _complete(
         "EMPLOYEE",
         "Finished sentences.",

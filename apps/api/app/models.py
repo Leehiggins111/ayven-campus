@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 
 from . import llm
@@ -139,6 +140,7 @@ def ollama_answer(payload: dict) -> str:
     at = lowered.rfind(marker)
     if at != -1:
         content = content[at + len(marker) :]
+    content = re.sub(r"/no_think", "", content, flags=re.I)
     return strip_think(content).strip()
 
 

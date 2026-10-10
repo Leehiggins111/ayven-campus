@@ -358,6 +358,36 @@ def _worksheet() -> str:
     ])
 
 
+def test_a_wandering_answer_is_not_a_kitchen_plan():
+    wandering = "\n".join([
+        "Service",
+        "Alba Kitchen Refresh paints Two or three sentences. /no_think",
+        "Target customer",
+        "The customer is a UK homeowner who wants to know if they can get a mortgage.",
+        "Problem",
+        "A full kitchen replacement is more disruption than painting the cabinets the household already owns.",
+        "Offer and positioning",
+        "The offer is cabinet painting, and the existing kitchen stays in place.",
+        "Competitor and market research",
+        "Airtasker lists cabinet painting at £80 to £100.",
+        "Pricing",
+        "Assumption: plan around £80 to £100 and visit before a quote.",
+        "Channels",
+        "Homeowners nearby are reached through 24/7 monitoring systems.",
+        "Advert",
+        "Headline: Your Support, Always Ready",
+        "Body: We handle questions day or night.",
+        "Call to action: Message us now.",
+        "Call to action",
+        "Ask for a visit. Nothing was sent.",
+        "Next steps",
+        "Next, the owner 1.1.1.1.1.1.1.1.1.1.1.1.1",
+        "Nothing was sent.",
+    ])
+    assert plan_sections_filled(wandering) is False
+    assert plan_sections_filled(_filled_plan()) is True
+
+
 def test_a_reasoning_monologue_is_not_a_finished_plan():
     """qwen3 wrote its reading of the prompt into the answer. That is not the plan."""
     monologue = "\n".join([
@@ -469,7 +499,7 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
 
     by_prefill = {
         "Alba Kitchen Refresh paints ": answers["Service"],
-        "The customer is a UK homeowner who ": answers["Target customer"],
+        "The customer is a UK homeowner who wants ": answers["Target customer"],
         "A full kitchen replacement ": answers["Problem"],
         "The offer is ": answers["Offer and positioning"],
         "Opened UK pages state ": answers["Competitor and market research"],
