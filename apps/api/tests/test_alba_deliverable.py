@@ -436,9 +436,9 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         "Unresolved": "The towns to cover and the condition of the cabinets stay open until a visit.",
     }
 
-    def fake(role, system, user, max_tokens=320, programme=None, package_id=""):
+    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False):
         for title, sentence in answers.items():
-            if f"Write the {title} section only" in user:
+            if f"Section: {title}." in user:
                 return sentence, 12, {"backend": "test"}
         raise AssertionError(user[:160])
 

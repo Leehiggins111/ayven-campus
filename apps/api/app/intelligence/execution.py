@@ -70,9 +70,19 @@ def _set_agent(agent_id: str, **fields) -> None:
     conn.close()
 
 
-def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = ""):
+def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False):
     from ..models import complete_role
 
+    if plain:
+        try:
+            text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens)
+        except Exception as exc:
+            return "", 0, {"error": f"{type(exc).__name__}: {exc}", "backend": "unavailable", "completion_tokens": 0, "execution": "fail"}
+        if not isinstance(text, str):
+            return "", 0, {"error": "malformed model response", "backend": "malformed", "completion_tokens": 0, "execution": "fail"}
+        meta = dict(meta)
+        meta["completion_tokens"] = tokens
+        return strip_think(text), tokens, meta
     session = getattr(programme, "employee_session", None) if programme is not None else None
     live_employee = (
         role == "EMPLOYEE"
@@ -889,7 +899,10 @@ def _model_sections(text: str) -> bool:
 
 
 def _keep_model_draft(programme: Programme, child: dict) -> bool:
-    return programme.task_class == "business_research" and child.get("focus") == "draft" and _model_sections(child.get("report") or "")
+    if programme.task_class != "business_research" or child.get("focus") != "draft":
+        return False
+    report = child.get("report") or ""
+    return _model_sections(report) or _has_model_sentence(report)
 
 
 def _publish_plan(self: Programme, model_text: str) -> str:
@@ -916,6 +929,8 @@ def _publish_plan(self: Programme, model_text: str) -> str:
     if published and plan_sections_filled(published, blob):
         return published
     if plan_sections_filled(assembled, blob):
+        return assembled
+    if _has_model_sentence(assembled):
         return assembled
     return ""
 
@@ -1228,13 +1243,13 @@ _SECTION_JOBS = (
     ("service", "Service", "What the named service sells to a local UK homeowner."),
     ("target customer", "Target customer", "Who hires a local kitchen painting service."),
     ("problem", "Problem", "Why a household would paint the cabinets instead of replacing the kitchen."),
-    ("offer and positioning", "Offer and positioning", "What is sold, and how that differs from replacing the whole kitchen. This is a recommendation."),
-    ("competitor and market research", "Competitor and market research", "Name opened UK pages and the prices they state. Do not invent a company."),
-    ("pricing", "Pricing", "Start with ASSUMPTION: and cite one £ range from the prices below. Say why a visit is still required before a quote."),
-    ("channels", "Channels", "How a local UK service reaches homeowners. Nothing was sent."),
-    ("advert", "Advert", "Exactly three lines, starting Headline:, Body:, and Call to action:."),
-    ("call to action", "Call to action", "One sentence asking for a visit and a written scope. No booking was made."),
-    ("next steps", "Next steps", "Two sentences the owner does next. Nothing was sent."),
+    ("offer and positioning", "Offer and positioning", "Alba Kitchen Refresh paints the cabinets in the customer's home. Say what is sold and how that differs from replacing the kitchen."),
+    ("competitor and market research", "Competitor and market research", "Name two opened UK pages and the £ prices those pages state."),
+    ("pricing", "Pricing", "Begin with the word Assumption. Cite one £ range from the prices below. Say a visit has to count the doors before a quote."),
+    ("channels", "Channels", "Say how a local UK painting service reaches homeowners. End with: Nothing was sent."),
+    ("advert", "Advert", "Write exactly three lines. The first line begins Headline: . The second begins Body: . The third begins Call to action: ."),
+    ("call to action", "Call to action", "Ask the homeowner to request a visit and a written scope. No booking was made."),
+    ("next steps", "Next steps", "Two sentences the owner does next, including confirming the towns to cover. End with: Nothing was sent."),
     ("assumptions", "Assumptions", "What this plan takes from the request, and what a visit still has to confirm."),
     ("unresolved", "Unresolved", "What is still open: the towns and the cabinet condition. Do not repeat the other sections."),
 )
@@ -1265,24 +1280,41 @@ def _section_body(text: str) -> str:
 
 
 def _write_one_section(programme: Programme, title: str, instruction: str) -> str:
+    system = (
+        "You write one section of a launch plan for the owner of a UK kitchen painting service. "
+        "Finished sentences only. A recommendation is allowed. "
+        "A price that no page stated begins with the word Assumption."
+    )
     user = (
-        f"Write the {title} section only. Two or three sentences. No heading. No preamble.\n"
-        "Do not say I, let me, or I need to. Do not say the evidence does not state this.\n"
-        f"{instruction}\n"
-        "Nothing was sent.\n\n"
-        f"Objective:\n{programme.objective}\n\n"
+        f"Section: {title}.\n{instruction}\n"
+        "Two or three sentences.\n\n"
+        f"Request:\n{programme.objective}\n\n"
         f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
-        f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+        f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
     )
     text, _tokens, _meta = _complete(
         "EMPLOYEE",
-        _employee_system(programme),
+        system,
         user,
         max_tokens=220,
         programme=programme,
         package_id=programme.parent_id,
+        plain=True,
     )
     return _section_body(text)
+
+
+def _has_model_sentence(text: str) -> bool:
+    """True when Qwen wrote an owner sentence, rather than the blank form."""
+    from .deliverable import _body_filled, parse_sections
+
+    if "No opened page stated an offer" in (text or "") and "Headline:" not in (text or ""):
+        return False
+    sections = parse_sections(text or "")
+    for key in ("offer and positioning", "pricing", "advert", "channels", "next steps"):
+        if _body_filled(sections.get(key) or ""):
+            return True
+    return False
 
 
 def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> None:
@@ -1292,11 +1324,11 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> None
         if not pending:
             return
         for key, title, instruction in pending:
-            extra = ""
-            if _pass and key == "pricing":
-                extra = " The first characters must be ASSUMPTION:."
+            extra = " Begin with the word Assumption." if _pass and key == "pricing" else ""
             written = _write_one_section(programme, title, instruction + extra)
-            if written:
+            if not written:
+                continue
+            if not _section_missing(key, written, blob) or not (sections.get(key) or "").strip():
                 sections[key] = written
 
 
