@@ -101,33 +101,30 @@ def load_fixtures() -> list[dict]:
 
 
 def _drop_low_score(hit: dict, objective: str, *, strict: bool) -> bool:
-    """A weak overlap with a long brief is not a reason to skip a trade page.
-
-    The opened page is still checked. A URL that names the trade is opened.
-    """
+    """A weak snippet score still opens a hit that names this objective."""
     if not strict or float(hit.get("rerank_score") or 0) >= 0.2:
         return False
-    from .deliverable import _trade_in_blob, _trade_stem, distinctive_terms
+    from .deliverable import _blob_has_term, distinctive_terms
 
-    trades = [term for term in distinctive_terms(objective) if _trade_stem(term)]
-    if not trades:
+    terms = [term for term in distinctive_terms(objective) if len(term) >= 5]
+    if not terms:
         return True
     blob = " ".join([
         str(hit.get("url") or ""),
         str(hit.get("title") or ""),
         str(hit.get("snippet") or ""),
     ]).lower()
-    return not any(_trade_in_blob(term, blob) for term in trades)
+    return not any(_blob_has_term(term, blob) for term in terms)
 
 
-def _queries_cover_trade(queries: list[str], objective: str) -> bool:
-    from .deliverable import _trade_in_blob, _trade_stem, distinctive_terms
+def _queries_cover_anchor(queries: list[str], objective: str) -> bool:
+    from .deliverable import _blob_has_term, anchor_terms
 
-    trades = [term for term in distinctive_terms(objective) if _trade_stem(term)]
-    if not trades:
+    anchors = anchor_terms(objective)
+    if not anchors:
         return True
     blob = " ".join(queries).lower()
-    return any(_trade_in_blob(term, blob) for term in trades)
+    return any(_blob_has_term(term, blob) for term in anchors)
 
 
 def generic_from_objective(objective: str) -> list[str]:
@@ -207,7 +204,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                 queries_from_plan_text(raw if isinstance(raw, str) else "\n".join(str(item) for item in raw)),
                 objective,
             )
-            if planned and not _queries_cover_trade(planned, objective):
+            if planned and not _queries_cover_anchor(planned, objective):
                 for extra in targeted_queries(objective):
                     if extra not in planned:
                         planned.append(extra)
@@ -223,8 +220,9 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
         if local_base() or model_mod._GENERATOR is not None:
             user = (
                 "Write 4 to 6 web search queries for this objective. "
+                "Use the service words from the objective. "
                 "Each query names the service, the place, or a price. "
-                "Shape, not content: 'kitchen cabinet painting UK prices' or 'kitchen respray company prices'. "
+                "Do not name a trade the objective does not name. "
                 "Do not search the requester's name. Do not search pronouns. "
                 "Do not search instruction words such as cover, website, create, or plan on their own. "
                 "One query per line, each starting with '- '.\n\n"
@@ -243,7 +241,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                     schema=ResearchPlan,
                 )
                 planned = usable_search_queries(queries_from_plan_text(text), objective)
-                if planned and not _queries_cover_trade(planned, objective):
+                if planned and not _queries_cover_anchor(planned, objective):
                     for extra in targeted_queries(objective):
                         if extra not in planned:
                             planned.append(extra)
@@ -436,12 +434,13 @@ def research(
     max_searches = int(os.environ.get("AYVEN_MAX_SEARCHES", "12"))
     max_pages = int(os.environ.get("AYVEN_MAX_PAGES", "16"))
     max_browser = int(os.environ.get("AYVEN_MAX_BROWSER_ACTIONS", "2"))
-    deadline = time.monotonic() + int(os.environ.get("AYVEN_MAX_RESEARCH_SECONDS", "120"))
     browser_left = [max_browser]
     if queries is not None:
         planned, query_source = list(queries), "provided"
     else:
         planned, query_source = plan_queries(task_class, objective, skills)
+    # Query planning can consume minutes on CPU. The fetch budget starts after it.
+    deadline = time.monotonic() + int(os.environ.get("AYVEN_MAX_RESEARCH_SECONDS", "300"))
     evidence: list[dict] = []
     failures: list[dict] = []
     duplicates: list[str] = []
@@ -462,8 +461,7 @@ def research(
     review_text = ""
     review_mode = "not-run"
     review_gaps: list[str] = []
-    from .boundary import is_noise_hit, reject_reasoning_query
-    from .deliverable import reject_search_query
+    from .boundary import is_noise_hit
     from .entity import extract_entities
     from .rerank import rerank
 
@@ -493,7 +491,7 @@ def research(
             depth = job["depth"]
             if depth > rounds:
                 continue
-            noise = reject_reasoning_query(query) or reject_search_query(query, objective)
+            noise = _reject_query(query, objective, task_class, provided=query_source == "provided")
             if noise:
                 failures.append({"query": "[rejected-query]", "stage": "query", "error": noise})
                 filtered.append({"query": "[rejected-query]", "reason": noise})
@@ -568,7 +566,7 @@ def research(
                 if unknown and unknown not in review_gaps:
                     review_gaps.append(unknown)
                 extra = _next_query(review_text)
-                rejected = reject_reasoning_query(extra) or reject_search_query(extra, objective) if extra else ""
+                rejected = _reject_query(extra, objective, task_class, provided=query_source == "provided") if extra else ""
                 if extra and rejected:
                     filtered.append({"query": extra, "reason": rejected})
                     extra = ""
@@ -642,6 +640,18 @@ def _plain_text(text: str) -> str:
 
 
 _MEDIA_NOISE = (".mp3", ".wav", ".ogg", ".css", ".js", ".woff", ".woff2", ".svg", ".mp4")
+
+
+def _reject_query(query: str, objective: str, task_class: str, provided: bool) -> str:
+    """A supplied fixture key is searched as given. A model query has to stay on this brief."""
+    from .boundary import reject_reasoning_query
+    from .deliverable import reject_search_query
+
+    reason = reject_reasoning_query(query or "")
+    if reason:
+        return reason
+    brief = "" if provided or task_class not in {"business_research", "web_research"} else objective
+    return reject_search_query(query, brief)
 
 
 def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=None, browser_left=None, objective: str = "", task_class: str = "") -> bool:

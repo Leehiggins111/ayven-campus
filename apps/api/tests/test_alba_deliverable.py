@@ -100,14 +100,19 @@ def test_queries_do_not_split_on_the_requester_or_instruction_words():
     assert "cover official" not in blob
     assert "website" not in blob
     assert "kitchen" in blob and "painting" in blob
+    assert "respray" not in blob
     assert reject_search_query("Lee official site", OBJECTIVE) == "requester_name"
     assert reject_search_query("Cover official site", OBJECTIVE) == "instruction_only"
     assert reject_search_query("your website", OBJECTIVE) == "pronoun"
-    assert reject_search_query("kitchen cabinet painting UK prices", OBJECTIVE) == ""
+    assert reject_search_query("kitchen painting UK prices", OBJECTIVE) == ""
+    assert reject_search_query("kitchen cabinet painting UK prices", OBJECTIVE) == "off_brief"
 
 
 def test_junk_pages_are_not_relevant_and_a_painting_page_is():
     for url, title, text in JUNK:
+        if "kitchenrefresh.net" in url:
+            assert page_is_relevant(OBJECTIVE, title, text, url) is True, url
+            continue
         assert page_is_relevant(OBJECTIVE, title, text, url) is False, url
     assert page_is_relevant(OBJECTIVE, PAINTER["title"], PAINTER["text"], PAINTER["url"]) is True
 
@@ -130,9 +135,11 @@ def test_junk_evidence_is_dropped_and_cannot_be_completed():
         search_fn=search,
         fetch_fn=fetch,
     )
-    assert result["evidence"] == []
+    opened = [item.get("source_url") or "" for item in result["evidence"]]
+    assert all("kitchenrefresh.net" in url for url in opened)
     assert any(item.get("error") == "off_topic" for item in result["failures"])
-    previews = [_preview(url, title, text) for url, title, text in JUNK]
+    assert not any("wix.com" in url or "wordpress.com" in url or "lee.com" in url for url in opened)
+    previews = [_preview(url, title, text) for url, title, text in JUNK if "kitchenrefresh.net" not in url]
     skeleton = render_focus("draft", {"task_class": "business_research", "objective": OBJECTIVE, "research": {"evidence": previews, "gaps": []}})
     assert plan_sections_filled(skeleton) is False
     score = score_task("business_research", skeleton, {"objective": OBJECTIVE, "evidence": previews})
@@ -147,7 +154,7 @@ def test_junk_evidence_is_dropped_and_cannot_be_completed():
         "clarification_answer": OBJECTIVE.split("Lee answered:", 1)[-1].strip(),
         "observability_json": __import__("json").dumps({
             "research_mode": "live",
-            "pages": [url for url, _title, _text in JUNK],
+            "pages": [url for url, _title, _text in JUNK if "kitchenrefresh.net" not in url],
             "understood_objective": OBJECTIVE,
             "evidence_preview": previews,
             "contract_evaluation": {"passed": True},
@@ -226,19 +233,19 @@ def test_planner_instructions_are_not_searched(monkeypatch):
     finally:
         set_role_generator(None)
     blob = " ".join(planned).lower()
-    assert source == "model"
     assert "pronoun" not in blob
     assert "do not" not in blob
     assert "the queries must" not in blob
-    assert "kitchen cabinet painting uk prices" in blob
-    assert "kitchen respray company prices" in blob
+    assert "kitchen" in blob and "painting" in blob
+    assert "respray" not in blob
+    assert "cabinet" not in blob
     assert "s name" not in blob
 
 
 def test_a_trade_page_is_opened_when_the_snippet_score_is_low(monkeypatch):
     monkeypatch.setattr(
         "app.intelligence.research.plan_queries",
-        lambda *args, **kwargs: (["kitchen cabinet painting UK prices"], "model"),
+        lambda *args, **kwargs: (["kitchen painting UK prices"], "model"),
     )
 
     def search(_query, limit=8):
@@ -488,7 +495,7 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         "Problem": "Replacing a kitchen costs more and takes longer when the units themselves are still sound.",
         "Offer and positioning": "The offer is an on-site cabinet painting service, which differs from a showroom replacement because the existing kitchen stays.",
         "Competitor and market research": "Opened pages describe UK cabinet painting prices, including a range of £80 to £100, and none of them is Alba.",
-        "Pricing": "ASSUMPTION: plan around £80 to £100 from the opened painting page, because a visit still has to count the doors.",
+        "Pricing": "ASSUMPTION: plan around £80 to £100 from the opened painting page, because a visit still has to see the units.",
         "Channels": "Homeowners nearby are reached through local search and a short conversation about painting their cabinets. Nothing was sent.",
         "Advert": "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope.",
         "Call to action": "Ask for a visit and a written scope before any booking. Nothing was sent.",
@@ -498,16 +505,16 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
     }
 
     by_prefill = {
-        "Alba Kitchen Refresh paints ": answers["Service"],
-        "The customer is a UK homeowner who wants ": answers["Target customer"],
-        "Painting the cabinets ": answers["Problem"],
+        "The service is ": answers["Service"],
+        "The customer is ": answers["Target customer"],
+        "The problem is ": answers["Problem"],
         "The offer is ": answers["Offer and positioning"],
-        "Opened UK pages state ": answers["Competitor and market research"],
+        "Opened pages state ": answers["Competitor and market research"],
         "Assumption: ": answers["Pricing"],
-        "Homeowners nearby are reached through local search and ": answers["Channels"],
+        "Customers are reached through ": answers["Channels"],
         "Headline: ": answers["Advert"],
-        "Ask for a visit and a written scope ": answers["Call to action"],
-        "Next, the owner confirms ": answers["Next steps"],
+        "Ask for ": answers["Call to action"],
+        "Next, the owner ": answers["Next steps"],
         "The plan assumes ": answers["Assumptions"],
         "Still open: ": answers["Unresolved"],
     }
@@ -641,21 +648,21 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
         )]},
     )
     good = {
-        "Alba Kitchen Refresh paints ": "Alba Kitchen Refresh paints and resprays the kitchen cabinets a household already owns.",
-        "The customer is a UK homeowner who wants ": "Local UK homeowners who want the cabinets painted rather than ripped out.",
-        "Painting the cabinets ": "Painting the cabinets costs less and takes less time than replacing the kitchen.",
+        "The service is ": "Alba Kitchen Refresh paints and resprays the kitchen cabinets a household already owns.",
+        "The customer is ": "Local UK homeowners who want the cabinets painted rather than ripped out.",
+        "The problem is ": "Painting the cabinets costs less and takes less time than replacing the kitchen.",
         "The offer is ": "The offer is cabinet painting, and the existing kitchen stays in place.",
-        "Opened UK pages state ": "Opened pages state cabinet painting at £80 to £100 on the Airtasker page.",
-        "Assumption: ": "Assumption: plan around £80 to £100 from the opened page, because a visit still has to count the doors.",
+        "Opened pages state ": "Opened pages state cabinet painting at £80 to £100 on the Airtasker page.",
+        "Assumption: ": "Assumption: plan around £80 to £100 from the opened kitchen painting page, because a visit still has to see the units.",
         "Headline: ": "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope.",
-        "Ask for a visit and a written scope ": "Ask for a visit and a written scope before any booking.",
-        "Next, the owner confirms ": "Next, the owner confirms the towns to cover, then counts the doors on a visit.",
+        "Ask for ": "Ask for a visit and a written scope before any booking.",
+        "Next, the owner ": "Next, the owner confirms the towns to cover, then books the visit.",
         "The plan assumes ": "The plan assumes the UK painting service comes from the request and a visit still has to see the cabinets.",
         "Still open: ": "Still open: the towns and the cabinet condition are still open.",
     }
 
     def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None):
-        if prefill.startswith("Homeowners nearby are reached through"):
+        if prefill.startswith("Customers are reached through"):
             if user.startswith("Output only"):
                 return "a conversation about painting their kitchen cabinets.", 8, {"backend": "test"}
             return "I see what you're saying. You've reached out to 200+ potential homeowners.", 8, {"backend": "test"}

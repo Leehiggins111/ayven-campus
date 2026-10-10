@@ -34,7 +34,19 @@ _GENERIC_TERMS = _QUERY_BOILERPLATE | _PRONOUNS | {
     "than", "usual", "want", "what", "when", "where", "which", "wholesale",
     "will", "without", "work", "would",
 }
-_TRADE_STEMS = ("paint", "respray", "spray", "decorat", "lacquer", "refinish")
+_SEARCH_GLUE = {
+    "price", "prices", "cost", "costs", "company", "companies",
+    "near", "quote", "quotes", "shop", "shops", "supplier", "suppliers",
+    "review", "reviews", "guide", "guides",
+}
+_ANCHORED = {
+    "service",
+    "problem",
+    "offer and positioning",
+    "competitor and market research",
+    "pricing",
+    "advert",
+}
 _HEADINGS = (
     ("service", ("service", "the service")),
     ("target customer", ("target customer", "the customer", "customer")),
@@ -72,6 +84,20 @@ _BOILERPLATE_BODY = (
     "confirm the service and the customer with the owner",
 )
 _HEADING_LINE = re.compile(r"^\s{0,3}(?:#{1,3}\s*|\d+[.)]\s*|[-*]\s*)?([A-Za-z][A-Za-z0-9 /&'-]{2,80})\s*:?\s*$")
+
+
+def _negated_terms(objective: str) -> set[str]:
+    """Words in a sentence that says they are not the service."""
+    negated = set()
+    for sentence in re.split(r"[.!?]", objective or ""):
+        lowered = sentence.lower()
+        if not re.search(r"\b(not|other)\b", lowered):
+            continue
+        for word in re.findall(r"[a-z][a-z0-9'+-]{3,}", lowered):
+            token = word.strip("'+-")
+            if len(token) >= 4 and token not in _GENERIC_TERMS and token not in _QUERY_BOILERPLATE and token not in _PRONOUNS:
+                negated.add(token)
+    return negated
 
 
 def requester_names(objective: str) -> set[str]:
@@ -126,14 +152,37 @@ def reject_search_query(query: str, objective: str = "") -> str:
     content = [token for token in tokens if token not in _QUERY_BOILERPLATE and len(token) >= 3]
     if not content:
         return "instruction_only"
+    if objective and not query_on_brief(query, objective):
+        return "off_brief"
     return ""
 
 
-def _quote_on_trade(quote: str, objective: str) -> bool:
-    trades = [term for term in distinctive_terms(objective) if _trade_stem(term)]
-    if not trades:
-        return True
-    return any(_trade_in_blob(term, (quote or "").lower()) for term in trades)
+def _term_matches(token: str, terms: list[str]) -> bool:
+    for term in terms:
+        if token == term or token in term or term in token:
+            return True
+        if len(token) >= 5 and len(term) >= 5 and token[:5] == term[:5]:
+            return True
+    return False
+
+
+def query_on_brief(quote: str, objective: str) -> bool:
+    """Every content word has to come from this objective. A foreign trade does not."""
+    terms = distinctive_terms(objective)
+    if not terms:
+        return False
+    tokens = re.findall(r"[a-z0-9']+", (quote or "").lower())
+    content = [
+        token for token in tokens
+        if len(token) >= 4
+        and token not in _QUERY_BOILERPLATE
+        and token not in _SEARCH_GLUE
+        and token not in _GENERIC_TERMS
+        and token not in _PRONOUNS
+    ]
+    if not content:
+        return False
+    return all(_term_matches(token, terms) for token in content)
 
 
 def usable_search_queries(items: list[str], objective: str = "") -> list[str]:
@@ -144,13 +193,11 @@ def usable_search_queries(items: list[str], objective: str = "") -> list[str]:
             for quote in quoted_searches(item):
                 if instruction_echo(quote) or reject_search_query(quote, objective):
                     continue
-                if not _quote_on_trade(quote, objective):
-                    continue
                 if quote not in kept:
                     kept.append(quote[:180])
             continue
         short = (item or "").strip()[:180]
-        if short and _quote_on_trade(short, objective) and short not in kept:
+        if short and short not in kept:
             kept.append(short)
     return kept[:8]
 
@@ -162,6 +209,8 @@ def distinctive_terms(objective: str) -> list[str]:
     for word in re.findall(r"[A-Za-z][A-Za-z0-9'+-]{2,}", objective or ""):
         token = word.lower().strip("'+-")
         if len(token) < 4 or token in _GENERIC_TERMS or token in names or token in _PRONOUNS:
+            continue
+        if token in _negated_terms(objective):
             continue
         if token not in seen:
             seen.append(token)
@@ -186,63 +235,44 @@ def targeted_queries(objective: str) -> list[str]:
     primary = re.sub(r"\s+", " ", primary).strip()
     if primary and not reject_search_query(primary, objective):
         queries.append(primary[:180])
-    trade = [term for term in terms if _trade_stem(term)]
-    domain = [term for term in terms if term not in trade][:2]
-    if trade:
-        shaped = " ".join(domain + trade[:2] + ([region] if region else []) + ([price] if price else []))
-        shaped = re.sub(r"\s+", " ", shaped).strip()
-        if shaped and shaped not in queries and not reject_search_query(shaped, objective):
-            queries.append(shaped[:180])
     return queries
 
 
-def _trade_stem(term: str) -> str:
-    for stem in _TRADE_STEMS:
-        if stem in (term or ""):
-            return stem
-    return ""
-
-
-def _trade_in_blob(term: str, blob: str) -> bool:
-    stem = _trade_stem(term)
-    if not stem:
+def _blob_has_term(term: str, blob: str) -> bool:
+    if term in (blob or ""):
+        return True
+    if len(term) < 5:
         return False
-    if stem == "paint":
-        return any(part in blob for part in ("paint", "respray", "spray", "lacquer", "refinish"))
-    return stem in blob
+    prefix = term[:5]
+    return any(len(word) >= 5 and word.startswith(prefix) for word in re.findall(r"[a-z0-9]+", blob or ""))
+
+
+def anchor_terms(objective: str) -> list[str]:
+    """The earliest service words. A later comparison is not the search."""
+    return [term for term in distinctive_terms(objective) if len(term) >= 5][:4]
+
+
+def section_has_anchor(kind: str, body: str, objective: str) -> bool:
+    if kind not in _ANCHORED:
+        return True
+    anchors = anchor_terms(objective)
+    if not anchors:
+        return True
+    return any(_blob_has_term(term, (body or "").lower()) for term in anchors)
 
 
 def page_is_relevant(objective: str, title: str = "", text: str = "", url: str = "") -> bool:
-    """True when the page is about the objective. Off-topic pages are not evidence."""
-    terms = distinctive_terms(objective)
+    """True when the page shares this objective's service words. A fetch is not evidence."""
+    terms = [term for term in distinctive_terms(objective) if len(term) >= 5]
     if not terms:
         return True
     blob = f"{title}\n{text}\n{url}".lower()
-    trades = [term for term in terms if _trade_stem(term)]
-    if trades and not any(_trade_in_blob(term, blob) for term in trades):
-        return False
-    hits = [term for term in terms if term in blob]
-    if trades and hits:
-        return True
+    hits = [term for term in terms if _blob_has_term(term, blob)]
     if len(hits) >= 2:
         return True
-    if len(hits) == 1 and len(hits[0]) >= 5:
-        score = _similarity(objective, f"{title}. {(text or '')[:500]}")
-        if score is None:
-            return True
-        return score >= 0.45
+    if len(hits) == 1 and len(hits[0]) >= 8:
+        return True
     return False
-
-
-def _similarity(left: str, right: str) -> float | None:
-    try:
-        from .memory import _cosine, _embed
-    except Exception:
-        return None
-    vectors = _embed([(left or "")[:500], (right or "")[:500]])
-    if not vectors or len(vectors) < 2:
-        return None
-    return _cosine(vectors[0], vectors[1])
 
 
 def _heading_label(text: str) -> str:
@@ -431,17 +461,6 @@ _ADVERT_BAD = (
     "format", "starting with", "catchy", "[text]", "[some",
     "placeholder", "a line about", "one sentence", "write exactly", "then stop",
 )
-_TOPIC = {
-    "service": ("kitchen", "cabinet", "paint", "respray", "cupboard"),
-    "target customer": ("kitchen", "cabinet", "paint", "homeowner", "household"),
-    "problem": ("kitchen", "cabinet", "paint", "replac"),
-    "offer and positioning": ("kitchen", "cabinet", "paint", "respray", "offer"),
-    "channels": ("search", "conversation", "leaflet", "local", "visit"),
-    "call to action": ("visit", "scope", "quote", "book"),
-    "next steps": ("town", "visit", "door", "quote"),
-    "assumptions": ("visit", "cabinet", "service", "request", "kitchen", "uk"),
-    "unresolved": ("town", "cabinet", "open", "visit", "price", "quote"),
-}
 
 
 def _advert_content_ok(label: str, content: str) -> bool:
@@ -453,22 +472,9 @@ def _advert_content_ok(label: str, content: str) -> bool:
     lowered = content.lower()
     if any(phrase in lowered for phrase in _ADVERT_BAD):
         return False
-    if label in {"headline", "body"}:
-        return any(word in lowered for word in ("kitchen", "cabinet", "paint", "colour", "color", "refresh", "respray"))
-    return any(word in lowered for word in ("visit", "scope", "quote", "book"))
-
-
-def _on_topic(kind: str, sentence: str) -> bool:
-    words = _TOPIC.get(kind)
-    if not words:
-        return True
-    lowered = sentence.lower()
-    if kind == "channels":
-        if any(phrase in lowered for phrase in ("reached out", "potential homeowner", "200+", "monitoring", "home search")):
-            return False
-        if not any(word in lowered for word in ("cabinet", "kitchen", "paint", "homeowner", "leaflet")):
-            return False
-    return any(word in lowered for word in words)
+    if lowered.rstrip(" .:") in {"headline", "body", "call to action"}:
+        return False
+    return True
 
 
 def _advert_from_lines(lines: list[str]) -> str:
@@ -504,7 +510,7 @@ def owner_section(kind: str, text: str) -> str:
     prose = _owner_prose(text or "")
     if kind == "advert":
         return _advert_from_lines(_usable_sentences(prose))
-    sentences = [sentence for sentence in _usable_sentences(prose) if _on_topic(kind, sentence)]
+    sentences = _usable_sentences(prose)
     if kind == "pricing":
         picked = []
         for sentence in sentences:
@@ -519,11 +525,8 @@ def owner_section(kind: str, text: str) -> str:
             body = "Assumption: " + body
         return body
     if kind == "competitor and market research":
-        picked = [
-            sentence for sentence in sentences
-            if "£" in sentence or "http" in sentence.lower() or "paint" in sentence.lower() or "kitchen" in sentence.lower()
-        ]
-        return "\n".join(picked[:6])
+        picked = [sentence for sentence in sentences if "£" in sentence or "http" in sentence.lower()]
+        return "\n".join((picked or sentences)[:6])
     limit = 2 if kind == "assumptions" else 1
     return "\n".join(sentences[:limit])
 
@@ -692,6 +695,8 @@ def publish_business_plan(objective: str, research: dict | None, model_text: str
         if key == "advert" and "call to action" not in (body or "").lower():
             body = f"{body}\n{sections.get('call to action') or ''}"
         kept = owner_section(key, body)
+        if kept and not section_has_anchor(key, kept, objective):
+            kept = ""
         if kept:
             extracted[key] = kept
     if not extracted:

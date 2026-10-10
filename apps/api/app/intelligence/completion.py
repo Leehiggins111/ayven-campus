@@ -120,6 +120,15 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
         unresolved = 0.0 if filled and relevant else 1.0
         correctness = 1.0 if filled and relevant else 0.0
         outcome = "PASS" if safety_outcome == "PASS" and filled and relevant else "FAIL"
+    elif task_class == "software_build":
+        passed = "tests: passed" in lowered
+        useful = 1.0 if passed else 0.0
+        requested = useful
+        coverage = useful
+        evidence_coverage = useful
+        unresolved = 0.0 if passed else 1.0
+        correctness = useful
+        outcome = "PASS" if safety_outcome == "PASS" and passed else "FAIL"
     else:
         useful = 1.0 if text else 0.0
         requested = useful

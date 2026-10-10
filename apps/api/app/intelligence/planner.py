@@ -15,6 +15,12 @@ def classify(objective: str) -> str:
         return "football_tickets"
     if any(key in text for key in ("calculate", "what is the sum", "arithmetic")):
         return "calculation"
+    if any(key in text for key in (
+        "write a program", "write a python", "python program", "write code",
+        "small program", "build a website", "write a website", "html page",
+        "functioning website", "write a script", "python script",
+    )):
+        return "software_build"
     if len(text) < 24 and not any(key in text for key in ("price", "current", "latest", "who", "research")):
         return "trivial"
     if any(key in text for key in ("prospect", "supplier", "market", "business")):
@@ -45,6 +51,8 @@ def child_plan(task_class: str) -> list[dict]:
         return [{"agent_id": "research-e1", "title": "Short acknowledgement", "focus": "trivial"}]
     if task_class == "calculation":
         return [{"agent_id": "research-e1", "title": "Deterministic calculation", "focus": "scenarios"}]
+    if task_class == "software_build":
+        return [{"agent_id": "research-e3", "title": "Write and test the program", "focus": "build"}]
     return [
         {"agent_id": "research-e1", "title": "Collect source evidence", "focus": "evidence"},
         {"agent_id": "research-e2", "title": "List unknowns", "focus": "gaps"},
@@ -63,6 +71,9 @@ def build_plan(objective: str, task_class: str, skill_names: list[str]) -> dict:
     elif task_class == "calculation":
         stages += ["calculation", "claims", "draft", "critic", "verify", "supervisor", "manager"]
         skipped = ["research", "browser"]
+    elif task_class == "software_build":
+        stages += ["draft", "critic", "verify", "revise", "supervisor", "manager", "approval"]
+        skipped = ["research", "browser", "calculation"]
     elif task_class == "internal_door_quote":
         stages += ["calculation", "research", "evidence", "claims", "draft", "critic", "verify", "revise", "supervisor", "manager", "approval"]
     else:
@@ -121,4 +132,5 @@ def _deliverable(task_class: str) -> str:
         "vending_prospects": "Prospects only where a source supports them, plus an unsent outreach draft",
         "trivial": "Short acknowledgement with no invented facts",
         "calculation": "Deterministic arithmetic with the expression shown",
+        "software_build": "Program files, a test that fails when the program is wrong, and launch instructions",
     }.get(task_class, "Source-backed briefing with explicit gaps")

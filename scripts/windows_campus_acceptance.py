@@ -96,8 +96,11 @@ def base_env(db: Path, research_mode: str, *, stub: bool = False) -> dict:
         "AYVEN_OLLAMA_THINK": "0",
     })
     if stub:
-        # Approval fixtures do not need qwen3. The live server is the Alba proof.
+        # Approval fixtures do not need qwen3. The live server is the proof.
         env.pop("AYVEN_LOCAL_LLM_BASE_URL", None)
+    else:
+        env["AYVEN_ALLOW_CODE"] = os.environ.get("AYVEN_ALLOW_CODE", "1")
+        env["AYVEN_MAX_RESEARCH_SECONDS"] = os.environ.get("AYVEN_MAX_RESEARCH_SECONDS", "300")
     for name in ("AYVEN_LLM_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"):
         env.pop(name, None)
     return env
@@ -252,6 +255,7 @@ def save_vertical(findings: str, view: dict) -> dict:
     OUT.mkdir(parents=True, exist_ok=True)
     markdown = findings or "No findings were recorded."
     (OUT / "alba-kitchen-refresh.md").write_text(markdown, encoding="utf-8")
+    (OUT / "kitchen-refresh.md").write_text(markdown, encoding="utf-8")
     evidence = view.get("evidence") or []
     rows = "".join(
         f"<li><b>{item.get('provenance') or 'UNRESOLVED'}</b> {item.get('sentence') or item.get('claim') or ''}</li>"
@@ -269,6 +273,104 @@ def save_vertical(findings: str, view: dict) -> dict:
         "html": str(OUT / "alba-kitchen-refresh.html"),
         "pdf": str(OUT / "alba-kitchen-refresh.pdf"),
     }
+
+
+def _obs(package: dict) -> dict:
+    raw = (package or {}).get("observability_json") or ""
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _job_blob(package: dict, view: dict) -> str:
+    obs = _obs(package)
+    parts = [
+        package.get("findings") or "",
+        " ".join(str(item) for item in (obs.get("queries") or [])),
+        " ".join(str(item) for item in (obs.get("pages") or [])),
+    ]
+    for item in (view or {}).get("evidence") or []:
+        parts.append(str(item.get("sentence") or ""))
+    return "\n".join(parts).lower()
+
+
+def _save_named(name: str, findings: str, view: dict) -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / f"{name}.md").write_text(findings or "No findings were recorded.", encoding="utf-8")
+    (OUT / f"{name}.json").write_text(json.dumps({"findings": findings, "view": view}, indent=2, default=str), encoding="utf-8")
+
+
+def _proof_other_jobs(client: Client, rows: list, alba_findings: str, alba_view: dict) -> None:
+    """A second business and a program, in the same process, after the door plan."""
+    alba_obs = {}
+    coffee_objective = (
+        "Prepare a UK business briefing for a coffee machine rental company. "
+        "Cover the service, the customers, the competitors, and pricing."
+    )
+    status, project = client.post("/projects", {"objective": coffee_objective, "title": "coffee"})
+    if status != 200:
+        record(rows, 24, "Coffee briefing is a separate job", "FAIL", f"create {status}")
+        return
+    try:
+        coffee = wait_job(client, project["project_id"])
+    except Exception as exc:
+        record(rows, 24, "Coffee briefing is a separate job", "FAIL", f"{type(exc).__name__}: {exc}")
+        return
+    _view_code, coffee_view = client.get(f"/campus/view?package_id={coffee.get('id')}")
+    coffee_view = coffee_view if isinstance(coffee_view, dict) else {}
+    _status, project_now = client.get(f"/projects/{project['project_id']}")
+    raw = parent_package(project_now) if isinstance(project_now, dict) else coffee
+    findings = raw.get("findings") or coffee.get("findings") or ""
+    _save_named("coffee-briefing", findings, coffee_view)
+    blob = _job_blob(raw, coffee_view)
+    leaked = [word for word in ("kitchen", "cabinet", "paint", "respray", "worktop", "alba") if word in blob]
+    obs = _obs(raw)
+    pages = [page for page in (obs.get("pages") or []) if isinstance(page, str)]
+    queries = [str(item) for item in (obs.get("queries") or [])]
+    isolated = not leaked and coffee.get("id") != alba_view.get("package_id")
+    record(
+        rows,
+        24,
+        "Coffee briefing has no kitchen research",
+        "PASS" if isolated and (pages or queries or findings) else "FAIL",
+        f"leaked={leaked or 'none'} pages={len(pages)} queries={queries[:4]}",
+    )
+    program = "Write a small Python program that adds 2 and 3 and prints the sum."
+    status, project = client.post("/projects", {"objective": program, "title": "program"})
+    if status != 200:
+        record(rows, 25, "Python program is built and tested", "FAIL", f"create {status}")
+        return
+    try:
+        built = wait_job(client, project["project_id"])
+    except Exception as exc:
+        record(rows, 25, "Python program is built and tested", "FAIL", f"{type(exc).__name__}: {exc}")
+        return
+    _status, project_now = client.get(f"/projects/{project['project_id']}")
+    raw = parent_package(project_now) if isinstance(project_now, dict) else built
+    findings = raw.get("findings") or built.get("findings") or ""
+    _view_code, program_view = client.get(f"/campus/view?package_id={raw.get('id')}")
+    _save_named("software-deliverable", findings, program_view if isinstance(program_view, dict) else {})
+    passed = "tests: passed" in findings.lower() and "def add" in findings.lower()
+    if built.get("workflow_state") == "AWAITING_APPROVAL":
+        _code, state = client.get("/state")
+        approval = next((item for item in (state.get("approvals") or []) if item.get("status") == "pending" and item.get("project_id") == project["project_id"]), None)
+        if approval:
+            client.post(f"/approvals/{approval['id']}/resolve", {"decision": "approved"})
+            _view_code, program_view = client.get(f"/campus/view?package_id={raw.get('id')}")
+            landed = (program_view or {}).get("stage") if isinstance(program_view, dict) else ""
+            if passed and landed == "COMPLETED":
+                record(rows, 25, "Python program is built and tested", "PASS", landed)
+                return
+            if not passed and landed == "UNRESOLVED":
+                record(rows, 25, "Python program is built and tested", "FAIL", "tests failed; package stayed unresolved")
+                return
+            record(rows, 25, "Python program is built and tested", "FAIL", f"passed={passed} stage={landed}")
+            return
+    record(rows, 25, "Python program is built and tested", "PASS" if passed else "FAIL", (raw.get("workflow_state") or "") + " " + findings[:180])
 
 
 def record(rows: list, number: int, name: str, status: str, detail: str) -> None:
@@ -371,7 +473,10 @@ def main() -> int:
         code, continued = client.post(
             f"/work-packages/{same_id}/clarification",
             {"answer": (
-                "Alba Kitchen Refresh, a local kitchen painting service in the UK. "
+                "The service replaces kitchen doors, worktops and handles, and it avoids a full kitchen replacement. "
+                "Painting and wrapping are other services, not this service. "
+                "The owner is willing to travel. Do not invent a service area, a home base, prices, testimonials, completed jobs, or guarantees. "
+                "Research UK businesses that replace kitchen doors, worktops and handles. "
                 "Cover the service, the customer, the problem, the offer, competitor research from real websites, "
                 "pricing assumptions, channels, ad copy, a call to action, next steps, evidence, assumptions, and unresolved items."
             )},
@@ -423,6 +528,7 @@ def main() -> int:
         raw_package = parent_package(project_now) if isinstance(project_now, dict) else {}
         findings = raw_package.get("findings") or finished.get("findings") or ""
         artifacts = save_vertical(findings, view if isinstance(view, dict) else {})
+        _proof_other_jobs(client, rows, findings, view if isinstance(view, dict) else {})
         missing = [name for name in SECTIONS if name not in findings]
         usable = _plan_can_complete(raw_package or finished, view if isinstance(view, dict) else {}) and not missing and "UNKNOWN · UNKNOWN" not in findings
         record(rows, 23, "Vertical slice is usable", "PASS" if usable else "FAIL", "missing " + ", ".join(missing) if missing else json.dumps(artifacts))

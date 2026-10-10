@@ -72,6 +72,10 @@ def authoritative_decision(report: str, task_class: str, focus: str, attempt: in
         return "ACCEPT"
     if focus == "trivial":
         return "ACCEPT"
+    if focus == "build":
+        if "tests: passed" in text and "nothing was sent" in text:
+            return "ACCEPT"
+        return "TAKE_OVER"
     return "ACCEPT"
 
 

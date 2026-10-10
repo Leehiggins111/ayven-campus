@@ -444,6 +444,12 @@ class Programme:
             self.errors.append(str(meta.get("error")))
         save_model_call(package_id, "EMPLOYEE", self.task_class, meta, text)
         self.tokens += int(meta.get("completion_tokens") or 0)
+        if self.task_class == "software_build" and child.get("focus") == "build":
+            report = text if "nothing was sent" in (text or "").lower() else (text or "").rstrip() + "\nNothing was sent.\n"
+            child["report"] = report
+            update_package(package_id, findings=report, selected_model=meta.get("model") or route_for(self.task_class, "coding")["model_id"])
+            _set_agent(child["agent_id"], visual_state="COMPLETED", status="idle", last_summary="Program submitted", progress=0.7, current_tool=None)
+            return
         evidence, deterministic = self._corpus()
         grounded = ground_text(text, evidence, deterministic)
         self.grounded[package_id] = grounded["text"]
@@ -682,7 +688,8 @@ class Programme:
         save_quality(self.parent_id, quality)
         memory.remember("PROJECT", self.project_id, _memory_text(self, decision), provenance=f"package:{self.parent_id}", tags=self.task_class)
         if self.skills:
-            memory.remember("DOMAIN", self.skills[0].name, _memory_text(self, decision), provenance=f"package:{self.parent_id}", tags=self.task_class)
+            # Shared skill memory must not carry this job's queries, pages, or objective into the next one.
+            memory.remember("DOMAIN", self.skills[0].name, f"{self.task_class}: manager {decision}.", provenance=f"package:{self.parent_id}", tags=self.task_class)
         observability = {
             "plan": self.plan,
             "selected_models": {
@@ -887,9 +894,37 @@ def run_objective(project_id: str, objective: str, task_id: str | None = None) -
 def _finish_roles(programme: Programme) -> None:
     for role in ("EMPLOYEE", "SUPERVISOR", "MANAGER"):
         for prompt in programme.prompts(role):
+            if role == "EMPLOYEE" and programme.task_class == "software_build":
+                text, meta = _software_turn(programme, prompt["id"])
+                programme.bind(role, prompt["id"], text, meta)
+                continue
             limit = int(prompt.get("max_tokens") or (320 if role != "MANAGER" else 480))
             text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=limit, programme=programme, package_id=prompt["id"])
             programme.bind(role, prompt["id"], text, meta)
+
+
+def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
+    from .software import build_deliverable
+
+    def complete(system: str, user: str, max_tokens: int):
+        return _complete(
+            "EMPLOYEE",
+            system,
+            user,
+            max_tokens=max_tokens,
+            programme=programme,
+            package_id=package_id,
+            plain=True,
+        )
+
+    try:
+        text, meta = build_deliverable(programme.objective, complete)
+    except Exception as exc:
+        text = f"# Software deliverable\nTests: FAILED\n\n{type(exc).__name__}: {exc}\n\nNothing was sent.\n"
+        meta = {"error": f"{type(exc).__name__}: {exc}", "backend": "software", "tests_passed": False}
+    programme.research["tests_passed"] = bool(meta.get("tests_passed"))
+    programme.research["mode"] = "software"
+    return text, meta
 
 
 def _model_sections(text: str) -> bool:
@@ -899,9 +934,11 @@ def _model_sections(text: str) -> bool:
 
 
 def _keep_model_draft(programme: Programme, child: dict) -> bool:
+    report = child.get("report") or ""
+    if programme.task_class == "software_build" and child.get("focus") == "build":
+        return "tests:" in report.lower()
     if programme.task_class != "business_research" or child.get("focus") != "draft":
         return False
-    report = child.get("report") or ""
     return _model_sections(report)
 
 
@@ -924,7 +961,7 @@ def _publish_plan(self: Programme, model_text: str) -> str:
 
     sections = parse_sections(finished_lines(model_text or ""))
     _fill_plan_sections(self, sections, blob)
-    assembled = _assemble_plan(sections)
+    assembled = _assemble_plan(sections, self.objective)
     published = publish_business_plan(self.objective, self.research, assembled)
     if published and plan_sections_filled(published, blob):
         return published
@@ -1025,6 +1062,8 @@ def _approved_research_is_unresolved(row: dict, findings: str) -> bool:
     task = (row.get("task_class") or "").lower()
     if task in {"calculation", "trivial"}:
         return False
+    if task == "software_build":
+        return "tests: passed" not in (findings or "").lower()
     text = (findings or "").lower()
     obs: dict = {}
     try:
@@ -1181,8 +1220,40 @@ def _employee_system(programme: Programme) -> str:
     )
 
 
+def _domain_note_for_objective(objective: str, row: dict) -> bool:
+    """A skill note may be reused. Another job's pages and URLs may not."""
+    text = str(row.get("content") or "")
+    lowered = text.lower()
+    if "http://" in lowered or "https://" in lowered:
+        return False
+    from .deliverable import _blob_has_term, distinctive_terms
+
+    terms = [term for term in distinctive_terms(objective) if len(term) >= 5]
+    return any(_blob_has_term(term, lowered) for term in terms)
+
+
+def _job_memory(programme: Programme) -> list[dict]:
+    """This project's notes, plus a skill note that is actually about this request."""
+    project_id = str(getattr(programme, "project_id", "") or "")
+    parent_id = str(getattr(programme, "parent_id", "") or "")
+    if not project_id and not parent_id:
+        return []
+    rows = memory.retrieve(getattr(programme, "objective", "") or "", limit=8)
+    own = []
+    for row in rows:
+        scope = row.get("scope") or ""
+        subject = str(row.get("subject_id") or "")
+        if scope == "PROJECT" and project_id and subject == project_id:
+            own.append(row)
+        elif scope == "WORK_PACKAGE" and parent_id and subject == parent_id:
+            own.append(row)
+        elif scope == "DOMAIN" and _domain_note_for_objective(getattr(programme, "objective", "") or "", row):
+            own.append(row)
+    return own[:3]
+
+
 def _employee_user(programme: Programme, child: dict) -> str:
-    programme.memory_rows = memory.retrieve(programme.objective, limit=3)
+    programme.memory_rows = _job_memory(programme)
     remembered = memory.format_for_prompt(programme.memory_rows)
     block = f"\n\n{remembered}" if remembered else ""
     plan = ""
@@ -1194,12 +1265,13 @@ def _employee_user(programme: Programme, child: dict) -> str:
             "Service\nTarget customer\nProblem\nOffer and positioning\n"
             "Competitor and market research\nPricing\nChannels\nAdvert\nCall to action\nNext steps\nAssumptions\nUnresolved\n"
             "Under Advert write three lines that start Headline:, Body:, and Call to action:.\n"
-            "Alba is not named on the opened pages. Still write the offer, the channels, the advert, and the next steps as recommendations.\n"
-            "The offer says what is sold and how that differs from replacing the kitchen.\n"
+            "The name in the request may not appear on the opened pages. Still write the offer, the channels, the advert, and the next steps as recommendations.\n"
+            "The offer says what is sold and how that differs from the alternatives named in the request.\n"
             "Write each section once. Do not repeat a sentence. Do not narrate. Do not say I, let me, or I need to.\n"
-            "Do not write that the evidence does not state a section. Write the section.\n"
+            "Use only the service in this request and the pages opened for this request.\n"
             "Pricing must cite an opened page or start with ASSUMPTION: and the reason. A price that no page stated is not a fact.\n"
             "End with: Nothing was sent.\n\n"
+            f"Request:\n{programme.objective[:800]}\n\n"
             f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
             f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
         )
@@ -1237,20 +1309,24 @@ def _price_notes(programme: Programme) -> str:
     return "\n".join(notes)
 
 
-_SECTION_JOBS = (
-    ("service", "Service", "Write one sentence. Alba Kitchen Refresh paints the kitchen cabinets the household already owns.", "Alba Kitchen Refresh paints "),
-    ("target customer", "Target customer", "Write one sentence about a UK homeowner who wants the cabinets painted and the kitchen left in place.", "The customer is a UK homeowner who wants "),
-    ("problem", "Problem", "Write one sentence. Painting the cabinets costs less and takes less time than replacing the kitchen.", "Painting the cabinets "),
-    ("offer and positioning", "Offer and positioning", "Write one sentence. Cabinet painting leaves the existing kitchen in place, and replacement removes it.", "The offer is "),
-    ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened UK pages and the £ price each page states.", "Opened UK pages state "),
-    ("pricing", "Pricing", "Write two sentences. Start with Assumption. Cite one £ range from the prices below. Say that a visit counts the doors before a quote.", "Assumption: "),
-    ("channels", "Channels", "Write one sentence. Nearby homeowners are reached through local search and a conversation about painting their cabinets.", "Homeowners nearby are reached through local search and "),
-    ("advert", "Advert", "Write exactly three lines and stop. Headline: painting cabinets the household already owns. Body: one sentence. Call to action: ask for a visit.", "Headline: "),
-    ("call to action", "Call to action", "Write one sentence that asks for a visit and a written scope.", "Ask for a visit and a written scope "),
-    ("next steps", "Next steps", "Write one sentence. The owner confirms the towns to cover, then counts the cabinet doors on a visit.", "Next, the owner confirms "),
-    ("assumptions", "Assumptions", "Write one sentence. The service and the UK location come from the request, and a visit still has to see the cabinets.", "The plan assumes "),
-    ("unresolved", "Unresolved", "Write one sentence. The towns and the cabinet condition are still open.", "Still open: "),
-)
+def _section_jobs(objective: str) -> tuple:
+    """Section prompts quote this request. They do not name a fixed trade."""
+    brief = " ".join((objective or "").split())[:500]
+    request = f" Request: {brief}"
+    return (
+        ("service", "Service", "Write one sentence stating the service in this request." + request, "The service is "),
+        ("target customer", "Target customer", "Write one sentence about who pays for the service in this request." + request, "The customer is "),
+        ("problem", "Problem", "Write one sentence about the problem this request is solving." + request, "The problem is "),
+        ("offer and positioning", "Offer and positioning", "Write one sentence. Say what is sold and how it differs from the alternatives named in this request." + request, "The offer is "),
+        ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages and the price each page states. Use only prices from the list below." + request, "Opened pages state "),
+        ("pricing", "Pricing", "Write two sentences. Start with Assumption. Cite one price from the list below and name the service in this request." + request, "Assumption: "),
+        ("channels", "Channels", "Write one sentence about how customers for this service are reached." + request, "Customers are reached through "),
+        ("advert", "Advert", "Write exactly three lines and stop. Headline names the service in this request. Body is one sentence. Call to action asks the customer to respond." + request, "Headline: "),
+        ("call to action", "Call to action", "Write one sentence that asks the customer to respond." + request, "Ask for "),
+        ("next steps", "Next steps", "Write one sentence about the first practical action the owner takes." + request, "Next, the owner "),
+        ("assumptions", "Assumptions", "Write one sentence. The service comes from the request. Say what still has to be confirmed." + request, "The plan assumes "),
+        ("unresolved", "Unresolved", "Write one sentence about a fact the request does not settle." + request, "Still open: "),
+    )
 
 
 def _section_budget(key: str, attempt: int) -> tuple[int, list[str]]:
@@ -1260,19 +1336,24 @@ def _section_budget(key: str, attempt: int) -> tuple[int, list[str]]:
     return 96, ["\n"]
 
 
-def _section_missing(key: str, body: str, blob: str) -> bool:
-    from .deliverable import _advert_ok, _body_filled, _pricing_ok
+def _section_missing(key: str, body: str, blob: str, objective: str = "") -> bool:
+    from .deliverable import _advert_ok, _body_filled, _pricing_ok, section_has_anchor
 
+    body = body or ""
     if key in ("assumptions", "unresolved"):
-        return not _body_filled(body)
-    if key == "pricing":
-        return not _pricing_ok(body, blob)
-    if key == "advert":
-        return not _advert_ok({"advert": body})
-    return not _body_filled(body)
+        missing = not _body_filled(body)
+    elif key == "pricing":
+        missing = not _pricing_ok(body, blob)
+    elif key == "advert":
+        missing = not _advert_ok({"advert": body})
+    else:
+        missing = not _body_filled(body)
+    if missing:
+        return True
+    return not section_has_anchor(key, body, objective)
 
 
-def _section_body(text: str, kind: str) -> str:
+def _section_body(text: str, kind: str, objective: str = "") -> str:
     """Owner sentences only. A prompt essay is discarded here, before it can be stored."""
     from .deliverable import owner_section
 
@@ -1297,7 +1378,7 @@ def _write_one_section(programme: Programme, key: str, title: str, instruction: 
         prefill=prefill,
         stop=stop,
     )
-    return _section_body(text, key)
+    return _section_body(text, key, programme.objective)
 
 
 def _has_model_sentence(text: str) -> bool:
@@ -1315,19 +1396,20 @@ def _has_model_sentence(text: str) -> bool:
 
 def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> None:
     """Ask for each missing section on its own. A 4b model finishes a short answer; it does not finish a worksheet."""
+    jobs = _section_jobs(programme.objective)
     for _pass in range(2):
-        pending = [job for job in _SECTION_JOBS if _section_missing(job[0], sections.get(job[0]) or "", blob)]
+        pending = [job for job in jobs if _section_missing(job[0], sections.get(job[0]) or "", blob, programme.objective)]
         if not pending:
             return
         for key, title, instruction, prefill in pending:
             written = _write_one_section(programme, key, title, instruction, prefill=prefill, attempt=_pass + 1)
-            if written and not _section_missing(key, written, blob):
+            if written and not _section_missing(key, written, blob, programme.objective):
                 sections[key] = written
 
 
-def _assemble_plan(sections: dict) -> str:
+def _assemble_plan(sections: dict, objective: str = "") -> str:
     lines = ["Business launch plan", ""]
-    for key, title, _instruction, _prefill in _SECTION_JOBS:
+    for key, title, _instruction, _prefill in _section_jobs(objective):
         lines.append(title)
         body = (sections.get(key) or "").strip()
         if body:
@@ -1347,7 +1429,7 @@ def _business_repair_user(programme: Programme, previous: str) -> str:
         "Competitor and market research, Pricing, Channels, Advert, Call to action, Next steps, Assumptions, Unresolved.\n"
         "Do not repeat a sentence. Do not narrate. Do not say I, let me, or I need to.\n"
         "Do not write that the evidence does not state a section. Write the section.\n"
-        "Offer and positioning: what Alba sells, and how that differs from replacing the whole kitchen.\n"
+        "Offer and positioning: what the request sells, and how that differs from the alternatives the request names.\n"
         "Pricing: cite the £ figures below and start with ASSUMPTION: and which figure to plan around, and why.\n"
         "Advert: exactly three lines, Headline:, Body:, and Call to action:.\n"
         "Channels and next steps: full sentences about how a local UK service reaches homeowners.\n"

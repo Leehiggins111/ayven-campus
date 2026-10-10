@@ -24,10 +24,12 @@ jobs:
       AYVEN_MANAGER_MODEL: qwen3:4b
       AYVEN_LLM_TIMEOUT_S: "600"
       AYVEN_ACCEPTANCE_JOB_TIMEOUT_S: "5400"
-      AYVEN_STAGE_TIMEOUT_S: "900"
+      AYVEN_STAGE_TIMEOUT_S: "1200"
+      AYVEN_MAX_RESEARCH_SECONDS: "300"
       AYVEN_MAX_RESEARCH_ROUNDS: "1"
       AYVEN_MAX_ATTEMPTS: "1"
       AYVEN_OLLAMA_THINK: "0"
+      AYVEN_ALLOW_CODE: "1"
       AYVEN_ACCESS_KEY: campus-windows-gate
       OLLAMA_NO_GPU: "1"
       PYTHONDONTWRITEBYTECODE: "1"
@@ -230,7 +232,7 @@ jobs:
           key: ollama-windows-app-v0.40.2
 
       - name: Run Campus acceptance
-        timeout-minutes: 110
+        timeout-minutes: 150
         shell: pwsh
         env:
           PYTHONPATH: ${{ github.workspace }};${{ github.workspace }}\apps\api

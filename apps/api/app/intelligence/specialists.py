@@ -121,7 +121,7 @@ def matrix() -> list[dict]:
 
 
 def consider(task_class: str) -> dict:
-    if task_class != "software_engineering":
+    if task_class not in {"software_engineering", "software_build"}:
         return {"engine": None, "status": "not_applicable", "evidence": [], "reason": "This work package is not a software task."}
     from .code_sandbox import isolation_level
 

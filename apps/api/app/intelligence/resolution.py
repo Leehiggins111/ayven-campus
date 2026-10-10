@@ -61,6 +61,15 @@ def resolve_manager(
         method = "unresolved"
         decision = "ESCALATE"
         reason = "Insufficient evidence after the research budget. Nothing was invented to fill it."
+    elif task_class == "software_build":
+        if research.get("tests_passed"):
+            method = "deterministic_tool"
+            decision = "SYNTHESISE"
+            reason = "The generated tests passed. Nothing was sent."
+        else:
+            method = "unresolved"
+            decision = "ESCALATE"
+            reason = "The program is not complete because its tests did not pass."
     elif task_class == "business_research" and not _business_ready(research):
         method = "unresolved"
         decision = "ESCALATE"
