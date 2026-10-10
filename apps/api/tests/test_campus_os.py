@@ -81,12 +81,17 @@ def test_http_approve_resumes_the_same_package_and_direct_resolve_stays_approved
     assert resolved.json()["resumed"]
     after = _parent(parent2)
     assert after["id"] == parent2
-    assert after["workflow_state"] == "COMPLETED"
-    assert after["campus_stage"] == "COMPLETE"
+    assert after["workflow_state"] == "UNRESOLVED"
+    assert after["campus_stage"] == "UNRESOLVED"
+    assert "UNRESOLVED" in (after["findings"] or "")
     view = client.get("/campus/view", params={"package_id": parent2}).json()
-    assert view["finished"] is True
+    assert view["finished"] is False
+    assert view["unresolved"] is True
     assert view["needs_you"] is False
     assert view["result"]["manager"]
+    assert "PASS. ESCALATE" not in view["result"]["summary"]
+    assert "Unresolved" in view["result"]["summary"]
+    assert "UNKNOWN · UNKNOWN" not in json.dumps(view["evidence"])
 
 
 def test_http_reject_lands_in_the_rejected_state():

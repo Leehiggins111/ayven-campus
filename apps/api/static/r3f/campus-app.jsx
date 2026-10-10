@@ -224,9 +224,7 @@ function EvidencePanel() {
           {rows.map((row, index) => (
             <div key={index} data-testid="evidence-claim">
               <div>{row.claim}</div>
-              <div className="muted">{row.support} · {row.source_type || "source"} · {row.authority || "authority unset"}</div>
-              <div className="muted">{row.source || "no source url"}</div>
-              <div className="muted">locator {row.locator || "—"} · hash {row.file_hash ? String(row.file_hash).slice(0, 12) : "—"} · supervisor {row.supervisor || "—"}</div>
+              <div data-testid="evidence-sentence">{row.sentence || "UNRESOLVED. No opened page is linked to this claim."}</div>
             </div>
           ))}
         </div>
@@ -241,7 +239,7 @@ function ResultPanel() {
   if (!result) return null;
   return (
     <div className="result" data-testid="final-result">
-      <strong>{view.rejected ? "Rejected" : "Final result"}</strong>
+      <strong>{view.rejected ? "Rejected" : view.unresolved ? "Unresolved" : "Final result"}</strong>
       <div data-testid="result-summary">{result.summary}</div>
       <div><b>Deliverable</b> {result.deliverable || "—"}</div>
       <div><b>Findings</b> {result.findings || "—"}</div>
@@ -252,18 +250,25 @@ function ResultPanel() {
   );
 }
 
-function TraceDrill() {
-  const brief = useCampus((s) => s.campus_brief) || {};
-  const [rows, setRows] = useState(null);
-  if (!brief.package_id) return null;
-  return (
-    <div className="cmd-block">
-      <button className="ghost" onClick={() => fetch(`/work-packages/${brief.package_id}/traces`).then((r) => r.json()).then((body) => setRows(body.traces || []))}>Traces</button>
-      {rows && rows.slice(0, 8).map((row) => (
-        <div key={row.id} className="muted">{row.event} · {row.created_at}</div>
-      ))}
-    </div>
-  );
+function packageLabel(pkg) {
+  const names = {
+    DRAFT: "New request",
+    IN_PROGRESS: "In progress",
+    UNDER_REVIEW: "Being reviewed",
+    REPAIRING: "Being repaired",
+    READY: "Ready for a decision",
+    AWAITING_APPROVAL: "Needs your approval",
+    AWAITING_CLARIFICATION: "Needs clarification",
+    APPROVED: "Approved",
+    ACTIONING: "Finishing",
+    COMPLETED: "Complete",
+    FAILED: "Rejected",
+    UNRESOLVED: "Unresolved",
+    ESCALATED: "Needs a decision",
+  };
+  const state = names[pkg.workflow_state] || "Work in progress";
+  const title = String(pkg.title || pkg.objective || "").replace(/\s+/g, " ").trim().slice(0, 48);
+  return title ? `${state} — ${title}` : state;
 }
 
 function WorkCrate({ pkg, departments, onSelect }) {
@@ -425,24 +430,19 @@ function App() {
             <button data-testid="ask-milo" onClick={() => fetch("/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ objective: text }) }).then(() => useCampus.hydrate())}>Ask Milo</button>
             <button className="ghost" onClick={() => useCampus.focusCampus()}>Campus view</button>
           </div>
-          <div className="row">
-            <button className="ghost" onClick={() => fetch("/demo/fail", { method: "POST" }).then(() => useCampus.hydrate())}>Demo fail</button>
-            <button className="ghost" onClick={() => fetch("/demo/retry", { method: "POST" }).then(() => useCampus.hydrate())}>Recover</button>
-          </div>
           <CampusNow />
         </div>
         <div className="panel right">
           <h1>Work packages</h1>
           {parents.map((pkg) => (
             <button key={pkg.id} className="pkg-btn" data-testid="work-package" data-package={pkg.id} data-hot={pkg.id === (selectedPackageId || view.package_id) ? "1" : "0"} onClick={() => useCampus.selectPackage(pkg.id)}>
-              {(pkg.workflow_state || pkg.stage || "package").slice(0, 42)}
+              {packageLabel(pkg)}
             </button>
           ))}
           <WorkflowStrip />
           <RepairPanel />
           <EvidencePanel />
           <ResultPanel />
-          <TraceDrill />
           <h1>Departments</h1>
           {CATALOG.map((d) => <div key={d.id} className="dept-line" onClick={() => useCampus.focusBuilding(d.id)}><span className="swatch" style={{ background: d.theme }} />{d.shortName}</div>)}
           <div data-testid="agent-board">

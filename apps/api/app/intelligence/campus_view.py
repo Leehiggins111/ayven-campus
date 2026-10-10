@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 
 from .. import events
@@ -93,7 +94,22 @@ def public_text(value: str, limit: int = 280) -> str:
     return " ".join(text.split())[:limit]
 
 
-def build_workflow(stage: str, *, had_repair: bool, needs_gate: bool, clarifying: bool, rejected: bool, early_clarification: bool = False) -> list[dict]:
+def readable_prose(value: str, limit: int = 1200) -> str:
+    """Plain sentences for a business owner. Markup is not part of the result."""
+    text = public_text(value, max(limit * 4, limit))
+    text = re.sub(r"```.*?```", " ", text)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\((?:https?://|/)[^)]*\)", r"\1", text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[#>*_]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= limit:
+        return text
+    clipped = text[:limit].rsplit(" ", 1)[0].strip()
+    return clipped or text[:limit]
+
+
+def build_workflow(stage: str, *, had_repair: bool, needs_gate: bool, clarifying: bool, rejected: bool, early_clarification: bool = False, unresolved: bool = False) -> list[dict]:
     """Production order: research is collected before the employee drafts.
 
     A clarification that stops the package before research is drawn after planning,
@@ -107,6 +123,9 @@ def build_workflow(stage: str, *, had_repair: bool, needs_gate: bool, clarifying
         current = "CLARIFICATION" if clarifying else (stage or "REQUEST")
     if current == "REJECTED":
         current = "COMPLETE"
+    if unresolved:
+        steps = ["UNRESOLVED" if name == "COMPLETE" else name for name in steps]
+        current = "UNRESOLVED"
     if current not in steps:
         current = "REQUEST"
     index = steps.index(current)
@@ -188,10 +207,11 @@ def campus_view(package_id: str = "") -> dict:
     stage = package.get("campus_stage") or _stage_from_workflow(workflow_state)
     clarifying = workflow_state == "AWAITING_CLARIFICATION" or stage == "CLARIFICATION"
     rejected = workflow_state == "FAILED" or stage == "REJECTED"
+    unresolved = workflow_state == "UNRESOLVED" or stage == "UNRESOLVED"
     repairs = _repairs(obs.get("repairs") or [], claims)
     pending = next((item for item in approvals if item.get("status") == "pending"), None)
     needs_you = workflow_state == "AWAITING_APPROVAL" and pending is not None
-    finished = workflow_state == "COMPLETED" or stage == "COMPLETE"
+    finished = (workflow_state == "COMPLETED" or stage == "COMPLETE") and not unresolved
     tools = list(plan.get("required_tools") or [])
     skills = [part for part in (package.get("selected_skills") or "").split(",") if part]
     if not skills:
@@ -199,7 +219,7 @@ def campus_view(package_id: str = "") -> dict:
     research_rows = _research(obs)
     trust = _trust(claims, obs)
     who = _who(agents, package)
-    doing = _doing(stage, package, clarifying, needs_you, finished, rejected)
+    doing = _doing(stage, package, clarifying, needs_you, finished, rejected, unresolved)
     why = public_text(
         (obs.get("resolution") or {}).get("reason")
         or (obs.get("resolution") or {}).get("rationale")
@@ -213,8 +233,9 @@ def campus_view(package_id: str = "") -> dict:
     measured = obs.get("measured_cost_usd")
     cost = measured if isinstance(measured, (int, float)) else "unknown"
     result = None
-    if finished or rejected:
-        result = _result(package, obs, evaluation, trust, cost)
+    supported = sum(1 for claim in claims if claim.get("status") == "SUPPORTED")
+    if finished or rejected or unresolved:
+        result = _result(package, obs, evaluation, trust, cost, supported=supported, unresolved=unresolved)
     supervisor_rejected = sum(
         1
         for audit in (obs.get("supervisor_decisions") or [])
@@ -228,7 +249,7 @@ def campus_view(package_id: str = "") -> dict:
         "who": who,
         "why": why or "The objective Lee submitted.",
         "stage": workflow_state or stage,
-        "stage_label": "CLARIFICATION" if clarifying else ("REJECTED" if rejected else stage),
+        "stage_label": _human_stage(workflow_state, stage, clarifying, rejected, unresolved),
         "workflow": build_workflow(
             "CLARIFICATION" if clarifying else ("REJECTED" if rejected else stage),
             had_repair=bool(repairs),
@@ -236,6 +257,7 @@ def campus_view(package_id: str = "") -> dict:
             clarifying=clarifying,
             rejected=rejected,
             early_clarification=clarifying and not package.get("manager_decision"),
+            unresolved=unresolved,
         ),
         "tools": tools,
         "skills": skills,
@@ -250,6 +272,7 @@ def campus_view(package_id: str = "") -> dict:
         "question": question,
         "approval": approval,
         "finished": finished,
+        "unresolved": unresolved,
         "rejected": rejected,
         "result": result,
         "elapsed": _elapsed(package.get("created_at") or "", package.get("updated_at") or ""),
@@ -266,7 +289,7 @@ def campus_view(package_id: str = "") -> dict:
             }
             for agent in agents
         ],
-        "evidence": _evidence(claims, children, package),
+        "evidence": _evidence(claims, children, package, obs),
     }
 
 
@@ -292,6 +315,7 @@ def _empty() -> dict:
         "question": "",
         "approval": None,
         "finished": False,
+        "unresolved": False,
         "rejected": False,
         "result": None,
         "elapsed": "unknown",
@@ -316,12 +340,46 @@ def _stage_from_workflow(state: str) -> str:
         "APPROVED": "APPROVAL",
         "ACTIONING": "COMPLETE",
         "COMPLETED": "COMPLETE",
+        "UNRESOLVED": "UNRESOLVED",
         "FAILED": "REJECTED",
         "ESCALATED": "APPROVAL",
     }.get(state or "", "REQUEST")
 
 
-def _doing(stage: str, package: dict, clarifying: bool, needs_you: bool, finished: bool, rejected: bool) -> str:
+def _human_stage(workflow_state: str, stage: str, clarifying: bool, rejected: bool, unresolved: bool) -> str:
+    if unresolved:
+        return "Unresolved"
+    if rejected:
+        return "Rejected"
+    if clarifying:
+        return "Needs clarification"
+    words = {
+        "REQUEST": "Request received",
+        "PLANNING": "Planning",
+        "RESEARCH": "Researching",
+        "EVIDENCE": "Checking evidence",
+        "EMPLOYEE": "Drafting",
+        "DRAFT": "Writing",
+        "SUPERVISOR": "Supervisor review",
+        "REPAIR": "Being repaired",
+        "MANAGER": "Manager decision",
+        "APPROVAL": "Needs your approval",
+        "CLARIFICATION": "Needs clarification",
+        "COMPLETE": "Complete",
+        "REJECTED": "Rejected",
+        "UNRESOLVED": "Unresolved",
+        "AWAITING_APPROVAL": "Needs your approval",
+        "AWAITING_CLARIFICATION": "Needs clarification",
+        "COMPLETED": "Complete",
+        "FAILED": "Rejected",
+        "IN_PROGRESS": "In progress",
+    }
+    return words.get(stage) or words.get(workflow_state) or "In progress"
+
+
+def _doing(stage: str, package: dict, clarifying: bool, needs_you: bool, finished: bool, rejected: bool, unresolved: bool = False) -> str:
+    if unresolved:
+        return "Unresolved. The evidence is not enough to call this finished."
     if rejected:
         return "Rejected. Nothing was sent."
     if finished:
@@ -443,46 +501,95 @@ def _approval_card(row: dict | None) -> dict | None:
     }
 
 
-def _evidence(claims: list[dict], children: list[dict], package: dict) -> list[dict]:
+def _provenance(claim: dict, mode: str) -> tuple[str, str]:
+    freshness = (claim.get("freshness") or "").upper()
+    source_type = (claim.get("source_type") or "").upper()
+    url = (claim.get("source_url") or "").strip()
+    title = readable_prose(claim.get("source_title") or "", 120)
+    when = (claim.get("retrieved_at") or "").strip()
+    if source_type == "INPUT" or freshness == "INPUT":
+        return "USER-PROVIDED", "This came from the request, not from a web page."
+    if freshness == "LIVE" and url.startswith("http") and mode == "live":
+        when_bit = f" Retrieved {when}." if when else ""
+        return "LIVE", f"Opened {title or url}.{when_bit}"
+    if freshness.startswith("FIXTURE") or (mode in {"fixtures", "fixture", "stub"} and (url or title)):
+        name = title or url or "a local snapshot"
+        return "FIXTURE", f"{name} is a local fixture. It was not opened on the live web."
+    if url.startswith("http") and mode == "live":
+        return "LIVE", f"Opened {title or url}."
+    if url and mode != "live":
+        return "UNRESOLVED", "A link was recorded, but the page was not opened in live research."
+    return "UNRESOLVED", "No opened page is linked to this claim."
+
+
+def _evidence(claims: list[dict], children: list[dict], package: dict, obs: dict | None = None) -> list[dict]:
+    obs = obs or {}
+    mode = str(obs.get("research_mode") or "").lower()
     supervisor = {child["id"]: child.get("supervisor_decision") or "" for child in children}
     parent_supervisor = package.get("supervisor_decision") or ""
     rows = []
     for claim in claims:
-        text = public_text(claim.get("claim_text") or "", 240)
+        text = readable_prose(claim.get("claim_text") or "", 240)
         if not text:
             continue
+        label, note = _provenance(claim, mode)
         rows.append({
             "claim": text,
+            "provenance": label,
+            "sentence": f"{label}. {note}",
             "support": claim.get("status") or "UNVERIFIED",
-            "source": public_text(claim.get("source_url") or claim.get("source_title") or "", 180),
+            "source": readable_prose(claim.get("source_url") or claim.get("source_title") or "", 180),
             "source_type": claim.get("source_type") or "",
             "authority": claim.get("authority") or "",
             "locator": claim.get("locator") or "",
             "file_hash": claim.get("file_hash") or "",
             "supervisor": supervisor.get(claim.get("package_id")) or parent_supervisor or "",
         })
+    for gap in obs.get("failures") or []:
+        if not isinstance(gap, dict) or not gap.get("error"):
+            continue
+        reason = readable_prose(str(gap.get("error")), 180)
+        rows.append({
+            "claim": readable_prose(str(gap.get("query") or "A requested page"), 180),
+            "provenance": "UNRESOLVED",
+            "sentence": f"UNRESOLVED. The page could not be opened. {reason}",
+            "support": "UNVERIFIED",
+            "source": readable_prose(str(gap.get("url") or ""), 180),
+            "source_type": "",
+            "authority": "",
+            "locator": "",
+            "file_hash": "",
+            "supervisor": "",
+        })
     return rows[:12]
 
 
-def _result(package: dict, obs: dict, evaluation: dict, trust: str, cost: str) -> dict:
+def _result(package: dict, obs: dict, evaluation: dict, trust: str, cost: str, *, supported: int = 0, unresolved: bool = False) -> dict:
     gaps = []
     for item in (obs.get("plan") or {}).get("unknowns") or []:
-        text = public_text(str(item), 180)
+        text = readable_prose(str(item), 180)
         if text:
             gaps.append(text)
-    findings = public_text(package.get("findings") or "", 700)
-    deliverable = public_text((obs.get("plan") or {}).get("deliverable") or findings, 300)
+    findings = readable_prose(package.get("findings") or "", 1200)
+    deliverable = readable_prose((obs.get("plan") or {}).get("deliverable") or findings, 400)
+    manager = package.get("manager_decision") or ""
+    verdict = evaluation.get("verdict") or ""
+    if unresolved or (package.get("workflow_state") or "") == "UNRESOLVED":
+        summary = "Unresolved. Approval did not create evidence, so this job is not complete."
+    elif (package.get("workflow_state") or "") == "FAILED":
+        summary = "Rejected. Nothing was sent."
+    elif supported == 0 and (verdict == "PASS" or manager in {"ESCALATE", "CLARIFY", "PASS"}):
+        summary = "No claim was supported. This is not a completed pass."
+    else:
+        summary = findings or "Recorded. See the findings below."
     return {
-        "summary": public_text(
-            f"{evaluation.get('verdict') or package.get('manager_decision') or 'Recorded'}. {package.get('manager_decision') or ''}".strip(),
-            240,
-        ),
+        "summary": summary[:400],
         "deliverable": deliverable,
         "findings": findings,
         "gaps": gaps[:6],
         "confidence": package.get("quality_score") if package.get("quality_score") is not None else "unknown",
         "evidence_status": trust,
-        "manager": package.get("manager_decision") or evaluation.get("manager") or "",
+        "manager": manager or evaluation.get("manager") or "",
         "time": _elapsed(package.get("created_at") or "", package.get("updated_at") or ""),
         "cost": cost,
     }

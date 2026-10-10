@@ -882,6 +882,59 @@ def answer_clarification(package_id: str, answer: str) -> str:
     return package_id
 
 
+def _approved_research_is_unresolved(row: dict, findings: str) -> bool:
+    """Fixture or unopened research stays unresolved. Approval is not evidence.
+
+    A calculation or a short acknowledgement has no research page to open, so
+    approval can still complete that package.
+    """
+    task = (row.get("task_class") or "").lower()
+    if task in {"calculation", "trivial"}:
+        return False
+    text = (findings or "").lower()
+    obs: dict = {}
+    try:
+        loaded = json.loads(row.get("observability_json") or "{}")
+        if isinstance(loaded, dict):
+            obs = loaded
+    except json.JSONDecodeError:
+        obs = {}
+    research: dict = {}
+    raw_research = row.get("research_json")
+    if isinstance(raw_research, str) and raw_research:
+        try:
+            loaded = json.loads(raw_research)
+            if isinstance(loaded, dict):
+                research = loaded
+        except json.JSONDecodeError:
+            research = {}
+    mode = str(obs.get("research_mode") or research.get("mode") or "").lower()
+    if mode in {"fixtures", "fixture", "stub"}:
+        return True
+    if "no opened source" in text or ("fixtures" in text and mode != "live"):
+        return True
+    pages = [
+        page
+        for page in (obs.get("pages") or research.get("pages") or [])
+        if isinstance(page, str) and page.startswith("http")
+    ]
+    research_like = "research" in task or task in {
+        "web_research",
+        "business_research",
+        "football_tickets",
+        "vending_prospects",
+        "internal_door_quote",
+    }
+    if not research_like:
+        return False
+    if mode != "live" or not pages:
+        return True
+    contract = obs.get("contract_evaluation") or {}
+    if isinstance(contract, dict) and contract.get("passed") is False:
+        return True
+    return False
+
+
 def resume_approved_package(package_id: str) -> str:
     """Approval authorises the next internal step. It does not prove the job succeeded."""
     from .campus_view import mark_stage
@@ -891,14 +944,7 @@ def resume_approved_package(package_id: str) -> str:
     if (row.get("workflow_state") or "") != "APPROVED":
         return row.get("workflow_state") or ""
     findings = row.get("findings") or ""
-    research_mode = ""
-    try:
-        import json as _json
-        research_mode = (_json.loads(row.get("research_json") or "{}") or {}).get("mode") or ""
-    except Exception:
-        research_mode = ""
-    fixture = "fixtures" in findings.lower() or research_mode in {"fixtures", "fixture", "stub"}
-    unsupported = fixture or ("no opened source" in findings.lower())
+    unsupported = _approved_research_is_unresolved(row, findings)
     log_transition(package_id, "ACTIONING", "Lee approved the internal review. Nothing is sent.")
     if unsupported:
         log_transition(package_id, "UNRESOLVED", "Approved, but the required research has no opened sources.")
@@ -910,7 +956,7 @@ def resume_approved_package(package_id: str) -> str:
             next_action="Unresolved: no opened sources",
             findings=("UNRESOLVED. Approval did not create evidence.\n" + findings)[:8000],
         )
-        mark_stage(package_id, "COMPLETE", project_id=row.get("project_id") or "", task_id=row.get("task_id") or "")
+        mark_stage(package_id, "UNRESOLVED", project_id=row.get("project_id") or "", task_id=row.get("task_id") or "")
         _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="Unresolved: no opened sources", progress=1)
         _set_agent("milo", visual_state="WAITING", status="idle", last_summary="Package unresolved after approval", progress=1)
         if row.get("project_id"):

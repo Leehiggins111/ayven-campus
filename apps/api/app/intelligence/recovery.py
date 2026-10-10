@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
-TERMINAL = {"COMPLETED", "FAILED", "APPROVED"}
+TERMINAL = {"COMPLETED", "FAILED", "APPROVED", "UNRESOLVED"}
 
 
 def stage_timeout(stage: str) -> float:

@@ -143,7 +143,10 @@ def test_campus_ui_approve_reject_clarify_repair_and_evidence():
                 page.click("[data-testid='approve']")
                 page.wait_for_selector("[data-testid='final-result']", timeout=20000)
                 page.wait_for_selector("[data-testid='glance-finished']")
-                assert "Yes" in page.locator("[data-testid='glance-finished']").inner_text()
+                assert "Finished No" in page.locator("[data-testid='glance-finished']").inner_text()
+                assert "Unresolved" in page.locator("[data-testid='final-result']").inner_text()
+                evidence = page.locator("[data-testid='evidence-list']").inner_text()
+                assert "UNKNOWN · UNKNOWN" not in evidence
                 assert page.locator("[data-testid='campus-glance']").get_attribute("data-package") == approve_id
                 page.locator("[data-testid='final-result']").scroll_into_view_if_needed()
                 _shot(page, "05-approved-complete.png")

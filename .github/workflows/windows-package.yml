@@ -1,0 +1,64 @@
+name: windows-package
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/ayven-v2-workable-a9eb
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      AYVEN_ALLOW_ESCALATION: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out Milo
+        shell: pwsh
+        env:
+          MILO_READ_TOKEN: ${{ secrets.MILO_READ_TOKEN }}
+        run: |
+          if (-not $env:MILO_READ_TOKEN) {
+            @(
+              "Milo checkout is blocked.",
+              "Repository: https://github.com/Leehiggins111/Milo",
+              "Reason: the MILO_READ_TOKEN secret is not set on Leehiggins111/ayven-campus.",
+              "This workflow does not invent Milo.exe. The package build fails because Milo\Milo.exe is absent.",
+              "Ollama and qwen3:4b were not installed, because there is no package to test."
+            ) | Set-Content -Path milo-blocker.txt -Encoding utf8
+            exit 1
+          }
+          git -c http.extraheader="AUTHORIZATION: bearer $($env:MILO_READ_TOKEN)" clone --depth 1 https://github.com/Leehiggins111/Milo.git milo-src
+          if (-not (Test-Path milo-src)) {
+            "Milo checkout failed. Milo\Milo.exe was not produced." | Set-Content -Path milo-blocker.txt -Encoding utf8
+            exit 1
+          }
+
+      - name: Require Milo.exe
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path milo-src -Recurse -Filter Milo.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            @(
+              "Milo was checked out, but this workflow has no verified NSIS command yet.",
+              "Milo\Milo.exe is absent, so the package build fails."
+            ) | Set-Content -Path milo-blocker.txt -Encoding utf8
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path package\Milo | Out-Null
+          Copy-Item $exe.FullName package\Milo\Milo.exe
+          if (-not (Test-Path package\Milo\Milo.exe)) { exit 1 }
+          Get-ChildItem -Recurse package | Select-Object -ExpandProperty FullName | Set-Content package-contents.txt
+
+      - name: Upload package evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-evidence
+          path: |
+            milo-blocker.txt
+            package-contents.txt
+            package/**
+          if-no-files-found: warn
