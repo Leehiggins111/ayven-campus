@@ -100,6 +100,26 @@ def load_fixtures() -> list[dict]:
     return pages
 
 
+def _drop_low_score(hit: dict, objective: str, *, strict: bool) -> bool:
+    """A weak overlap with a long brief is not a reason to skip a trade page.
+
+    The opened page is still checked. A URL that names the trade is opened.
+    """
+    if not strict or float(hit.get("rerank_score") or 0) >= 0.2:
+        return False
+    from .deliverable import _trade_in_blob, _trade_stem, distinctive_terms
+
+    trades = [term for term in distinctive_terms(objective) if _trade_stem(term)]
+    if not trades:
+        return True
+    blob = " ".join([
+        str(hit.get("url") or ""),
+        str(hit.get("title") or ""),
+        str(hit.get("snippet") or ""),
+    ]).lower()
+    return not any(_trade_in_blob(term, blob) for term in trades)
+
+
 def _queries_cover_trade(queries: list[str], objective: str) -> bool:
     from .deliverable import _trade_in_blob, _trade_stem, distinctive_terms
 
@@ -514,7 +534,7 @@ def research(
                         filtered.append({"url": hit.get("url"), "reason": "noise", "rerank_score": hit.get("rerank_score")})
                         failures.append({"query": query, "stage": "relevance", "url": hit.get("url") or "", "error": "noise_rejected"})
                         continue
-                    if job.get("strict") and float(hit.get("rerank_score") or 0) < 0.2:
+                    if _drop_low_score(hit, objective, strict=bool(job.get("strict"))):
                         filtered.append({"url": hit.get("url"), "reason": "below_relevance_threshold", "rerank_score": hit.get("rerank_score")})
                         continue
                     opened = _open_hit(

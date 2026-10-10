@@ -94,6 +94,9 @@ def instruction_echo(query: str) -> bool:
         return True
     if "do not search" in lowered or "one query per line" in lowered or "starting with" in lowered:
         return True
+    words = lowered.split()
+    if len(words) > 14 and lowered.startswith(("the ", "this ", "a ")):
+        return True
     return False
 
 
@@ -126,6 +129,13 @@ def reject_search_query(query: str, objective: str = "") -> str:
     return ""
 
 
+def _quote_on_trade(quote: str, objective: str) -> bool:
+    trades = [term for term in distinctive_terms(objective) if _trade_stem(term)]
+    if not trades:
+        return True
+    return any(_trade_in_blob(term, (quote or "").lower()) for term in trades)
+
+
 def usable_search_queries(items: list[str], objective: str = "") -> list[str]:
     """Drop instruction echoes. Keep a quoted search that was buried inside one."""
     kept: list[str] = []
@@ -134,11 +144,13 @@ def usable_search_queries(items: list[str], objective: str = "") -> list[str]:
             for quote in quoted_searches(item):
                 if instruction_echo(quote) or reject_search_query(quote, objective):
                     continue
+                if not _quote_on_trade(quote, objective):
+                    continue
                 if quote not in kept:
                     kept.append(quote[:180])
             continue
         short = (item or "").strip()[:180]
-        if short and short not in kept:
+        if short and _quote_on_trade(short, objective) and short not in kept:
             kept.append(short)
     return kept[:8]
 

@@ -209,6 +209,8 @@ def test_planner_instructions_are_not_searched(monkeypatch):
         "Do not search the requester's name.",
         "Do not search pronouns.",
         "One query per line, each starting with '- '",
+        "s name (so avoid",
+        "The objective is to create a business launch plan for a kitchen painting service in the UK and it should not be searched as a sentence.",
     ])
     monkeypatch.setenv("AYVEN_LLM_STUB", "0")
     monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
@@ -228,6 +230,52 @@ def test_planner_instructions_are_not_searched(monkeypatch):
     assert "the queries must" not in blob
     assert "kitchen cabinet painting uk prices" in blob
     assert "kitchen respray company prices" in blob
+    assert "s name" not in blob
+
+
+def test_a_trade_page_is_opened_when_the_snippet_score_is_low(monkeypatch):
+    monkeypatch.setattr(
+        "app.intelligence.research.plan_queries",
+        lambda *args, **kwargs: (["kitchen cabinet painting UK prices"], "model"),
+    )
+
+    def search(_query, limit=8):
+        return [
+            {
+                "title": "Kitchen cabinet painting cost",
+                "url": "https://albadecor.co.uk/blog/kitchen-cabinet-painting-vs-replacement-cost-guide-2025",
+                "snippet": "Cost guide",
+            },
+            {
+                "title": "Baby names",
+                "url": "https://www.momjunction.com/articles/ugly-and-dumb-baby-names",
+                "snippet": "names to avoid",
+            },
+        ]
+
+    def fetch(url):
+        if "albadecor" in url:
+            return {
+                "url": url,
+                "title": "Kitchen cabinet painting",
+                "text": "We paint and respray kitchen cabinets in the UK. The price is agreed after a visit.",
+                "error": "",
+            }
+        return {"url": url, "title": "Baby names", "text": "Popular baby names to avoid this year.", "error": ""}
+
+    result = research(
+        "business_research",
+        OBJECTIVE,
+        "pkg-trade-score",
+        "research-e3",
+        max_rounds=1,
+        search_fn=search,
+        fetch_fn=fetch,
+    )
+    urls = [item.get("source_url") or "" for item in result["evidence"]]
+    assert any("albadecor.co.uk" in url for url in urls)
+    assert not any("momjunction" in url for url in urls)
+    assert not any("albadecor" in (item.get("url") or "") and item.get("reason") == "below_relevance_threshold" for item in result.get("filtered") or [])
 
 
 def test_bold_and_inline_headings_still_count_as_a_written_plan():
