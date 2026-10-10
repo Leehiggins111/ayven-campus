@@ -70,12 +70,12 @@ def _set_agent(agent_id: str, **fields) -> None:
     conn.close()
 
 
-def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False):
+def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = ""):
     from ..models import complete_role
 
     if plain:
         try:
-            text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens)
+            text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens, prefill=prefill)
         except Exception as exc:
             return "", 0, {"error": f"{type(exc).__name__}: {exc}", "backend": "unavailable", "completion_tokens": 0, "execution": "fail"}
         if not isinstance(text, str):
@@ -1240,18 +1240,18 @@ def _price_notes(programme: Programme) -> str:
 
 
 _SECTION_JOBS = (
-    ("service", "Service", "What the named service sells to a local UK homeowner."),
-    ("target customer", "Target customer", "Who hires a local kitchen painting service."),
-    ("problem", "Problem", "Why a household would paint the cabinets instead of replacing the kitchen."),
-    ("offer and positioning", "Offer and positioning", "Alba Kitchen Refresh paints the cabinets in the customer's home. Say what is sold and how that differs from replacing the kitchen."),
-    ("competitor and market research", "Competitor and market research", "Name two opened UK pages and the £ prices those pages state."),
-    ("pricing", "Pricing", "Begin with the word Assumption. Cite one £ range from the prices below. Say a visit has to count the doors before a quote."),
-    ("channels", "Channels", "Say how a local UK painting service reaches homeowners. End with: Nothing was sent."),
-    ("advert", "Advert", "Write exactly three lines. The first line begins Headline: . The second begins Body: . The third begins Call to action: ."),
-    ("call to action", "Call to action", "Ask the homeowner to request a visit and a written scope. No booking was made."),
-    ("next steps", "Next steps", "Two sentences the owner does next, including confirming the towns to cover. End with: Nothing was sent."),
-    ("assumptions", "Assumptions", "What this plan takes from the request, and what a visit still has to confirm."),
-    ("unresolved", "Unresolved", "What is still open: the towns and the cabinet condition. Do not repeat the other sections."),
+    ("service", "Service", "Finish the sentence.", "Alba Kitchen Refresh paints "),
+    ("target customer", "Target customer", "Finish the sentence.", "The customer is a UK homeowner who "),
+    ("problem", "Problem", "Finish the sentence about painting cabinets instead of replacing the kitchen.", "A full kitchen replacement "),
+    ("offer and positioning", "Offer and positioning", "Finish the sentence. Say how painting the existing cabinets differs from replacing the kitchen.", "The offer is "),
+    ("competitor and market research", "Competitor and market research", "Name two opened UK pages and the £ prices those pages state.", "Opened UK pages state "),
+    ("pricing", "Pricing", "Cite one £ range from the prices below and say a visit has to count the doors before a quote.", "Assumption: "),
+    ("channels", "Channels", "Finish the sentence about reaching nearby homeowners. End with: Nothing was sent.", "Homeowners nearby are reached through "),
+    ("advert", "Advert", "Write the headline, then a Body: line, then a Call to action: line.", "Headline: "),
+    ("call to action", "Call to action", "Finish the sentence. No booking was made.", "Ask for a visit and a written scope "),
+    ("next steps", "Next steps", "Finish the sentence, including the towns to cover. End with: Nothing was sent.", "Next, the owner "),
+    ("assumptions", "Assumptions", "Finish the sentence about what a visit still has to confirm.", "The plan assumes "),
+    ("unresolved", "Unresolved", "Finish the sentence about the towns and the cabinet condition.", "Still open: "),
 )
 
 
@@ -1279,27 +1279,20 @@ def _section_body(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _write_one_section(programme: Programme, title: str, instruction: str) -> str:
-    system = (
-        "You write one section of a launch plan for the owner of a UK kitchen painting service. "
-        "Finished sentences only. A recommendation is allowed. "
-        "A price that no page stated begins with the word Assumption."
-    )
-    user = (
-        f"Section: {title}.\n{instruction}\n"
-        "Two or three sentences.\n\n"
-        f"Request:\n{programme.objective}\n\n"
-        f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
-        f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
-    )
+def _write_one_section(programme: Programme, title: str, instruction: str, prefill: str = "") -> str:
+    prices = ""
+    if title in ("Pricing", "Competitor and market research"):
+        prices = f"\nPrices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+    user = f"{instruction}\nTwo or three sentences.{prices}"
     text, _tokens, _meta = _complete(
         "EMPLOYEE",
-        system,
+        "Finished sentences.",
         user,
-        max_tokens=220,
+        max_tokens=480,
         programme=programme,
         package_id=programme.parent_id,
         plain=True,
+        prefill=prefill,
     )
     return _section_body(text)
 
@@ -1323,9 +1316,8 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> None
         pending = [job for job in _SECTION_JOBS if _section_missing(job[0], sections.get(job[0]) or "", blob)]
         if not pending:
             return
-        for key, title, instruction in pending:
-            extra = " Begin with the word Assumption." if _pass and key == "pricing" else ""
-            written = _write_one_section(programme, title, instruction + extra)
+        for key, title, instruction, prefill in pending:
+            written = _write_one_section(programme, title, instruction, prefill=prefill)
             if not written:
                 continue
             if not _section_missing(key, written, blob) or not (sections.get(key) or "").strip():
@@ -1334,7 +1326,7 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> None
 
 def _assemble_plan(sections: dict) -> str:
     lines = ["Business launch plan", ""]
-    for key, title, _instruction in _SECTION_JOBS:
+    for key, title, _instruction, _prefill in _SECTION_JOBS:
         lines.append(title)
         body = (sections.get(key) or "").strip()
         if body:

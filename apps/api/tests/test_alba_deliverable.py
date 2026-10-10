@@ -358,6 +358,37 @@ def _worksheet() -> str:
     ])
 
 
+def test_a_reasoning_monologue_is_not_a_finished_plan():
+    """qwen3 wrote its reading of the prompt into the answer. That is not the plan."""
+    monologue = "\n".join([
+        "Business launch plan",
+        "Service",
+        "Professional kitchen cabinet painting service in",
+        "Target customer",
+        "Okay, the user wants me to write a section of a launch plan for a UK kitchen painting service owner.",
+        "Looking at the context, I see they've provided several opened pages with pricing information.",
+        "Problem",
+        "Hmm, looking at the context, this is for Lee who's creating a business launch plan.",
+        "I should focus on the problem statement.",
+        "Offer and positioning",
+        "Okay, the user wants me to write the offer. The prices vary widely.",
+        "Pricing",
+        "Hmm, the user wants the pricing section to begin with Assumption.",
+        "Channels",
+        "Okay, the user wants me to write how the service reaches homeowners.",
+        "Advert",
+        "Hmm, the user wants exactly three lines. They want something",
+        "Call to action",
+        "Okay, the user wants a call to action. I should avoid quoting prices.",
+        "Next steps",
+        "Okay, the user wants the next steps, including confirming towns to cover.",
+        "Nothing was sent.",
+    ])
+    assert plan_sections_filled(monologue) is False
+    assert "okay, the user" not in finished_lines(monologue).lower()
+    assert plan_sections_filled(_filled_plan()) is True
+
+
 def test_a_drafting_worksheet_is_not_a_finished_plan():
     worksheet = _worksheet()
     assert plan_sections_filled(worksheet) is False
@@ -436,11 +467,25 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         "Unresolved": "The towns to cover and the condition of the cabinets stay open until a visit.",
     }
 
-    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False):
-        for title, sentence in answers.items():
-            if f"Section: {title}." in user:
-                return sentence, 12, {"backend": "test"}
-        raise AssertionError(user[:160])
+    by_prefill = {
+        "Alba Kitchen Refresh paints ": answers["Service"],
+        "The customer is a UK homeowner who ": answers["Target customer"],
+        "A full kitchen replacement ": answers["Problem"],
+        "The offer is ": answers["Offer and positioning"],
+        "Opened UK pages state ": answers["Competitor and market research"],
+        "Assumption: ": answers["Pricing"],
+        "Homeowners nearby are reached through ": answers["Channels"],
+        "Headline: ": answers["Advert"],
+        "Ask for a visit and a written scope ": answers["Call to action"],
+        "Next, the owner ": answers["Next steps"],
+        "The plan assumes ": answers["Assumptions"],
+        "Still open: ": answers["Unresolved"],
+    }
+
+    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill=""):
+        if prefill in by_prefill:
+            return by_prefill[prefill], 12, {"backend": "test"}
+        raise AssertionError(prefill or user[:160])
 
     monkeypatch.setattr("app.intelligence.execution._complete", fake)
     published = _publish_plan(programme, "This is an essay with no headings and no offer.")

@@ -306,6 +306,9 @@ def _strip_labels(text: str) -> str:
 _SCRATCH = (
     "let me ", "i need to", "i'll ", "i’ll ", "i will ", "i have evidence", "i think",
     "what i need", "this needs to be",
+    "okay, the user", "the user wants", "the user needs", "the user specified", "the user provided",
+    "looking at the context", "looking at the details", "i should", "i must", "hmm,", "hmm ",
+    "they need the", "they want me", "important constraint", "the key is",
 )
 _REFUSAL = (
     "doesn't state", "does not state", "doesn't specify", "does not specify",

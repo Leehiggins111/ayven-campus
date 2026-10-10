@@ -39,7 +39,7 @@ def escalation_configured() -> bool:
     return bool(key) and os.environ.get("AYVEN_ALLOW_ESCALATION", "0") == "1"
 
 
-def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None):
+def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = ""):
     from .intelligence.think import strip_think
 
     started = time.time()
@@ -57,7 +57,7 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
         meta["elapsed_s"] = round(time.time() - started, 3)
         return strip_think(text), tokens, meta
     if local_base() and role.upper() != "ESCALATION":
-        text, tokens, constrained = _openai_compat(local_base(), os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ayven-local"), model, system, user, max_tokens, schema=schema)
+        text, tokens, constrained = _openai_compat(local_base(), os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ayven-local"), model, system, user, max_tokens, schema=schema, prefill=prefill)
         meta["backend"] = "local_openai_compat"
         meta["constrained"] = constrained
         meta["model_validated"] = False
@@ -93,7 +93,7 @@ def local_request_body(base: str, body: dict) -> dict:
     return plain
 
 
-def ollama_raw_prompt(system: str, user: str) -> str:
+def ollama_raw_prompt(system: str, user: str, prefill: str = "") -> str:
     """ChatML that already closed the think block. qwen3 then writes the answer, not the reasoning."""
     return (
         "<|im_start|>system\n"
@@ -104,15 +104,16 @@ def ollama_raw_prompt(system: str, user: str) -> str:
         + " /no_think<|im_end|>\n"
         + "<|im_start|>assistant\n"
         + "<think>\n\n</think>\n\n"
+        + (prefill or "")
     )
 
 
-def ollama_native_body(model: str, system: str, user: str, max_tokens: int) -> dict:
+def ollama_native_body(model: str, system: str, user: str, max_tokens: int, prefill: str = "") -> dict:
     """Native /api/generate with raw ChatML. The OpenAI route cannot turn qwen3 thinking off."""
     predict = max(int(max_tokens or 0), 64)
     return {
         "model": model,
-        "prompt": ollama_raw_prompt(system, user),
+        "prompt": ollama_raw_prompt(system, user, prefill),
         "raw": True,
         "stream": False,
         "think": ollama_thinking_enabled(),
@@ -141,14 +142,14 @@ def ollama_answer(payload: dict) -> str:
     return strip_think(content).strip()
 
 
-def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
+def _openai_compat(base, key, model, system, user, max_tokens, schema=None, prefill: str = ""):
     import httpx
     from .intelligence.constrained import enforce_output, server_body
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "600" if ":11434" in (base or "") else "90"))
     if ":11434" in (base or ""):
-        text, tokens = _ollama_native(base, model, messages, max_tokens, timeout)
+        text, tokens = _ollama_native(base, model, messages, max_tokens, timeout, prefill=prefill)
         text, info = enforce_output(schema, text)
         if not (text or "").strip():
             raise RuntimeError("empty model content")
@@ -184,7 +185,7 @@ def _ollama_root(base: str) -> str:
     return root
 
 
-def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int, timeout: float) -> tuple[str, int]:
+def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int, timeout: float, prefill: str = "") -> tuple[str, int]:
     """Ask twice at most. A reasoning field is never copied into the answer."""
     import httpx
 
@@ -203,12 +204,14 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
     budgets = (first, second)
     last_tokens = 0
     for predict in budgets:
-        body = ollama_native_body(model, system, user, predict)
+        body = ollama_native_body(model, system, user, predict, prefill=prefill)
         response = httpx.post(url, json=body, timeout=timeout)
         response.raise_for_status()
         data = response.json()
         last_tokens = int(data.get("eval_count") or 0)
         text = ollama_answer(data)
+        if prefill:
+            text = (prefill + text).strip()
         if text:
             return text, last_tokens or max(1, len(text) // 4)
     raise RuntimeError("empty model content")
