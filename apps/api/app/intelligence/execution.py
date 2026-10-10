@@ -85,7 +85,7 @@ def _complete(role: str, system: str, user: str, max_tokens: int = 400, programm
         agent_id = child["agent_id"] if child else "research-e1"
         turned = qwen_adapter.employee_turn(
             system=system, user=user, agent_id=agent_id, package_id=package_id or programme.parent_id,
-            preset_text=None, session=session,
+            preset_text=None, session=session, max_tokens=max_tokens,
         )
         meta = dict(turned.get("meta") or {})
         meta.update({

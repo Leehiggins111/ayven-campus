@@ -237,6 +237,41 @@ def test_stored_offer_line_is_not_cut_mid_word():
     assert "how it differs from other providers." in stored
 
 
+def test_live_employee_asks_through_the_closed_think_client(monkeypatch):
+    monkeypatch.setenv("AYVEN_LLM_STUB", "0")
+    monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
+    seen = {}
+
+    def fake_complete(role, system, user, max_tokens=500, schema=None):
+        seen["role"] = role
+        seen["max_tokens"] = max_tokens
+        return (
+            "Offer and positioning\nThe offer is an on-site cabinet respray.",
+            40,
+            {"backend": "local_openai_compat", "elapsed_s": 1.2},
+        )
+
+    monkeypatch.setattr("app.models.complete_role", fake_complete)
+    from app.intelligence.qwen_adapter import employee_turn
+
+    turned = employee_turn(
+        system="Write the plan.",
+        user="Alba Kitchen Refresh",
+        agent_id="research-e1",
+        package_id="pkg-live-native",
+        preset_text=None,
+        max_tokens=2048,
+        handler=lambda tool, payload: "noted",
+    )
+    assert seen["role"] == "EMPLOYEE"
+    assert seen["max_tokens"] == 2048
+    assert "on-site cabinet respray" in turned["text"]
+    assert "SECRET" not in turned["text"]
+    assert turned["qwen_mode"] == "live"
+    assert turned["meta"]["backend"] == "local_openai_compat"
+    assert turned["meta"]["completion_tokens"] == 40
+
+
 def test_ollama_answer_keeps_only_the_text_after_think():
     from app.models import ollama_answer
 

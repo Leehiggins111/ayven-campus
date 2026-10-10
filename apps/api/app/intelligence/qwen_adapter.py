@@ -332,15 +332,40 @@ def employee_turn(
     handler: Callable[[str, str], str] | None = None,
     approved: bool = False,
     scripted_calls: list[dict] | None = None,
+    max_tokens: int = 2048,
 ) -> dict:
-    """Best-effort employee turn. Falls back to native text when Qwen-Agent fails."""
+    """Best-effort employee turn. Falls back to native text when Qwen-Agent fails.
+
+    A live local model is asked through Ayven's Ollama client, which closes qwen3
+    thinking before the answer. Qwen-Agent then only runs the tool loop. It does
+    not call Ollama's OpenAI route, which leaves content empty.
+    """
     meta: dict = {}
     mode = choose_qwen_mode(session=session, preset_text=preset_text, scripted_calls=scripted_calls)
     text = preset_text
-    if mode != "live" and text is None and not scripted_calls:
+    tool_mode = mode
+    if mode == "live" and session is None and text is None and not scripted_calls:
         from ..models import complete_role
 
-        text, tokens, meta = complete_role("EMPLOYEE", system, user, max_tokens=320)
+        try:
+            text, tokens, meta = complete_role("EMPLOYEE", system, user, max_tokens=max_tokens)
+        except Exception as exc:
+            return {
+                "text": "",
+                "tools": [],
+                "runtime": "native",
+                "qwen_mode": "live",
+                "system_seen": system,
+                "fallback": f"{type(exc).__name__}: {exc}",
+                "meta": {"error": f"{type(exc).__name__}: {exc}", "completion_tokens": 0},
+            }
+        meta = dict(meta)
+        meta["completion_tokens"] = tokens
+        tool_mode = "replay"
+    elif mode != "live" and text is None and not scripted_calls:
+        from ..models import complete_role
+
+        text, tokens, meta = complete_role("EMPLOYEE", system, user, max_tokens=max_tokens)
         meta = dict(meta)
         meta["completion_tokens"] = tokens
     if runtime_mode() != "qwen-agent":
@@ -351,11 +376,11 @@ def employee_turn(
             user=user,
             agent_id=agent_id,
             package_id=package_id,
-            preset_text="" if mode == "live" else (text or ""),
+            preset_text="" if tool_mode == "live" else (text or ""),
             session=session,
             handler=handler,
             approved=approved,
-            scripted_calls=None if mode == "live" else scripted_calls,
+            scripted_calls=None if tool_mode == "live" else scripted_calls,
         )
         result["meta"] = meta
         result["qwen_mode"] = mode

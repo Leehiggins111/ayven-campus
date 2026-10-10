@@ -77,12 +77,12 @@ class Client:
         return self.request("POST", path, body or {}, auth=auth)
 
 
-def base_env(db: Path, research_mode: str) -> dict:
+def base_env(db: Path, research_mode: str, *, stub: bool = False) -> dict:
     env = os.environ.copy()
     env.update({
         "PYTHONPATH": f"{ROOT}{os.pathsep}{API}",
         "AYVEN_DB": str(db),
-        "AYVEN_LLM_STUB": "0",
+        "AYVEN_LLM_STUB": "1" if stub else "0",
         "AYVEN_ALLOW_ESCALATION": "0",
         "AYVEN_RESEARCH_MODE": research_mode,
         "AYVEN_LOCAL_LLM_BASE_URL": OLLAMA,
@@ -95,6 +95,9 @@ def base_env(db: Path, research_mode: str) -> dict:
         "AYVEN_MAX_ATTEMPTS": os.environ.get("AYVEN_MAX_ATTEMPTS", "1"),
         "AYVEN_OLLAMA_THINK": "0",
     })
+    if stub:
+        # Approval fixtures do not need qwen3. The live server is the Alba proof.
+        env.pop("AYVEN_LOCAL_LLM_BASE_URL", None)
     for name in ("AYVEN_LLM_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"):
         env.pop(name, None)
     return env
@@ -288,7 +291,7 @@ def main() -> int:
     db_fixture = OUT / "fixture.db"
     db_live = OUT / "live.db"
     client = Client()
-    proc = start_server(base_env(db_fixture, "fixtures"), OUT / "fixture-server.log")
+    proc = start_server(base_env(db_fixture, "fixtures", stub=True), OUT / "fixture-server.log")
     try:
         if not wait_health():
             record(rows, 3, "Campus starts", "FAIL", "fixture server did not answer /health")
