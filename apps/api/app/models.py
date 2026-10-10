@@ -40,9 +40,32 @@ def escalation_configured() -> bool:
     return bool(key) and os.environ.get("AYVEN_ALLOW_ESCALATION", "0") == "1"
 
 
-def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None):
+def log_generation(role: str, meta: dict, raw: str) -> None:
+    """The reply as the model returned it, with the finish reason, tokens, and timing."""
+    import logging
+
+    logging.getLogger("ayven.generation").info(
+        "generation role=%s finish_reason=%s prompt_tokens=%s completion_tokens=%s elapsed_s=%s\n%s",
+        role,
+        meta.get("finish_reason") or "",
+        int(meta.get("prompt_tokens") or 0),
+        int(meta.get("completion_tokens") or 0),
+        meta.get("elapsed_s") or 0,
+        raw or "",
+    )
+
+
+def _emit(role: str, text: str, tokens: int, meta: dict, raw: str | None = None):
     from .intelligence.think import strip_think
 
+    shown = raw if isinstance(raw, str) and raw else (text or "")
+    meta["raw_response"] = shown
+    meta["completion_tokens"] = int(meta.get("completion_tokens") or tokens or 0)
+    log_generation(role, meta, shown)
+    return strip_think(text or ""), tokens, meta
+
+
+def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None):
     started = time.time()
     model = role_model(role)
     meta = {"role": role.upper(), "model": model, "backend": "stub", "elapsed_s": 0.0, "provider": "ayven"}
@@ -50,29 +73,38 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
         text = "Frontier escalation is disabled. AYVEN_ALLOW_ESCALATION=0. No paid API call was made."
         meta["backend"] = "escalation_disabled"
         meta["elapsed_s"] = round(time.time() - started, 3)
-        return text, 0, meta
+        meta["completion_tokens"] = 0
+        return _emit(role, text, 0, meta)
     if _GENERATOR is not None and role.upper() != "ESCALATION":
         text, tokens, extra = _GENERATOR(role, system, user, max_tokens)
         meta.update(extra or {})
         meta["backend"] = (extra or {}).get("backend", meta.get("backend", "generator"))
         meta["elapsed_s"] = round(time.time() - started, 3)
-        return strip_think(text), tokens, meta
+        meta["finish_reason"] = (extra or {}).get("finish_reason") or meta.get("finish_reason") or ""
+        meta["prompt_tokens"] = int((extra or {}).get("prompt_tokens") or meta.get("prompt_tokens") or 0)
+        meta["completion_tokens"] = int(tokens or 0)
+        return _emit(role, text or "", tokens, meta, raw=text or "")
     if local_base() and role.upper() != "ESCALATION":
         text, tokens, constrained = _openai_compat(local_base(), os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ayven-local"), model, system, user, max_tokens, schema=schema, prefill=prefill, stop=stop)
         meta["backend"] = "local_openai_compat"
-        meta["constrained"] = constrained
+        meta["constrained"] = {key: value for key, value in (constrained or {}).items() if key != "raw_response"}
         meta["model_validated"] = False
-        meta["elapsed_s"] = round(time.time() - started, 3)
-        return strip_think(text), tokens, meta
+        meta["elapsed_s"] = (constrained or {}).get("elapsed_s") or round(time.time() - started, 3)
+        meta["finish_reason"] = (constrained or {}).get("finish_reason") or ""
+        meta["prompt_tokens"] = int((constrained or {}).get("prompt_tokens") or 0)
+        meta["completion_tokens"] = int(tokens or 0)
+        return _emit(role, text, tokens, meta, raw=(constrained or {}).get("raw_response") or text)
     if role.upper() == "ESCALATION" and escalation_configured():
         text, tokens = llm.complete(system, user, max_tokens=max_tokens)
         meta["backend"] = "frontier"
         meta["elapsed_s"] = round(time.time() - started, 3)
-        return strip_think(text), tokens, meta
+        meta["completion_tokens"] = int(tokens or 0)
+        return _emit(role, text, tokens, meta)
     text, tokens = llm.complete(f"[{role}/{model}] {system}", user, max_tokens=max_tokens)
     meta["elapsed_s"] = round(time.time() - started, 3)
     meta["backend"] = "stub"
-    return strip_think(text), tokens, meta
+    meta["completion_tokens"] = int(tokens or 0)
+    return _emit(role, text, tokens, meta)
 
 
 def ollama_thinking_enabled() -> bool:
@@ -155,10 +187,14 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None, pref
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "600" if ":11434" in (base or "") else "90"))
     if ":11434" in (base or ""):
-        text, tokens = _ollama_native(base, model, messages, max_tokens, timeout, prefill=prefill, stop=stop)
+        text, tokens, trace = _ollama_native(base, model, messages, max_tokens, timeout, prefill=prefill, stop=stop)
         text, info = enforce_output(schema, text)
+        info = dict(info or {})
+        info.update(trace)
         if not (text or "").strip():
-            raise RuntimeError("empty model content")
+            err = RuntimeError("empty model content")
+            err.trace = trace
+            raise err
         return text, tokens, info
     body = local_request_body(base, server_body(model, messages, max_tokens, schema))
     r = httpx.post(
@@ -191,7 +227,22 @@ def _ollama_root(base: str) -> str:
     return root
 
 
-def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int, timeout: float, prefill: str = "", stop=None) -> tuple[str, int]:
+def ollama_generation(payload: dict, elapsed_s: float = 0.0) -> dict:
+    """finish_reason, token counts, timing, and the response field before any filter."""
+    raw = payload.get("response") if isinstance(payload.get("response"), str) else ""
+    duration = payload.get("total_duration")
+    if isinstance(duration, (int, float)) and duration > 0:
+        elapsed_s = round(float(duration) / 1_000_000_000, 3)
+    return {
+        "raw_response": raw,
+        "finish_reason": str(payload.get("done_reason") or payload.get("finish_reason") or ""),
+        "prompt_tokens": int(payload.get("prompt_eval_count") or 0),
+        "completion_tokens": int(payload.get("eval_count") or 0),
+        "elapsed_s": round(float(elapsed_s or 0), 3),
+    }
+
+
+def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int, timeout: float, prefill: str = "", stop=None) -> tuple[str, int, dict]:
     """Ask twice at most. A reasoning field is never copied into the answer."""
     import httpx
 
@@ -208,19 +259,24 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
     # think block that consumed the first budget can finish and still leave an answer.
     second = min(4096, max(first * 2, 1024))
     budgets = (first, second)
-    last_tokens = 0
+    last_trace = ollama_generation({})
     for predict in budgets:
         body = ollama_native_body(model, system, user, predict, prefill=prefill, stop=stop)
+        started = time.time()
         response = httpx.post(url, json=body, timeout=timeout)
         response.raise_for_status()
         data = response.json()
-        last_tokens = int(data.get("eval_count") or 0)
+        last_trace = ollama_generation(data, time.time() - started)
         text = ollama_answer(data)
         if not text:
+            log_generation("ollama", last_trace, last_trace.get("raw_response") or "")
             continue
         stem = (prefill or "").strip()
         if stem and not text.lower().startswith(stem.lower()):
             text = f"{stem} {text.strip()}".strip()
         if text:
-            return text, last_tokens or max(1, len(text) // 4)
-    raise RuntimeError("empty model content")
+            tokens = int(last_trace.get("completion_tokens") or 0) or max(1, len(text) // 4)
+            return text, tokens, last_trace
+    err = RuntimeError("empty model content")
+    err.trace = last_trace
+    raise err

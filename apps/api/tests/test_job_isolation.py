@@ -107,6 +107,13 @@ def test_the_service_sentence_is_the_section_brief_and_a_long_echo_is_not_a_quer
     assert "do not invent" not in brief.lower()
     assert "painting and wrapping" not in brief.lower()
     assert instruction_echo(COFFEE)
+    assert reject_search_query("Research UK businesses", clarified) in {"off_brief", "instruction_only"}
+    assert page_is_relevant(
+        clarified,
+        "Business innovation",
+        "Research and development in the UK carried out or funded by business enterprises.",
+        "https://www.ons.gov.uk/business",
+    ) is False
     assert usable_search_queries([COFFEE], COFFEE) == []
     assert any("coffee" in query and "rental" in query for query in targeted_queries(COFFEE))
 

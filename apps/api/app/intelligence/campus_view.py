@@ -242,7 +242,7 @@ def campus_view(package_id: str = "") -> dict:
     cost = measured if isinstance(measured, (int, float)) else "unknown"
     result = None
     supported = sum(1 for claim in claims if claim.get("status") == "SUPPORTED")
-    if finished or rejected or unresolved:
+    if finished or rejected or unresolved or (package.get("findings") or "").strip():
         result = _result(package, obs, evaluation, trust, cost, supported=supported, unresolved=unresolved)
     supervisor_rejected = sum(
         1
@@ -593,7 +593,8 @@ def _result(package: dict, obs: dict, evaluation: dict, trust: str, cost: str, *
         if text:
             gaps.append(text)
     findings = owner_findings(package.get("findings") or "")
-    deliverable = owner_findings((obs.get("plan") or {}).get("deliverable") or "") or findings
+    contract = owner_findings((obs.get("plan") or {}).get("deliverable") or "")
+    deliverable = findings or contract
     manager = package.get("manager_decision") or ""
     verdict = evaluation.get("verdict") or ""
     if unresolved or (package.get("workflow_state") or "") == "UNRESOLVED":

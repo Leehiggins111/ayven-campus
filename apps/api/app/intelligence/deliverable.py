@@ -20,8 +20,10 @@ _QUERY_BOILERPLATE = {
     "draft", "evidence", "find", "for", "from", "have", "help", "http", "https",
     "include", "into", "item", "items", "launch", "list", "local", "make",
     "market", "name", "next", "official", "offer", "only", "page", "pages",
-    "plan", "planned", "prepare", "pricing", "problem", "public", "real",
+    "plan", "planned", "prepare", "pricing", "problem", "public",     "real",
     "research", "service", "site", "sites", "step", "steps", "that", "the",
+    "businesses", "briefing", "launch", "answered", "willing", "travel",
+    "invent", "guarantees", "testimonials",
     "their", "this", "unresolved", "website", "websites", "webpage", "with",
     "write", "www", "your", "action", "actions", "assumption", "assumptions",
     "competitor", "competitors", "advert", "advertisement",
@@ -456,6 +458,38 @@ def detach_glued(line: str) -> str:
     return text
 
 
+_OWNER_STEMS = (
+    "the service is ",
+    "the customer is ",
+    "the problem is ",
+    "the offer is ",
+    "opened pages state ",
+    "assumption:",
+    "customers are reached through ",
+    "headline:",
+    "ask for ",
+    "next, the owner ",
+    "the plan assumes ",
+    "still open:",
+)
+
+
+def _without_narration(sentence: str) -> str:
+    """A note and the owner sentence on one line still leave the owner sentence."""
+    text = (sentence or "").strip()
+    if not text or not _narration_line(text):
+        return text
+    lowered = text.lower()
+    for stem in _OWNER_STEMS:
+        at = lowered.find(stem)
+        if at < 0:
+            continue
+        clause = text[at:].strip()
+        if clause and not _narration_line(clause):
+            return clause
+    return ""
+
+
 def _usable_sentences(text: str) -> list[str]:
     kept: list[str] = []
     seen: set[str] = set()
@@ -466,6 +500,7 @@ def _usable_sentences(text: str) -> list[str]:
         parts = re.split(r"(?<=[.!?])\s+", piece) if re.search(r"[.!?]", piece) else [piece]
         for sentence in parts:
             sentence = re.sub(r"[*_]{1,3}", "", sentence).strip(" \t-\"'")
+            sentence = _without_narration(sentence)
             if not sentence or _narration_line(sentence):
                 continue
             if re.fullmatch(r"(?:still open|assumption)\s*:\s*\d+\.?", sentence, re.I):
@@ -518,6 +553,9 @@ def _advert_from_lines(lines: list[str]) -> str:
             if headline and body and cta:
                 break
             continue
+        if headline and not body and _advert_content_ok("body", stripped):
+            body = stripped
+            continue
         if headline and body and not cta and _advert_content_ok("call to action", stripped):
             cta = stripped
             break
@@ -549,7 +587,10 @@ def owner_section(kind: str, text: str) -> str:
         picked = [sentence for sentence in sentences if "£" in sentence or "http" in sentence.lower()]
         return "\n".join((picked or sentences)[:6])
     limit = 2 if kind == "assumptions" else 1
-    return "\n".join(sentences[:limit])
+    body = "\n".join(sentences[:limit]).strip()
+    if body and not re.search(r"[.!?]$", body):
+        body += "."
+    return body
 
 
 def _narrated(text: str) -> bool:

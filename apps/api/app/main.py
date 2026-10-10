@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -153,6 +153,21 @@ def _intelligence_state() -> dict:
         "mcp": mcp_status(),
         "qwen_agent": qwen_status(),
     }
+
+
+@app.get("/work-packages/{package_id}/deliverable.md")
+def download_deliverable(package_id: str):
+    """The stored plan or program, the same text Campus shows, as a file."""
+    packages = _rows("SELECT id, findings FROM work_packages WHERE id=?", (package_id,))
+    if not packages:
+        raise HTTPException(404)
+    body = packages[0].get("findings") or ""
+    filename = f"{package_id[:8]}-deliverable.md"
+    return Response(
+        content=body,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/work-packages/{package_id}/intelligence")

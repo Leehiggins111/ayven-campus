@@ -221,6 +221,20 @@ def run_files(files: dict[str, str], test_name: str = "test_main.py", timeout: i
     }
 
 
+def _python_on_path(folder: str, env: dict) -> None:
+    """A test that runs `python main.py` still runs where the executable is python3."""
+    path = env.get("PATH", "")
+    if shutil.which("python", path=path):
+        return
+    py3 = shutil.which("python3", path=path)
+    if not py3:
+        return
+    wrapper = Path(folder) / "python"
+    wrapper.write_text(f"#!/bin/sh\nexec {py3} \"$@\"\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    env["PATH"] = folder + os.pathsep + path
+
+
 def _execute_files(files: dict[str, str], test_name: str, timeout: int, level: str) -> tuple[str, str, int]:
     module = test_name[:-3]
     runner = (
@@ -246,6 +260,7 @@ def _execute_files(files: dict[str, str], test_name: str, timeout: int, level: s
             "HOME": folder,
             "LANG": "C.UTF-8",
         }
+        _python_on_path(folder, env)
         proc = subprocess.run(cmd, cwd=folder, capture_output=True, text=True, timeout=timeout + 3, env=env, check=False)
         return proc.stdout or "", proc.stderr or "", proc.returncode
 

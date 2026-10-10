@@ -77,7 +77,18 @@ def _complete(role: str, system: str, user: str, max_tokens: int = 400, programm
         try:
             text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens, prefill=prefill, stop=stop)
         except Exception as exc:
-            return "", 0, {"error": f"{type(exc).__name__}: {exc}", "backend": "unavailable", "completion_tokens": 0, "execution": "fail"}
+            trace = getattr(exc, "trace", None) or {}
+            meta = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "backend": "unavailable",
+                "completion_tokens": int(trace.get("completion_tokens") or 0),
+                "prompt_tokens": int(trace.get("prompt_tokens") or 0),
+                "elapsed_s": trace.get("elapsed_s") or 0,
+                "finish_reason": trace.get("finish_reason") or "",
+                "raw_response": trace.get("raw_response") or "",
+                "execution": "fail",
+            }
+            return "", 0, meta
         if not isinstance(text, str):
             return "", 0, {"error": "malformed model response", "backend": "malformed", "completion_tokens": 0, "execution": "fail"}
         meta = dict(meta)
@@ -115,7 +126,12 @@ def _complete(role: str, system: str, user: str, max_tokens: int = 400, programm
             "tools": meta["tools_invoked"],
             "fallback": turned.get("fallback") or "",
         })
-        return turned.get("text") or "", meta["completion_tokens"], meta
+        from ..models import log_generation
+
+        reply = turned.get("text") or ""
+        meta["raw_response"] = reply
+        log_generation(role, meta, reply)
+        return reply, meta["completion_tokens"], meta
     try:
         text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens)
     except Exception as exc:
@@ -907,7 +923,7 @@ def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
     from .software import build_deliverable
 
     def complete(system: str, user: str, max_tokens: int):
-        return _complete(
+        text, tokens, meta = _complete(
             "EMPLOYEE",
             system,
             user,
@@ -916,9 +932,14 @@ def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
             package_id=package_id,
             plain=True,
         )
+        raw = meta.get("raw_response") if isinstance(meta.get("raw_response"), str) else (text or "")
+        _record_generation(programme, package_id, "software", raw or "", meta, kept="generated")
+        return text, tokens, meta
 
     try:
         text, meta = build_deliverable(programme.objective, complete)
+        meta = dict(meta or {})
+        meta.pop("raw_response", None)
     except Exception as exc:
         text = f"# Software deliverable\nTests: FAILED\n\n{type(exc).__name__}: {exc}\n\nNothing was sent.\n"
         meta = {"error": f"{type(exc).__name__}: {exc}", "backend": "software", "tests_passed": False}
@@ -939,7 +960,18 @@ def _keep_model_draft(programme: Programme, child: dict) -> bool:
         return "tests:" in report.lower()
     if programme.task_class != "business_research" or child.get("focus") != "draft":
         return False
-    return _model_sections(report)
+    if _model_sections(report):
+        return True
+    from .deliverable import parse_sections
+
+    sections = parse_sections(report)
+    written = 0
+    for body in sections.values():
+        lowered = (body or "").lower()
+        if len(body or "") < 40 or lowered.startswith("unresolved") or "only what that request" in lowered:
+            continue
+        written += 1
+    return written >= 4
 
 
 def _publish_plan(self: Programme, model_text: str) -> str:
@@ -1332,10 +1364,10 @@ def _section_jobs(objective: str) -> tuple:
 
 
 def _section_budget(key: str, attempt: int) -> tuple[int, list[str]]:
-    """A token cap keeps the answer short. A newline stop makes Ollama return nothing."""
+    """Enough tokens for a short note and the sentence. A newline stop makes Ollama return nothing."""
     if key in {"advert", "pricing", "competitor and market research"}:
-        return (160 if attempt > 1 else 220), []
-    return 160, []
+        return (480 if attempt > 1 else 640), []
+    return 480, []
 
 
 def _section_missing(key: str, body: str, blob: str, objective: str = "") -> bool:
@@ -1362,14 +1394,50 @@ def _section_body(text: str, kind: str, objective: str = "") -> str:
     return owner_section(kind, text or "")
 
 
-def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1) -> str:
+def _section_drop_reason(key: str, body: str, blob: str, objective: str) -> str:
+    """Why a non-empty reply did not become the stored section."""
+    if not (body or "").strip():
+        return "empty_generation"
+    cleaned = _section_body(body, key, objective)
+    if not cleaned:
+        return "sentence_filter"
+    if _section_missing(key, cleaned, blob, objective):
+        return "section_validation"
+    return ""
+
+
+def _record_generation(programme: Programme, package_id: str, kind: str, raw: str, meta: dict, kept: str = "") -> None:
+    if not package_id:
+        return
+    payload = dict(meta or {})
+    payload["raw_response"] = raw or payload.get("raw_response") or ""
+    save_model_call(package_id, "EMPLOYEE", getattr(programme, "task_class", "") or "", payload, payload["raw_response"])
+    from .observability import record_trace
+
+    record_trace(package_id, "generation", {
+        "kind": kind,
+        "finish_reason": payload.get("finish_reason") or "",
+        "prompt_tokens": int(payload.get("prompt_tokens") or 0),
+        "completion_tokens": int(payload.get("completion_tokens") or 0),
+        "elapsed_s": payload.get("elapsed_s") or 0,
+        "kept": kept,
+        "response": payload["raw_response"],
+    })
+
+
+def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1, previous: str = "") -> tuple[str, str, dict]:
     prices = ""
     if title in ("Pricing", "Competitor and market research"):
         prices = f"\nPrices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
-    lead = instruction if attempt == 1 else f"Output only the finished lines.\n{instruction}"
+    if attempt == 1:
+        lead = instruction
+    else:
+        lead = "Output only the finished lines. The previous answer was not stored.\n" + instruction
+        if previous:
+            lead += "\nPrevious answer:\n" + previous[:400]
     user = f"{lead}{prices}"
     limit, stop = _section_budget(key, attempt)
-    text, _tokens, _meta = _complete(
+    text, _tokens, meta = _complete(
         "EMPLOYEE",
         "Write the finished lines only.",
         user,
@@ -1380,7 +1448,8 @@ def _write_one_section(programme: Programme, key: str, title: str, instruction: 
         prefill=prefill,
         stop=stop,
     )
-    return _section_body(text, key, programme.objective)
+    raw = meta.get("raw_response") if isinstance(meta.get("raw_response"), str) and meta.get("raw_response") else (text or "")
+    return _section_body(text, key, programme.objective), raw, meta
 
 
 def _has_model_sentence(text: str) -> bool:
@@ -1399,14 +1468,21 @@ def _has_model_sentence(text: str) -> bool:
 def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> None:
     """Ask for each missing section on its own. A 4b model finishes a short answer; it does not finish a worksheet."""
     jobs = _section_jobs(programme.objective)
+    rejected: dict[str, str] = {}
     for _pass in range(2):
         pending = [job for job in jobs if _section_missing(job[0], sections.get(job[0]) or "", blob, programme.objective)]
         if not pending:
             return
         for key, title, instruction, prefill in pending:
-            written = _write_one_section(programme, key, title, instruction, prefill=prefill, attempt=_pass + 1)
-            if written and not _section_missing(key, written, blob, programme.objective):
-                sections[key] = written
+            written, raw, meta = _write_one_section(
+                programme, key, title, instruction, prefill=prefill, attempt=_pass + 1, previous=rejected.get(key, ""),
+            )
+            reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw, blob, programme.objective)
+            _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept")
+            if reason:
+                rejected[key] = raw or rejected.get(key, "")
+                continue
+            sections[key] = written
 
 
 def _assemble_plan(sections: dict, objective: str = "") -> str:

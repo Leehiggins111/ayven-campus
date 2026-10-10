@@ -18,6 +18,83 @@ def _strip_fence(body: str) -> str:
     return "\n".join(lines).strip()
 
 
+_CODE_LINE = re.compile(
+    r"^(?:def |class |import |from |assert |return |print\s*\(|if |elif |else:|for |while |try:|except|finally:|with |pass$|raise |yield |break$|continue$|global |nonlocal |#|@)"
+)
+_ASSIGN_LINE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*\s*(?:\(|=)")
+
+
+def _code_line(stripped: str) -> bool:
+    return bool(_CODE_LINE.match(stripped) or _ASSIGN_LINE.match(stripped))
+
+
+def _repair_indent(lines: list[str]) -> str:
+    """An indented line after a statement that does not open a block is the same statement."""
+    repaired: list[str] = []
+    for _ in range(max(1, len(lines))):
+        candidate = "\n".join(repaired or lines)
+        try:
+            compile(candidate + "\n", "<ayven>", "exec")
+            return candidate
+        except IndentationError as exc:
+            source = repaired or lines
+            if repaired:
+                source = repaired
+            else:
+                source = list(lines)
+                repaired = source
+            lineno = (exc.lineno or 1) - 1
+            if lineno < 0 or lineno >= len(source):
+                return ""
+            prev = lineno - 1
+            while prev >= 0 and not source[prev].strip():
+                prev -= 1
+            base = 0
+            if prev >= 0:
+                base = len(source[prev]) - len(source[prev].lstrip(" "))
+            source[lineno] = (" " * base) + source[lineno].lstrip()
+            repaired = source
+            continue
+        except SyntaxError:
+            return ""
+    text = "\n".join(repaired).strip()
+    try:
+        compile(text + "\n", "<ayven>", "exec")
+    except SyntaxError:
+        return ""
+    return text
+
+
+def _code_only(source: str) -> str:
+    """Drop the essay around a program and dedent what remains."""
+    import textwrap
+
+    kept: list[str] = []
+    for line in (source or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            kept.append("")
+            continue
+        if re.search(r"\b(however|the problem|we are|let me|note:|important:|but note|but wait|one more)\b", stripped, re.I):
+            continue
+        if re.match(r"^(file|main\.py|test_main\.py)\s*:?\s*$", stripped, re.I):
+            continue
+        if _code_line(stripped):
+            previous = next((item.strip() for item in reversed(kept) if item.strip()), "")
+            if previous == stripped:
+                continue
+            kept.append(line)
+    text = _repair_indent(kept)
+    if not text:
+        return ""
+    text = textwrap.dedent(text).strip()
+    try:
+        compile(text + "\n", "<ayven>", "exec")
+    except SyntaxError:
+        return ""
+    return text + "\n"
+
+
 def _qualify_tests(main_source: str, test_source: str) -> str:
     """A bare assert add(...) has to call main.add once the function lives in main.py."""
     names = re.findall(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", main_source, re.M)
@@ -92,11 +169,16 @@ def parse_program(text: str) -> tuple[dict[str, str], str]:
         if body:
             cleaned[name] = body + "\n"
     if "main.py" in cleaned and "test_main.py" in cleaned:
-        return cleaned, launch or "python test_main.py"
+        main = _code_only(cleaned["main.py"])
+        test = _code_only(cleaned["test_main.py"])
+        if main and test:
+            return {"main.py": main, "test_main.py": test}, launch or "python test_main.py"
     loose = _from_loose_code(text or "")
     if loose:
-        return loose, launch or "python test_main.py"
-    return cleaned, launch or "python test_main.py"
+        loose = {name: _code_only(body) for name, body in loose.items()}
+        if loose.get("main.py") and loose.get("test_main.py"):
+            return loose, launch or "python test_main.py"
+    return {}, launch or "python test_main.py"
 
 
 def format_deliverable(files: dict[str, str], launch: str, result: dict) -> str:

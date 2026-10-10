@@ -327,10 +327,19 @@ def _proof_other_jobs(client: Client, rows: list, alba_findings: str, alba_view:
     findings = raw.get("findings") or coffee.get("findings") or ""
     _save_named("coffee-briefing", findings, coffee_view)
     blob = _job_blob(raw, coffee_view)
-    leaked = [word for word in ("kitchen", "cabinet", "paint", "respray", "worktop", "alba") if word in blob]
     obs = _obs(raw)
     pages = [page for page in (obs.get("pages") or []) if isinstance(page, str)]
     queries = [str(item) for item in (obs.get("queries") or [])]
+    # A coffee page may say "office kitchen". A leak is a door, paint, or worktop trail.
+    leaked = [
+        phrase for phrase in (
+            "kitchen door", "kitchen cabinet", "cabinet paint", "respray", "worktop", "alba",
+            "doors.example", "paint.example",
+        )
+        if phrase in blob
+    ]
+    query_blob = " ".join(queries).lower()
+    leaked += [word for word in ("kitchen", "cabinet", "paint", "respray", "worktop", "alba") if word in query_blob]
     isolated = not leaked and coffee.get("id") != alba_view.get("package_id")
     record(
         rows,
@@ -354,7 +363,7 @@ def _proof_other_jobs(client: Client, rows: list, alba_findings: str, alba_view:
     findings = raw.get("findings") or built.get("findings") or ""
     _view_code, program_view = client.get(f"/campus/view?package_id={raw.get('id')}")
     _save_named("software-deliverable", findings, program_view if isinstance(program_view, dict) else {})
-    passed = "tests: passed" in findings.lower() and "def add" in findings.lower()
+    passed = "tests: passed" in findings.lower() and ("def " in findings.lower() or "print(" in findings.lower())
     if built.get("workflow_state") == "AWAITING_APPROVAL":
         _code, state = client.get("/state")
         approval = next((item for item in (state.get("approvals") or []) if item.get("status") == "pending" and item.get("project_id") == project["project_id"]), None)

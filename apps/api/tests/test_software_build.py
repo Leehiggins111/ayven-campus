@@ -54,6 +54,36 @@ def test_a_program_request_is_not_web_research():
     assert plan["children"][0]["focus"] == "build"
 
 
+def test_an_essay_around_a_program_is_reduced_to_code(monkeypatch):
+    from app.intelligence.software import parse_program
+
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+    text = """FILE: main.py
+print(2+3)
+
+   print(2+3)
+
+ File:
+
+However, the problem says we should print the sum.
+
+FILE: test_main.py
+import subprocess
+   result = subprocess.run(['python', 'main.py'], capture_output=True, text=True)
+   assert result.stdout.strip() == '5'
+
+However, the problem says not to write assert True.
+"""
+    files, _launch = parse_program(text)
+    assert "print(2+3)" in files["main.py"]
+    assert "However" not in files["main.py"]
+    assert "However" not in files["test_main.py"]
+    compile(files["main.py"], "main.py", "exec")
+    compile(files["test_main.py"], "test_main.py", "exec")
+    ran = run_files(files)
+    assert ran["passed"] is True, ran["stderr"]
+
+
 def test_a_fenced_program_is_split_and_run(monkeypatch):
     from app.intelligence.software import parse_program
 

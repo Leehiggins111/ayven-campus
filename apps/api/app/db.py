@@ -47,6 +47,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_v20(conn)
     migrate_v21(conn)
     migrate_v22(conn)
+    migrate_v23(conn)
 
 
 SEED_AGENTS = [
@@ -273,6 +274,12 @@ def migrate_v21(conn: sqlite3.Connection) -> None:
     _add_columns(conn, "tool_calls", {"trace_id": "TEXT"})
     _add_columns(conn, "sources", {"trace_id": "TEXT"})
     _add_columns(conn, "traces", {"trace_id": "TEXT"})
+    conn.commit()
+
+
+def migrate_v23(conn: sqlite3.Connection) -> None:
+    """Keep the model reply that was parsed. Additive only."""
+    _add_columns(conn, "model_calls", {"response_text": "TEXT", "finish_reason": "TEXT"})
     conn.commit()
 
 
