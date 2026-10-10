@@ -170,6 +170,26 @@ def download_deliverable(package_id: str):
     )
 
 
+@app.get("/work-packages/{package_id}/files/{name}")
+def download_program_file(package_id: str, name: str):
+    """A program file whose tests passed. A rejected reply has no file to download."""
+    from .intelligence.software import stored_files
+
+    if name not in {"main.py", "test_main.py"}:
+        raise HTTPException(404)
+    packages = _rows("SELECT id, findings FROM work_packages WHERE id=?", (package_id,))
+    if not packages:
+        raise HTTPException(404)
+    source = stored_files(packages[0].get("findings") or "").get(name)
+    if not source:
+        raise HTTPException(404)
+    return Response(
+        content=source,
+        media_type="text/x-python; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
+
+
 @app.get("/work-packages/{package_id}/intelligence")
 def package_intelligence(package_id: str):
     packages = _rows("SELECT * FROM work_packages WHERE id=?", (package_id,))

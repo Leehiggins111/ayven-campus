@@ -255,11 +255,12 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
             user = message.get("content") or ""
     url = f"{_ollama_root(base)}/api/generate"
     first = max(int(max_tokens or 0), 64)
-    # The second call runs only when the first answer is empty. It is larger so a
-    # think block that consumed the first budget can finish and still leave an answer.
+    # The second call runs when the first answer is empty, or when the token budget
+    # was spent inside an unfinished note and no answer was closed.
     second = min(4096, max(first * 2, 1024))
     budgets = (first, second)
     last_trace = ollama_generation({})
+    salvage: tuple[str, dict] | None = None
     for predict in budgets:
         body = ollama_native_body(model, system, user, predict, prefill=prefill, stop=stop)
         started = time.time()
@@ -268,15 +269,46 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
         data = response.json()
         last_trace = ollama_generation(data, time.time() - started)
         text = ollama_answer(data)
-        if not text:
+        if not text or _unfinished_essay(data, text):
             log_generation("ollama", last_trace, last_trace.get("raw_response") or "")
+            if text:
+                salvage = (text, last_trace)
             continue
-        stem = (prefill or "").strip()
-        if stem and not text.lower().startswith(stem.lower()):
-            text = f"{stem} {text.strip()}".strip()
-        if text:
-            tokens = int(last_trace.get("completion_tokens") or 0) or max(1, len(text) // 4)
-            return text, tokens, last_trace
+        text = _attach_prefill(prefill, text)
+        tokens = int(last_trace.get("completion_tokens") or 0) or max(1, len(text) // 4)
+        return text, tokens, last_trace
+    if salvage:
+        text, last_trace = salvage
+        text = _attach_prefill(prefill, text)
+        tokens = int(last_trace.get("completion_tokens") or 0) or max(1, len(text) // 4)
+        return text, tokens, last_trace
     err = RuntimeError("empty model content")
     err.trace = last_trace
     raise err
+
+
+def _unfinished_essay(payload: dict, text: str) -> bool:
+    """A length cutoff with no closed answer is the note, not the section."""
+    if str(payload.get("done_reason") or payload.get("finish_reason") or "") != "length":
+        return False
+    raw = payload.get("response") if isinstance(payload.get("response"), str) else ""
+    if "</think>" in raw.lower():
+        return False
+    return bool(re.search(r"\b(we are to|we are writing|the problem says|let me|1 sentence|output only this shape)\b", text or "", re.I))
+
+
+def _attach_prefill(stem: str, text: str) -> str:
+    """A short fragment continues the stem. A finished sentence is already the answer."""
+    stem = stem or ""
+    if not stem or not text:
+        return text
+    if text.lower().startswith(stem.strip().lower()):
+        return text
+    if len(text) > 280 or re.search(r"\b(we are|the problem|let me|however|1 sentence)\b", text, re.I):
+        return text
+    if "\n" in stem:
+        return stem + text.lstrip()
+    if re.match(r"^[A-Z]", text.strip()) and re.search(r"[.!?]", text):
+        return text
+    joiner = "" if stem.endswith((" ", "\n")) else " "
+    return f"{stem}{joiner}{text.strip()}".strip()

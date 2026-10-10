@@ -136,8 +136,8 @@ def test_narration_does_not_drop_the_owner_sentence_and_a_monologue_is_marked_dr
     assert _section_drop_reason("service", mixed, "", DOOR) == ""
     monologue = "Okay, the user wants me to write a section of a launch plan."
     assert owner_section("service", monologue) == ""
-    assert _section_drop_reason("service", monologue, "", DOOR) == "sentence_filter"
-    assert _section_drop_reason("service", "", "", DOOR) == "empty_generation"
+    assert "narration" in _section_drop_reason("service", monologue, "", DOOR).lower()
+    assert "nothing" in _section_drop_reason("service", "", "", DOOR).lower()
 
 
 def test_software_files_are_saved_shown_and_downloadable(monkeypatch):
@@ -194,6 +194,12 @@ def test_software_files_are_saved_shown_and_downloadable(monkeypatch):
     page = client.get("/r3f/campus-app.jsx")
     assert page.status_code == 200
     assert "download-deliverable" in page.text
+    assert "download-main" in page.text
+    program = client.get(f"/work-packages/{parent}/files/main.py")
+    assert program.status_code == 200
+    assert "print(2+3)" in program.text
+    assert "attachment" in program.headers.get("content-disposition", "")
+    assert client.get(f"/work-packages/{parent}/files/missing.py").status_code == 404
 
 
 def _door_section(user: str) -> str:
@@ -252,7 +258,7 @@ def test_plan_sections_are_stored_and_the_campus_view_returns_them(monkeypatch):
         if "web search queries" in user.lower():
             return "- replacement kitchen doors worktops handles UK prices\n", 4, {"backend": "generator", "finish_reason": "stop", "prompt_tokens": 6}
         if any(phrase in user for phrase in ("Write one", "Write two", "Write exactly", "Output only")):
-            if "Previous answer" in user:
+            if "was rejected" in user:
                 return "Okay, the user wants a sentence. " + _door_section(user), 20, {"backend": "generator", "finish_reason": "length", "prompt_tokens": 9}
             return "Okay, the user wants me to write a section of a launch plan.", 12, {"backend": "generator", "finish_reason": "length", "prompt_tokens": 8}
         return "Nothing was sent.", 2, {"backend": "generator", "finish_reason": "stop", "prompt_tokens": 2}
@@ -284,3 +290,98 @@ def test_plan_sections_are_stored_and_the_campus_view_returns_them(monkeypatch):
     shown = (view.get("result") or {}).get("findings") or ""
     assert "worktops" in shown.lower()
     assert shown == (row["findings"] or "").strip() or "worktops" in ((view.get("result") or {}).get("deliverable") or "").lower()
+
+
+_DOOR_DRAFT = """Service
+Replaces kitchen doors, worktops and handles without full kitchen replacement
+
+Target customer
+Homeowners requiring kitchen door and worktop replacement who want to avoid a full kitchen replacement.
+
+Problem
+Kitchen doors, worktops or handles are worn, and a full kitchen replacement is the expensive alternative.
+
+Offer and positioning
+The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.
+
+Competitor and market research
+Opened pages state replacement kitchen doors at £10 to £40 on https://doors.example/replace.
+
+Pricing
+ASSUMPTION: £10-£40 per standard door
+"""
+
+_ADVERT_24 = """Headline: 24/7 Kitchen Repair Service
+Body: We fix kitchen doors, worktops, and handles without needing a full kitchen replacement.
+Call to action: Reply "Fix it" to get your kitchen repaired today.
+"""
+
+_AMBIGUOUS = """We are to write two files: main.py and test_main.py.
+Option 1: main.py does the printing.
+            print(2 + 3)
+Possibility A: make it a function.
+            def main():
+                print(2 + 3)
+            assert main.main() == 5
+"""
+
+
+def test_a_failed_check_keeps_the_full_draft_and_names_the_reason():
+    from app.intelligence.deliverable import plan_sections_filled, retained_draft, section_rejection
+
+    reason = section_rejection("advert", _ADVERT_24, "", DOOR)
+    assert "24/7" in reason
+    assert "not stored" in reason.lower() or "claim" in reason.lower()
+    kept = retained_draft(_DOOR_DRAFT + "\nAdvert\n" + _ADVERT_24, DOOR, "£10 £40", {"advert": reason})
+    assert "Validation rejected this draft" in kept
+    assert "[advert] " in kept
+    assert "24/7" in kept
+    assert "Replaces kitchen doors, worktops and handles" in kept
+    assert "only what that request" not in kept.lower()
+    assert plan_sections_filled(kept) is False
+    from types import SimpleNamespace
+
+    from app.intelligence.execution import _protect_draft, _publish_plan
+
+    programme = SimpleNamespace(objective=DOOR, research={"evidence": []}, task_class="business_research")
+    stored = _publish_plan(programme, _DOOR_DRAFT + "\nAdvert\n" + _ADVERT_24)
+    assert stored.startswith("Validation rejected this draft.")
+    assert "Replaces kitchen doors" in stored
+    assert _protect_draft(programme, {"focus": "draft", "report": stored}) is True
+    blank = "Facts come from the request or from a page that was opened.\nThe service is only what that request and the opened pages say."
+    assert _protect_draft(programme, {"focus": "draft", "report": blank}) is False
+
+
+def test_a_retry_names_the_failed_check_and_does_not_repeat_the_rejected_line():
+    from app.intelligence.execution import _section_prompt
+
+    user = _section_prompt("Write exactly three lines and stop.", 2, "The line claims 24/7 availability. That claim is not stored.", "")
+    assert "24/7" in user
+    assert "was rejected" in user
+    assert "Kitchen Repair Service" not in user
+    assert "Previous answer" not in user
+
+
+def test_an_ambiguous_program_is_rejected_and_a_clear_one_is_downloadable(monkeypatch):
+    from app.intelligence.software import classify_program, format_deliverable, stored_files
+
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+    files, _launch, rejection = classify_program(_AMBIGUOUS)
+    assert files == {}
+    assert "more than one program" in rejection
+    stored = format_deliverable({}, "python test_main.py", {"passed": False, "stderr": rejection, "sandbox": "not-run"})
+    assert "No file was saved" in stored
+    assert "## main.py" not in stored
+    assert stored_files(stored) == {}
+    syntax, _launch, syntax_reason = classify_program("FILE: main.py\ndef add(\nFILE: test_main.py\nassert True\n")
+    assert syntax == {}
+    assert "syntax" in syntax_reason.lower()
+    clear = """FILE: main.py
+print(2+3)
+FILE: test_main.py
+import main
+assert True
+"""
+    _files, _launch, weak = classify_program(clear)
+    assert _files == {}
+    assert "cannot fail" in weak.lower()

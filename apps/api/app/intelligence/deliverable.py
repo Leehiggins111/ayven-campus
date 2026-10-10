@@ -390,29 +390,46 @@ def _heading_name(line: str) -> bool:
     return False
 
 
-def _narration_line(line: str) -> bool:
-    """One worksheet line. A heading is kept so the sections still parse."""
+def narration_reason(line: str) -> str:
+    """Why this line cannot be stored. Empty when the line passes the check."""
     stripped = line.strip()
     if not stripped or _heading_name(stripped):
-        return False
+        return ""
     lowered = stripped.lower()
     if re.fullmatch(r"\d+\.?", lowered):
-        return True
+        return "The line is a bare number, not a sentence."
     if lowered in {"unresolved.", "this is unresolved.", "this is unresolved", "a full sentence.", "a full sentence"}:
-        return True
+        return "The line only says unresolved."
     if lowered.startswith(("unresolved -", "unresolved:")):
-        return True
-    if any(phrase in lowered for phrase in _SCRATCH):
-        return True
+        return "The line only says unresolved."
+    for phrase in _SCRATCH:
+        if phrase in lowered:
+            return f"The line is drafting narration ({phrase.strip()})."
     compact = re.sub(r"\s+", "", lowered)
     if re.search(r"(.{1,4})\1{6,}", compact):
-        return True
-    if any(phrase in lowered for phrase in ("mortgage", "loan-to-value", "24/7", "always ready", "monitoring system")):
-        return True
+        return "The line is repeated characters, not a sentence."
+    if "24/7" in lowered:
+        return "The line claims 24/7 availability. That claim is not stored."
+    if "always ready" in lowered:
+        return "The line claims the service is always ready. That claim is not stored."
+    if "monitoring system" in lowered:
+        return "The line describes a monitoring system, which this request does not ask for."
+    if "mortgage" in lowered or "loan-to-value" in lowered:
+        return "The line is about a mortgage, which this request does not ask for."
+    if re.search(
+        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|finished lines|answered\s*:)\b",
+        lowered,
+    ):
+        return "The line repeats the instruction instead of answering it."
     refusal = any(phrase in lowered for phrase in _REFUSAL)
     if refusal and not any(phrase in lowered for phrase in ("assumption", "recommend", "the offer is", "should ")):
-        return True
-    return False
+        return "The line refuses to write the section."
+    return ""
+
+
+def _narration_line(line: str) -> bool:
+    """One worksheet line. A heading is kept so the sections still parse."""
+    return bool(narration_reason(line))
 
 
 def finished_lines(text: str) -> str:
@@ -474,6 +491,28 @@ _OWNER_STEMS = (
 )
 
 
+def _draft_clause(sentence: str) -> str:
+    """A drafting lead in front of a finished sentence is not the sentence."""
+    match = re.match(
+        r"^(?:alternatively|example|for example|we can say|let me try|we can also|note)[^:]{0,48}:\s*[\"']?(.+?)[\"']?\s*$",
+        (sentence or "").strip(),
+        re.I,
+    )
+    if not match:
+        return (sentence or "").strip()
+    clause = match.group(1).strip().strip("\"'")
+    return clause or (sentence or "").strip()
+
+
+def _visible_answer(text: str) -> str:
+    """The lines after the last think close. An unclosed think is the whole reply."""
+    content = text or ""
+    at = content.lower().rfind("</think>")
+    if at != -1:
+        content = content[at + len("</think>") :]
+    return re.sub(r"/no_think", "", content, flags=re.I).strip()
+
+
 def _without_narration(sentence: str) -> str:
     """A note and the owner sentence on one line still leave the owner sentence."""
     text = (sentence or "").strip()
@@ -500,6 +539,7 @@ def _usable_sentences(text: str) -> list[str]:
         parts = re.split(r"(?<=[.!?])\s+", piece) if re.search(r"[.!?]", piece) else [piece]
         for sentence in parts:
             sentence = re.sub(r"[*_]{1,3}", "", sentence).strip(" \t-\"'")
+            sentence = _draft_clause(sentence)
             sentence = _without_narration(sentence)
             if not sentence or _narration_line(sentence):
                 continue
@@ -536,8 +576,12 @@ def _advert_content_ok(label: str, content: str) -> bool:
 def _advert_from_lines(lines: list[str]) -> str:
     """The first real Headline, Body, and Call to action. Notes around them are not the advert."""
     headline = body = cta = ""
+    plain: list[str] = []
     for line in lines:
         stripped = line.strip().strip('"')
+        unlabeled = re.sub(r"^(headline|body|call to action)\s*:\s*", "", stripped, flags=re.I).strip()
+        if unlabeled and _advert_content_ok("body", unlabeled) and unlabeled not in plain:
+            plain.append(unlabeled)
         match = re.match(r"^(headline|body|call to action)\s*:\s*(.+)$", stripped, re.I)
         if match:
             label = match.group(1).lower()
@@ -559,14 +603,29 @@ def _advert_from_lines(lines: list[str]) -> str:
         if headline and body and not cta and _advert_content_ok("call to action", stripped):
             cta = stripped
             break
+    if not (headline and body and cta) and len(plain) >= 3:
+        headline, body, cta = plain[0], plain[1], plain[2]
     if not (headline and body and cta):
         return ""
     return f"Headline: {headline}\nBody: {body}\nCall to action: {cta}"
 
 
+def _prefer_request(kind: str, sentences: list[str]) -> list[str]:
+    """An instruction echo is already gone. A reply that asks the customer comes first."""
+    if kind != "call to action":
+        return sentences
+    asked = [
+        sentence for sentence in sentences
+        if re.search(r"\b(ask|please|reply|could you|would you|let us know|confirm)\b", sentence, re.I)
+    ]
+    if not asked:
+        return sentences
+    return sorted(asked, key=len, reverse=True)
+
+
 def owner_section(kind: str, text: str) -> str:
     """The lines an owner can use. A prompt essay is not returned."""
-    prose = _owner_prose(text or "")
+    prose = _owner_prose(_visible_answer(text or ""))
     if kind == "advert":
         return _advert_from_lines(_usable_sentences(prose))
     sentences = _usable_sentences(prose)
@@ -587,7 +646,7 @@ def owner_section(kind: str, text: str) -> str:
         picked = [sentence for sentence in sentences if "£" in sentence or "http" in sentence.lower()]
         return "\n".join((picked or sentences)[:6])
     limit = 2 if kind == "assumptions" else 1
-    body = "\n".join(sentences[:limit]).strip()
+    body = "\n".join(_prefer_request(kind, sentences)[:limit]).strip()
     if body and not re.search(r"[.!?]$", body):
         body += "."
     return body
@@ -688,6 +747,90 @@ def plan_sections_filled(text: str, evidence_blob: str = "") -> bool:
         if not _body_filled(sections.get(key) or ""):
             return False
     return True
+
+
+def _body_rejection(body: str) -> str:
+    text = _strip_labels(_owner_prose(body or "")).strip()
+    if len(text) < 40:
+        return f"The section is too short to use ({len(text)} characters)."
+    if len(text) > 900:
+        return "The section is too long to be a finished answer."
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) > 8:
+        return "The section is a worksheet, not a finished answer."
+    if not re.search(r"[.!?]", text):
+        return "The section is not a finished sentence."
+    if text.lower().startswith("unresolved"):
+        return "The section still says unresolved."
+    for line in lines:
+        reason = narration_reason(line)
+        if reason:
+            return reason
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in _BOILERPLATE_BODY) and len(text) < 220:
+        return "The section is the blank form."
+    if _narrated(text):
+        return "The section is drafting narration."
+    return ""
+
+
+def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -> str:
+    """A readable reason this check failed. Empty when the section passes."""
+    if not (raw or "").strip():
+        return "The model returned nothing."
+    cleaned = owner_section(key, raw)
+    if not cleaned:
+        for line in _visible_answer(raw).splitlines():
+            reason = narration_reason(line)
+            if reason:
+                return reason
+        if key == "pricing":
+            return "Pricing needs an assumption or a £ amount from an opened page."
+        if key == "advert":
+            return "The advert needs a headline, one body sentence, and a call to action."
+        return "The sentence filter removed every line."
+    if key == "pricing":
+        if not _pricing_ok(cleaned, blob):
+            return "Pricing has no assumption, and the £ amount is not on an opened page."
+    elif key == "advert":
+        if not _advert_ok({"advert": cleaned}):
+            for line in cleaned.splitlines():
+                reason = narration_reason(line)
+                if reason:
+                    return reason
+            return "The advert is not three finished lines."
+    elif not _body_filled(cleaned):
+        return _body_rejection(cleaned) or "The section did not pass the sentence check."
+    if not section_has_anchor(key, cleaned, objective):
+        return "The section does not use the service words from this request."
+    return ""
+
+
+def quote_draft(text: str) -> str:
+    """The model's words, marked so a later check cannot mistake them for a passed plan."""
+    lines = ["> " + line if line.strip() else ">" for line in (text or "").splitlines()]
+    return "\n".join(lines).strip()
+
+
+def retained_draft(model_text: str, objective: str, blob: str = "", reasons: dict | None = None) -> str:
+    """The full draft and one reason per failed check. This is not a passed plan."""
+    from_text = parse_sections(model_text or "")
+    lines = [
+        "Validation rejected this draft. No check was relaxed.",
+        "",
+    ]
+    failed = 0
+    for key in _REQUIRED:
+        reason = (reasons or {}).get(key) or section_rejection(key, from_text.get(key) or "", blob, objective)
+        if reason:
+            failed += 1
+            lines.append(f"[{key}] {reason}")
+        else:
+            lines.append(f"[{key}] passed")
+    if not failed and (model_text or "").strip():
+        lines.append("[plan] The draft did not pass every check together.")
+    lines += ["", "Full draft:", quote_draft(model_text or ""), "", "Nothing was sent."]
+    return "\n".join(lines).strip() + "\n"
 
 
 def clip_at_boundary(text: str, limit: int) -> str:

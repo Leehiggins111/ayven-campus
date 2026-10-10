@@ -143,11 +143,14 @@ def _from_loose_code(text: str) -> dict[str, str]:
 
 def parse_program(text: str) -> tuple[dict[str, str], str]:
     """FILE blocks, or a fenced program with asserts. Anything else is not a file."""
+    raw = text or ""
+    if re.search(r"^FILE:\s*test_main\.py\s*$", raw, re.I | re.M) and not re.search(r"^FILE:\s*main\.py\s*$", raw, re.I | re.M):
+        raw = "FILE: main.py\n" + raw
     files: dict[str, list[str]] = {}
     order: list[str] = []
     current = ""
     launch = ""
-    for line in (text or "").splitlines():
+    for line in raw.splitlines():
         stripped = line.strip()
         file_match = _FILE_LINE.match(stripped)
         if file_match:
@@ -182,7 +185,7 @@ def parse_program(text: str) -> tuple[dict[str, str], str]:
 
 
 def format_deliverable(files: dict[str, str], launch: str, result: dict) -> str:
-    passed = bool(result.get("passed"))
+    passed = bool(result.get("passed")) and bool(files.get("main.py")) and bool(files.get("test_main.py"))
     lines = [
         "# Software deliverable",
         f"Tests: {'PASSED' if passed else 'FAILED'}",
@@ -190,18 +193,46 @@ def format_deliverable(files: dict[str, str], launch: str, result: dict) -> str:
         f"Launch: {launch or 'python test_main.py'}",
         "",
     ]
-    for name, source in files.items():
-        lines.append(f"## {name}")
-        lines.append(source.rstrip())
-        lines.append("")
-    if not passed:
+    if passed:
+        for name, source in files.items():
+            lines.append(f"## {name}")
+            lines.append(source.rstrip())
+            lines.append("")
+        lines += ["Test output:", "passed", ""]
+    else:
         detail = (result.get("stderr") or result.get("stdout") or "The tests did not pass.").strip()
-        lines += ["Test output:", detail[:1500], ""]
+        lines += ["Rejected: " + (detail.splitlines()[0] if detail else "the program was not saved."), "No file was saved.", ""]
     lines.append("Nothing was sent.")
     return "\n".join(lines).strip() + "\n"
 
 
-def _prompt(objective: str, failure: str = "") -> str:
+def stored_files(findings: str) -> dict[str, str]:
+    """Files from a deliverable whose tests passed. A rejection stores none."""
+    if "tests: passed" not in (findings or "").lower():
+        return {}
+    files: dict[str, list[str]] = {}
+    current = ""
+    for line in (findings or "").splitlines():
+        if line.startswith("## ") and line[3:].strip() in {"main.py", "test_main.py"}:
+            current = line[3:].strip()
+            files[current] = []
+            continue
+        if current and (line.startswith("## ") or line == "Nothing was sent."):
+            current = ""
+            continue
+        if current:
+            files[current].append(line)
+    saved = {}
+    for name, body in files.items():
+        source = "\n".join(body).strip()
+        if source:
+            saved[name] = source + "\n"
+    if "main.py" not in saved or "test_main.py" not in saved:
+        return {}
+    return saved
+
+
+def _prompt(objective: str, retry: bool = False) -> str:
     text = (
         "Write the program for this request. Output only this shape, with real Python, and then stop.\n"
         "FILE: main.py\n"
@@ -211,36 +242,106 @@ def _prompt(objective: str, failure: str = "") -> str:
         "Do not use pytest. Do not use the network. Do not write assert True.\n\n"
         f"Request:\n{(objective or '')[:800]}\n"
     )
-    if failure:
-        text += "\nThe previous files failed.\n" + failure[:1200] + "\nWrite the FILE blocks again.\n"
+    if retry:
+        text += "\nThe previous answer was not Python. Output only the FILE blocks.\n"
     return text
 
 
+def _raw_blocks(text: str) -> dict[str, str]:
+    files: dict[str, list[str]] = {}
+    current = ""
+    for line in (text or "").splitlines():
+        match = _FILE_LINE.match(line.strip())
+        if match:
+            current = match.group(1)
+            files.setdefault(current, [])
+            continue
+        if _LAUNCH_LINE.match(line.strip()):
+            current = ""
+            continue
+        if current:
+            files[current].append(line)
+    return {name: "\n".join(body).strip() for name, body in files.items() if "\n".join(body).strip()}
+
+
+def _ambiguous_program(text: str) -> bool:
+    """Several sketches are not one program. Named file blocks are decided separately."""
+    lowered = (text or "").lower()
+    if "option 1" in lowered or "possibility a" in lowered or "another idea" in lowered:
+        return True
+    prints = re.findall(r"^\s*print\s*\(.+\)\s*$", text or "", re.M)
+    defs = re.findall(r"^\s*def\s+", text or "", re.M)
+    return bool(prints) and bool(defs)
+
+
+def classify_program(text: str) -> tuple[dict[str, str], str, str]:
+    """One syntax-checked program, or a reason nothing was saved."""
+    raw_blocks = _raw_blocks(text or "")
+    named = "main.py" in raw_blocks and "test_main.py" in raw_blocks
+    if not named and _ambiguous_program(text or ""):
+        return {}, "python test_main.py", "The reply describes more than one program, so none was saved."
+    files, launch = parse_program(text or "")
+    if files.get("main.py") and files.get("test_main.py"):
+        from .code_sandbox import _tests_are_meaningful
+
+        if not _tests_are_meaningful(files["test_main.py"]):
+            return {}, launch, "The test cannot fail, so the program was not saved."
+        return files, launch, ""
+    if named:
+        return {}, "python test_main.py", "The file blocks failed the syntax check, so nothing was saved."
+    return {}, "python test_main.py", "The reply did not contain one main.py and one test_main.py, so nothing was saved."
+
+
+def _invoke(complete, system: str, user: str, limit: int, prefill: str):
+    try:
+        return complete(system, user, limit, prefill)
+    except TypeError:
+        return complete(system, user, limit)
+
+
 def build_deliverable(objective: str, complete) -> tuple[str, dict]:
-    """Ask the model for files, run the test, and retry once with the failure."""
+    """Ask the model for files, run the test, and retry once without pasting the note back."""
     from .code_sandbox import run_files
 
-    text, tokens, meta = complete("Write the files only.", _prompt(objective), 1400)
-    files, launch = parse_program(text or "")
+    text, tokens, meta = _invoke(complete, "Write the files only.", _prompt(objective), 1400, "FILE: main.py\n")
+    files, launch, rejection = classify_program(text or "")
     result = run_files(files) if files.get("main.py") and files.get("test_main.py") else {
         "passed": False,
-        "stderr": "The model did not write main.py and test_main.py.\n" + (text or "").strip()[:600],
+        "stderr": rejection or "The reply did not contain one main.py and one test_main.py, so nothing was saved.",
         "stdout": "",
         "sandbox": "not-run",
         "exit_code": None,
         "status": "error",
     }
     if not result.get("passed"):
-        text2, tokens2, meta2 = complete(
+        text2, tokens2, meta2 = _invoke(
+            complete,
             "Write the files only.",
-            _prompt(objective, result.get("stderr") or result.get("stdout") or ""),
+            _prompt(objective, retry=True) + "\nCheck: " + (rejection or result.get("stderr") or "the tests failed.")[:300] + "\n",
             1400,
+            "FILE: main.py\n",
         )
-        files2, launch2 = parse_program(text2 or "")
+        files2, launch2, rejection2 = classify_program(text2 or "")
         if files2:
             result = run_files(files2)
-            text, files, launch, meta = text2, files2, launch2, meta2
-            tokens = int(tokens or 0) + int(tokens2 or 0)
+            if result.get("passed"):
+                text, files, launch, meta = text2, files2, launch2, meta2
+            else:
+                files = {}
+                result["stderr"] = result.get("stderr") or "The tests failed, so the files were not saved."
+                meta = meta2
+        else:
+            files = {}
+            result = {
+                "passed": False,
+                "stderr": rejection2,
+                "stdout": "",
+                "sandbox": "not-run",
+                "exit_code": None,
+                "status": "error",
+            }
+            meta = meta2
+        tokens = int(tokens or 0) + int(tokens2 or 0)
     meta = dict(meta or {})
     meta["completion_tokens"] = tokens
     meta["tests_passed"] = bool(result.get("passed"))

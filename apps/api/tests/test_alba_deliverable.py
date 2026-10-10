@@ -663,7 +663,7 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
 
     def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None):
         if prefill.startswith("Customers are reached through"):
-            if user.startswith("Output only"):
+            if "was rejected" in user:
                 return "a conversation about painting their kitchen cabinets.", 8, {"backend": "test"}
             return "I see what you're saying. You've reached out to 200+ potential homeowners.", 8, {"backend": "test"}
         if prefill in good:

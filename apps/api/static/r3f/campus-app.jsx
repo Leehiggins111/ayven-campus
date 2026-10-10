@@ -244,7 +244,13 @@ function ResultPanel() {
       <div><b>Deliverable</b> {result.deliverable || "—"}</div>
       <div><b>Findings</b> {result.findings || "—"}</div>
       {view.package_id && (
-        <div><a data-testid="download-deliverable" href={"/work-packages/" + view.package_id + "/deliverable.md"}>Download the deliverable</a></div>
+        <div>
+          <a data-testid="download-deliverable" href={"/work-packages/" + view.package_id + "/deliverable.md"}>Download the deliverable</a>
+          {" "}
+          <a data-testid="download-main" href={"/work-packages/" + view.package_id + "/files/main.py"}>main.py</a>
+          {" "}
+          <a data-testid="download-test" href={"/work-packages/" + view.package_id + "/files/test_main.py"}>test_main.py</a>
+        </div>
       )}
       <div><b>Gaps</b> {(result.gaps || []).join("; ") || "none recorded"}</div>
       <div><b>Confidence</b> {result.confidence === 0 || result.confidence ? String(result.confidence) : "unknown"} · <b>Evidence</b> {result.evidence_status || "—"}</div>

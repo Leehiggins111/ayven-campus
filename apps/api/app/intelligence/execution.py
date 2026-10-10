@@ -543,7 +543,11 @@ class Programme:
             mark_stage(self.parent_id, "REPAIR", project_id=self.project_id, task_id=self.task_id or "")
             _set_agent(SUPERVISOR, visual_state="REPAIRING", status="working", last_summary=f"Repairing {len(repair['actions'])} supervisor findings", progress=0.78)
             log_transition(package_id, "REPAIRING", "rejected material claims repaired locally")
-            child["report"] = repair.get("section") or render_focus(child["focus"], self._facts())
+            repaired = repair.get("section") or ""
+            if repaired:
+                child["report"] = repaired
+            elif not _protect_draft(self, child):
+                child["report"] = render_focus(child["focus"], self._facts())
             save_verification(package_id, "supervisor_recheck", SUPERVISOR, "RECHECKED", {"repairs": repair["actions"]})
             log_transition(package_id, "UNDER_REVIEW", "repaired section returned to the supervisor")
         settled = {
@@ -564,7 +568,8 @@ class Programme:
         first = _decide(1)
         if first == "RETURN":
             self.retries += 1
-            child["report"] = render_focus(child["focus"], self._facts())
+            if not _protect_draft(self, child):
+                child["report"] = render_focus(child["focus"], self._facts())
             outcome = run_supervisor_attempts(lambda attempt: _decide(attempt, child["report"]) if attempt > 1 else "RETURN", limit=2)
             decision = outcome["decision"]
             if decision == "ACCEPT":
@@ -573,7 +578,7 @@ class Programme:
                 decision = "TAKE_OVER" if decision == "RETURN" else decision
                 update_package(package_id, findings=child["report"], review_status=decision, attempt_count=outcome["attempts"], return_reason="Retry limit reached" if outcome["limited"] else "")
         elif first == "TAKE_OVER":
-            if not _keep_model_draft(self, child):
+            if not _keep_model_draft(self, child) and not _protect_draft(self, child):
                 child["report"] = render_focus(child["focus"], self._facts())
             decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2, conflicts=conflicts or None)
             if decision != "ACCEPT":
@@ -922,7 +927,7 @@ def _finish_roles(programme: Programme) -> None:
 def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
     from .software import build_deliverable
 
-    def complete(system: str, user: str, max_tokens: int):
+    def complete(system: str, user: str, max_tokens: int, prefill: str = ""):
         text, tokens, meta = _complete(
             "EMPLOYEE",
             system,
@@ -931,6 +936,7 @@ def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
             programme=programme,
             package_id=package_id,
             plain=True,
+            prefill=prefill,
         )
         raw = meta.get("raw_response") if isinstance(meta.get("raw_response"), str) else (text or "")
         _record_generation(programme, package_id, "software", raw or "", meta, kept="generated")
@@ -974,8 +980,21 @@ def _keep_model_draft(programme: Programme, child: dict) -> bool:
     return written >= 4
 
 
+def _protect_draft(programme: Programme, child: dict) -> bool:
+    """A business draft the model wrote is kept. The blank form is not a substitute."""
+    if getattr(programme, "task_class", "") != "business_research" or child.get("focus") != "draft":
+        return False
+    report = child.get("report") or ""
+    if report.startswith("Validation rejected this draft."):
+        return True
+    lowered = report.lower()
+    if "facts come from the request or from a page that was opened" in lowered and "the service is only what that request" in lowered:
+        return False
+    return bool(report.strip())
+
+
 def _publish_plan(self: Programme, model_text: str) -> str:
-    from .deliverable import plan_sections_filled, publish_business_plan, evidence_blob
+    from .deliverable import plan_sections_filled, publish_business_plan, evidence_blob, retained_draft
 
     published = publish_business_plan(self.objective, self.research, model_text)
     blob = evidence_blob(self.research.get("evidence"))
@@ -983,22 +1002,24 @@ def _publish_plan(self: Programme, model_text: str) -> str:
         return published
     import os
 
-    if os.environ.get("AYVEN_LLM_STUB", "1") != "0":
-        return ""
     from ..models import local_base
 
-    if not local_base():
+    if os.environ.get("AYVEN_LLM_STUB", "1") != "0" or not local_base():
+        if (model_text or "").strip():
+            return retained_draft(model_text, self.objective, blob, {})
         return ""
     from .deliverable import finished_lines, parse_sections
 
     sections = parse_sections(finished_lines(model_text or ""))
-    _fill_plan_sections(self, sections, blob)
+    reasons = _fill_plan_sections(self, sections, blob)
     assembled = _assemble_plan(sections, self.objective)
     published = publish_business_plan(self.objective, self.research, assembled)
     if published and plan_sections_filled(published, blob):
         return published
     if plan_sections_filled(assembled, blob):
         return assembled
+    if (model_text or "").strip():
+        return retained_draft(model_text, self.objective, blob, reasons)
     return ""
 
 
@@ -1395,15 +1416,10 @@ def _section_body(text: str, kind: str, objective: str = "") -> str:
 
 
 def _section_drop_reason(key: str, body: str, blob: str, objective: str) -> str:
-    """Why a non-empty reply did not become the stored section."""
-    if not (body or "").strip():
-        return "empty_generation"
-    cleaned = _section_body(body, key, objective)
-    if not cleaned:
-        return "sentence_filter"
-    if _section_missing(key, cleaned, blob, objective):
-        return "section_validation"
-    return ""
+    """Why a reply did not become the stored section. Empty when the check passed."""
+    from .deliverable import section_rejection
+
+    return section_rejection(key, body, blob, objective)
 
 
 def _record_generation(programme: Programme, package_id: str, kind: str, raw: str, meta: dict, kept: str = "") -> None:
@@ -1421,21 +1437,29 @@ def _record_generation(programme: Programme, package_id: str, kind: str, raw: st
         "completion_tokens": int(payload.get("completion_tokens") or 0),
         "elapsed_s": payload.get("elapsed_s") or 0,
         "kept": kept,
+        "reason": payload.get("reason") or "",
         "response": payload["raw_response"],
     })
 
 
-def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1, previous: str = "") -> tuple[str, str, dict]:
+def _section_prompt(instruction: str, attempt: int, reason: str, prices: str) -> str:
+    """A retry names the failed check. It does not paste the rejected lines back."""
+    if attempt <= 1:
+        return f"{instruction}{prices}"
+    lead = (
+        "The previous answer was rejected and was not stored.\n"
+        f"Check: {reason or 'it did not pass validation'}\n"
+        "Write the finished lines only. Do not repeat a rejected claim.\n"
+        + instruction
+    )
+    return f"{lead}{prices}"
+
+
+def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1, reason: str = "") -> tuple[str, str, dict]:
     prices = ""
     if title in ("Pricing", "Competitor and market research"):
         prices = f"\nPrices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
-    if attempt == 1:
-        lead = instruction
-    else:
-        lead = "Output only the finished lines. The previous answer was not stored.\n" + instruction
-        if previous:
-            lead += "\nPrevious answer:\n" + previous[:400]
-    user = f"{lead}{prices}"
+    user = _section_prompt(instruction, attempt, reason, prices)
     limit, stop = _section_budget(key, attempt)
     text, _tokens, meta = _complete(
         "EMPLOYEE",
@@ -1465,24 +1489,28 @@ def _has_model_sentence(text: str) -> bool:
     return False
 
 
-def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> None:
-    """Ask for each missing section on its own. A 4b model finishes a short answer; it does not finish a worksheet."""
+def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict:
+    """Ask for each missing section on its own, at most twice. Return the reason each check still failed."""
     jobs = _section_jobs(programme.objective)
     rejected: dict[str, str] = {}
     for _pass in range(2):
         pending = [job for job in jobs if _section_missing(job[0], sections.get(job[0]) or "", blob, programme.objective)]
         if not pending:
-            return
+            return {}
         for key, title, instruction, prefill in pending:
             written, raw, meta = _write_one_section(
-                programme, key, title, instruction, prefill=prefill, attempt=_pass + 1, previous=rejected.get(key, ""),
+                programme, key, title, instruction, prefill=prefill, attempt=_pass + 1, reason=rejected.get(key, ""),
             )
             reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw, blob, programme.objective)
+            meta = dict(meta or {})
+            meta["reason"] = reason
             _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept")
             if reason:
-                rejected[key] = raw or rejected.get(key, "")
+                rejected[key] = reason
                 continue
             sections[key] = written
+            rejected.pop(key, None)
+    return rejected
 
 
 def _assemble_plan(sections: dict, objective: str = "") -> str:
