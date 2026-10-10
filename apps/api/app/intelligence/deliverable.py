@@ -516,6 +516,8 @@ def publish_business_plan(objective: str, research: dict | None, model_text: str
         prose = _strip_labels(grounded.get("text") or "")
         if not prose:
             prose = _strip_labels(body)
+        if key == "pricing" and prose and "assumption" not in prose.lower():
+            prose = "Assumption: " + prose
         cleaned[key] = prose
     draft = _format_sections(cleaned, evidence)
     if not plan_sections_filled(draft, blob):

@@ -404,6 +404,54 @@ def test_the_blank_form_is_not_the_draft_the_model_continues():
     assert PAINTER["url"] in user
 
 
+def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.intelligence.execution import _publish_plan
+
+    monkeypatch.setenv("AYVEN_LLM_STUB", "0")
+    monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
+    programme = SimpleNamespace(
+        objective=OBJECTIVE,
+        parent_id="pkg-sections",
+        skills=[],
+        research={"evidence": [_preview(
+            PAINTER["url"],
+            PAINTER["title"],
+            "Professional kitchen cabinet painting costs £80 to £100 in the UK. We paint and respray kitchen cabinets.",
+        )]},
+    )
+    answers = {
+        "Service": "Alba Kitchen Refresh paints and resprays the kitchen cabinets a household already owns.",
+        "Target customer": "Local UK homeowners who want the cabinets painted rather than ripped out.",
+        "Problem": "Replacing a kitchen costs more and takes longer when the units themselves are still sound.",
+        "Offer and positioning": "The offer is an on-site cabinet painting service, which differs from a showroom replacement because the existing kitchen stays.",
+        "Competitor and market research": "Opened pages describe UK cabinet painting prices, including a range of £80 to £100, and none of them is Alba.",
+        "Pricing": "ASSUMPTION: plan around £80 to £100 from the opened painting page, because a visit still has to count the doors.",
+        "Channels": "Start with local search and a short conversation near the service area. Nothing was sent.",
+        "Advert": "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope.",
+        "Call to action": "Ask for a visit and a written scope before any booking. Nothing was sent.",
+        "Next steps": "Confirm the towns to cover, then set the visit before any price is published. Nothing was sent.",
+        "Assumptions": "The name and the UK painting service come from the request. Demand is not proven by the name alone.",
+        "Unresolved": "The towns to cover and the condition of the cabinets stay open until a visit.",
+    }
+
+    def fake(role, system, user, max_tokens=320, programme=None, package_id=""):
+        for title, sentence in answers.items():
+            if f"Write the {title} section only" in user:
+                return sentence, 12, {"backend": "test"}
+        raise AssertionError(user[:160])
+
+    monkeypatch.setattr("app.intelligence.execution._complete", fake)
+    published = _publish_plan(programme, "This is an essay with no headings and no offer.")
+    assert "paints and resprays" in published
+    assert "assumption" in published.lower()
+    assert "Headline:" in published
+    assert "local search" in published
+    assert "towns to cover" in published
+    assert plan_sections_filled(published, "costs £80 to £100") is True
+
+
 def test_opened_pages_stay_ahead_of_failed_fetches():
     from app.intelligence.campus_view import _evidence
 

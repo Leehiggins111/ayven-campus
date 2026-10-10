@@ -385,7 +385,7 @@ class Programme:
         if role == "EMPLOYEE":
             prompts = []
             for child in self.children:
-                limit = 2048 if self.task_class == "business_research" and child.get("focus") == "draft" else 320
+                limit = 640 if self.task_class == "business_research" and child.get("focus") == "draft" else 320
                 prompts.append({"id": child["id"], "system": _employee_system(self), "user": _employee_user(self, child), "max_tokens": limit})
             return prompts
         if role == "SUPERVISOR":
@@ -907,17 +907,16 @@ def _publish_plan(self: Programme, model_text: str) -> str:
 
     if not local_base():
         return ""
-    repair, _tokens, _meta = _complete(
-        "EMPLOYEE",
-        _employee_system(self),
-        _business_repair_user(self, model_text),
-        max_tokens=2048,
-        programme=self,
-        package_id=self.parent_id,
-    )
-    published = publish_business_plan(self.objective, self.research, repair)
+    from .deliverable import finished_lines, parse_sections
+
+    sections = parse_sections(finished_lines(model_text or ""))
+    _fill_plan_sections(self, sections, blob)
+    assembled = _assemble_plan(sections)
+    published = publish_business_plan(self.objective, self.research, assembled)
     if published and plan_sections_filled(published, blob):
         return published
+    if plan_sections_filled(assembled, blob):
+        return assembled
     return ""
 
 
@@ -1071,17 +1070,31 @@ def resume_approved_package(package_id: str) -> str:
     unsupported = _approved_research_is_unresolved(row, findings)
     log_transition(package_id, "ACTIONING", "Lee approved the internal review. Nothing is sent.")
     if unsupported:
-        log_transition(package_id, "UNRESOLVED", "Approved, but the required research has no opened sources.")
+        obs = {}
+        raw_obs = row.get("observability_json") or ""
+        if raw_obs:
+            try:
+                obs = json.loads(raw_obs)
+            except json.JSONDecodeError:
+                obs = {}
+        pages = [page for page in (obs.get("pages") or []) if isinstance(page, str) and page.startswith("http")]
+        if pages:
+            note = "UNRESOLVED. Opened pages are recorded, and the plan is not usable yet.\n"
+            summary = "Unresolved: the plan is not usable"
+        else:
+            note = "UNRESOLVED. Approval did not create evidence.\n"
+            summary = "Unresolved: no opened sources"
+        log_transition(package_id, "UNRESOLVED", summary)
         update_package(
             package_id,
             stage="results",
             status="unresolved",
             destination="command",
-            next_action="Unresolved: no opened sources",
-            findings=("UNRESOLVED. Approval did not create evidence.\n" + findings)[:8000],
+            next_action=summary,
+            findings=note + findings,
         )
         mark_stage(package_id, "UNRESOLVED", project_id=row.get("project_id") or "", task_id=row.get("task_id") or "")
-        _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="Unresolved: no opened sources", progress=1)
+        _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary=summary, progress=1)
         _set_agent("milo", visual_state="WAITING", status="idle", last_summary="Package unresolved after approval", progress=1)
         if row.get("project_id"):
             conn = connect()
@@ -1209,6 +1222,94 @@ def _price_notes(programme: Programme) -> str:
             if len(notes) >= 8:
                 return "\n".join(notes)
     return "\n".join(notes)
+
+
+_SECTION_JOBS = (
+    ("service", "Service", "What the named service sells to a local UK homeowner."),
+    ("target customer", "Target customer", "Who hires a local kitchen painting service."),
+    ("problem", "Problem", "Why a household would paint the cabinets instead of replacing the kitchen."),
+    ("offer and positioning", "Offer and positioning", "What is sold, and how that differs from replacing the whole kitchen. This is a recommendation."),
+    ("competitor and market research", "Competitor and market research", "Name opened UK pages and the prices they state. Do not invent a company."),
+    ("pricing", "Pricing", "Start with ASSUMPTION: and cite one £ range from the prices below. Say why a visit is still required before a quote."),
+    ("channels", "Channels", "How a local UK service reaches homeowners. Nothing was sent."),
+    ("advert", "Advert", "Exactly three lines, starting Headline:, Body:, and Call to action:."),
+    ("call to action", "Call to action", "One sentence asking for a visit and a written scope. No booking was made."),
+    ("next steps", "Next steps", "Two sentences the owner does next. Nothing was sent."),
+    ("assumptions", "Assumptions", "What this plan takes from the request, and what a visit still has to confirm."),
+    ("unresolved", "Unresolved", "What is still open: the towns and the cabinet condition. Do not repeat the other sections."),
+)
+
+
+def _section_missing(key: str, body: str, blob: str) -> bool:
+    from .deliverable import _advert_ok, _body_filled, _pricing_ok
+
+    if key in ("assumptions", "unresolved"):
+        return not _body_filled(body)
+    if key == "pricing":
+        return not _pricing_ok(body, blob)
+    if key == "advert":
+        return not _advert_ok({"advert": body})
+    return not _body_filled(body)
+
+
+def _section_body(text: str) -> str:
+    """Keep Headline and Call to action lines. Drop only a repeated heading with no sentence."""
+    from .deliverable import _split_heading, finished_lines
+
+    lines = finished_lines(text or "").splitlines()
+    if lines:
+        heading, inline = _split_heading(lines[0])
+        if heading and not inline:
+            lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+def _write_one_section(programme: Programme, title: str, instruction: str) -> str:
+    user = (
+        f"Write the {title} section only. Two or three sentences. No heading. No preamble.\n"
+        "Do not say I, let me, or I need to. Do not say the evidence does not state this.\n"
+        f"{instruction}\n"
+        "Nothing was sent.\n\n"
+        f"Objective:\n{programme.objective}\n\n"
+        f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
+        f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+    )
+    text, _tokens, _meta = _complete(
+        "EMPLOYEE",
+        _employee_system(programme),
+        user,
+        max_tokens=220,
+        programme=programme,
+        package_id=programme.parent_id,
+    )
+    return _section_body(text)
+
+
+def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> None:
+    """Ask for each missing section on its own. A 4b model finishes a short answer; it does not finish a worksheet."""
+    for _pass in range(2):
+        pending = [job for job in _SECTION_JOBS if _section_missing(job[0], sections.get(job[0]) or "", blob)]
+        if not pending:
+            return
+        for key, title, instruction in pending:
+            extra = ""
+            if _pass and key == "pricing":
+                extra = " The first characters must be ASSUMPTION:."
+            written = _write_one_section(programme, title, instruction + extra)
+            if written:
+                sections[key] = written
+
+
+def _assemble_plan(sections: dict) -> str:
+    lines = ["Business launch plan", ""]
+    for key, title, _instruction in _SECTION_JOBS:
+        lines.append(title)
+        body = (sections.get(key) or "").strip()
+        if body:
+            lines.append(body)
+        lines.append("")
+    lines.append("Nothing was sent.")
+    return "\n".join(lines).strip() + "\n"
 
 
 def _business_repair_user(programme: Programme, previous: str) -> str:
