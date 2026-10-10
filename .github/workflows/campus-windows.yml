@@ -6,6 +6,10 @@ on:
     branches:
       - cursor/ayven-v2-workable-a9eb
 
+concurrency:
+  group: campus-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   campus-ollama:
     runs-on: windows-latest
@@ -52,6 +56,7 @@ jobs:
           python -m pip install click==8.3.3 pillow==12.3.0 uvicorn
 
       - name: Install Ollama and pull qwen3:4b on CPU
+        timeout-minutes: 45
         shell: pwsh
         run: |
           $env:OLLAMA_NO_GPU = "1"
@@ -63,18 +68,44 @@ jobs:
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $ollama) { throw "Ollama.exe was not installed" }
           $env:Path = "$(Split-Path $ollama);$env:Path"
-          Start-Process $ollama -ArgumentList "serve" -WindowStyle Hidden
           $ready = $false
-          foreach ($try in 1..30) {
+          foreach ($try in 1..15) {
             try {
               Invoke-RestMethod http://127.0.0.1:11434/api/tags | Out-Null
               $ready = $true
               break
             } catch { Start-Sleep -Seconds 2 }
           }
+          if (-not $ready) {
+            Start-Process $ollama -ArgumentList "serve" -WindowStyle Hidden
+            foreach ($try in 1..30) {
+              try {
+                Invoke-RestMethod http://127.0.0.1:11434/api/tags | Out-Null
+                $ready = $true
+                break
+              } catch { Start-Sleep -Seconds 2 }
+            }
+          }
           if (-not $ready) { throw "Ollama did not start" }
-          & $ollama pull qwen3:4b
-          if ($LASTEXITCODE -ne 0) { throw "qwen3:4b pull failed" }
+          $client = [System.Net.Http.HttpClient]::new()
+          $client.Timeout = [TimeSpan]::FromMinutes(40)
+          $body = '{"name":"qwen3:4b","stream":true}'
+          $content = [System.Net.Http.StringContent]::new($body, [Text.Encoding]::UTF8, "application/json")
+          $response = $client.PostAsync("http://127.0.0.1:11434/api/pull", $content).GetAwaiter().GetResult()
+          $reader = [System.IO.StreamReader]::new($response.Content.ReadAsStream())
+          $success = $false
+          while (-not $reader.EndOfStream) {
+            $line = $reader.ReadLine()
+            if (-not $line) { continue }
+            Write-Host $line
+            if ($line -match '"error"') { throw "qwen3:4b pull failed: $line" }
+            if ($line -match '"status"\s*:\s*"success"') { $success = $true }
+          }
+          $reader.Close()
+          $client.Dispose()
+          if (-not $success) { throw "qwen3:4b pull ended without success" }
+          $names = (Invoke-RestMethod http://127.0.0.1:11434/api/tags).models.name
+          if ($names -notcontains "qwen3:4b") { throw "qwen3:4b is not in ollama tags" }
 
       - name: Run Campus acceptance
         shell: pwsh
