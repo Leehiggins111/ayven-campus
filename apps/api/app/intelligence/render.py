@@ -42,7 +42,7 @@ def render_parent(facts: dict, audits: list[dict], manager_decision: str, comple
         "# Ayven briefing",
         f"Task class: {facts['task_class']}",
         f"Research mode: {facts['research'].get('mode')} ({_mode_label(facts['research'].get('mode'))})",
-        "Validation: LOCAL_DETERMINISTIC. Real-model quality is not claimed from this text alone.",
+        "Checks: opened pages and the completion gate. A section that only says Unresolved is not a finished plan.",
         "",
         "## Objective",
         facts["objective"],
@@ -61,7 +61,7 @@ def render_parent(facts: dict, audits: list[dict], manager_decision: str, comple
         parts.append(f"Resolution method: {resolution.get('resolution_method')}. {resolution.get('reason')}")
     parts.append("")
     synthesis = (facts.get("synthesis") or "").strip()
-    if synthesis:
+    if synthesis and facts.get("task_class") != "business_research":
         parts += ["## Reasoning within the evidence", synthesis, ""]
     if completion:
         parts.append(

@@ -95,7 +95,7 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     body = local_request_body(base, server_body(model, messages, max_tokens, schema))
-    timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "180" if ":11434" in (base or "") else "90"))
+    timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "600" if ":11434" in (base or "") else "90"))
     r = httpx.post(
         f"{base.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},

@@ -246,15 +246,16 @@ class ClarificationIn(BaseModel):
 
 @app.post("/work-packages/{package_id}/clarification")
 def answer_clarification(package_id: str, body: ClarificationIn):
-    from .intelligence.execution import answer_clarification as resume_clarification
+    from .intelligence.execution import begin_clarification, start_clarification_worker
 
     try:
-        resumed = resume_clarification(package_id, body.answer)
+        begin_clarification(package_id, body.answer)
     except KeyError:
         raise HTTPException(404)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    return {"ok": True, "package_id": resumed}
+    start_clarification_worker(package_id)
+    return {"ok": True, "package_id": package_id}
 
 @app.get("/approvals")
 def list_approvals():

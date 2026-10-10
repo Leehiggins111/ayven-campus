@@ -51,6 +51,9 @@ def test_vague_request_stays_on_the_same_package():
     )
     assert resumed.status_code == 200
     assert resumed.json()["package_id"] == parent
+    from app.intelligence.execution import wait_for_clarification
+
+    assert wait_for_clarification(parent, timeout=90)
     conn = connect()
     parents = conn.execute(
         "SELECT id FROM work_packages WHERE project_id=? AND parent_id IS NULL",

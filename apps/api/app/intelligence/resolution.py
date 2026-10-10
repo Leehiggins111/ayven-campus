@@ -61,6 +61,10 @@ def resolve_manager(
         method = "unresolved"
         decision = "ESCALATE"
         reason = "Insufficient evidence after the research budget. Nothing was invented to fill it."
+    elif task_class == "business_research" and not _business_ready(research):
+        method = "unresolved"
+        decision = "ESCALATE"
+        reason = "Off-topic evidence or empty plan sections cannot be published. Safe but empty is a failure. Nothing was invented to fill it."
     else:
         method = "evidence"
         decision = "SYNTHESISE"
@@ -78,6 +82,12 @@ def resolve_manager(
         "reason": reason,
         "research_exhausted": exhausted,
     }
+
+
+def _business_ready(research: dict) -> bool:
+    evidence = research.get("evidence") or []
+    opened = [item for item in evidence if str(item.get("source_url") or "").startswith("http")]
+    return bool(opened) and bool(research.get("deliverable_filled"))
 
 
 DECISIONS = ("SYNTHESISE", "RESEARCH_MORE", "RETURN", "CLARIFY", "ESCALATE")

@@ -61,10 +61,14 @@ def authoritative_decision(report: str, task_class: str, focus: str, attempt: in
             return "RETURN" if attempt < limit else "TAKE_OVER"
         if task_class == "internal_door_quote" and "no supplier is named" not in text and "http" not in text:
             return "TAKE_OVER"
+        if task_class == "business_research" and not _business_evidence_ok(report):
+            return "RETURN" if attempt < limit else "TAKE_OVER"
         return "ACCEPT"
     if focus in ("prospects", "draft"):
         if "nothing was sent" not in text and "sent: no" not in text:
             return "TAKE_OVER"
+        if task_class == "business_research" and focus == "draft" and not _business_draft_ok(report):
+            return "RETURN" if attempt < limit else "TAKE_OVER"
         return "ACCEPT"
     if focus == "trivial":
         return "ACCEPT"
@@ -197,6 +201,20 @@ def _entity_follow_up(objective: str) -> str:
     if not targets:
         return ""
     return f"{targets[0]['entity']} official site"[:160]
+
+
+def _business_evidence_ok(report: str) -> bool:
+    """An evidence section with no opened page is not competitor research."""
+    lowered = (report or "").lower()
+    if "no page was opened" in lowered or "no fact is asserted" in lowered:
+        return False
+    return "http://" in lowered or "https://" in lowered
+
+
+def _business_draft_ok(report: str) -> bool:
+    from .deliverable import plan_sections_filled
+
+    return plan_sections_filled(report or "")
 
 
 def advisory_decision(model_text: str) -> str:

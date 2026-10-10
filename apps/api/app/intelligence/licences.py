@@ -21,6 +21,7 @@ LEDGER = (
     {"name": "pypdf", "licence": "BSD-3-Clause", "posture": "INTEGRATED"},
     {"name": "python-docx", "licence": "MIT", "posture": "INTEGRATED"},
     {"name": "openpyxl", "licence": "MIT", "posture": "INTEGRATED"},
+    {"name": "trafilatura", "licence": "Apache-2.0", "posture": "INTEGRATED"},
     {"name": "pydantic-ai-slim", "licence": "MIT", "posture": "ADAPTED"},
     {"name": "pymupdf", "licence": "AGPL-3.0", "posture": "REJECTED"},
     {"name": "firecrawl", "licence": "AGPL-3.0", "posture": "REJECTED"},

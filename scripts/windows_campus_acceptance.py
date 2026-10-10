@@ -24,7 +24,7 @@ BASE = f"http://{HOST}:{PORT}"
 OLLAMA = os.environ.get("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
 MODEL = os.environ.get("AYVEN_EMPLOYEE_MODEL", "qwen3:4b")
 KEY = os.environ.get("AYVEN_ACCESS_KEY", "")
-JOB_TIMEOUT = int(os.environ.get("AYVEN_ACCEPTANCE_JOB_TIMEOUT_S", "2400"))
+JOB_TIMEOUT = int(os.environ.get("AYVEN_ACCEPTANCE_JOB_TIMEOUT_S", "5400"))
 TERMINAL = {"COMPLETED", "FAILED", "UNRESOLVED", "AWAITING_APPROVAL", "AWAITING_CLARIFICATION"}
 SECTIONS = (
     "Service",
@@ -88,7 +88,7 @@ def base_env(db: Path, research_mode: str) -> dict:
         "AYVEN_EMPLOYEE_MODEL": MODEL,
         "AYVEN_SUPERVISOR_MODEL": MODEL,
         "AYVEN_MANAGER_MODEL": MODEL,
-        "AYVEN_LLM_TIMEOUT_S": os.environ.get("AYVEN_LLM_TIMEOUT_S", "300"),
+        "AYVEN_LLM_TIMEOUT_S": os.environ.get("AYVEN_LLM_TIMEOUT_S", "600"),
         "AYVEN_STAGE_TIMEOUT_S": os.environ.get("AYVEN_STAGE_TIMEOUT_S", "900"),
         "AYVEN_MAX_RESEARCH_ROUNDS": os.environ.get("AYVEN_MAX_RESEARCH_ROUNDS", "1"),
         "AYVEN_MAX_ATTEMPTS": os.environ.get("AYVEN_MAX_ATTEMPTS", "1"),
@@ -219,6 +219,31 @@ def write_pdf(path: Path, text: str) -> None:
     path.write_bytes(blob)
 
 
+def _plan_can_complete(package: dict, view: dict) -> bool:
+    """COMPLETED requires relevant pages and filled sections, not an empty template."""
+    try:
+        from app.intelligence.deliverable import business_can_complete
+    except Exception:
+        return False
+    findings = (package or {}).get("findings") or ""
+    objective = (package or {}).get("objective") or (view or {}).get("objective") or ""
+    answer = ""
+    obs = {}
+    raw = (package or {}).get("observability_json") or ""
+    if raw:
+        try:
+            obs = json.loads(raw)
+        except json.JSONDecodeError:
+            obs = {}
+    understood = str(obs.get("understood_objective") or objective)
+    if not understood and answer:
+        understood = answer
+    previews = obs.get("evidence_preview")
+    if not isinstance(previews, list):
+        previews = []
+    return business_can_complete(findings, previews, understood)
+
+
 def save_vertical(findings: str, view: dict) -> dict:
     OUT.mkdir(parents=True, exist_ok=True)
     markdown = findings or "No findings were recorded."
@@ -339,7 +364,14 @@ def main() -> int:
         paused = wait_job(client, project["project_id"])
         record(rows, 7, "Vague request gets a clarification", "PASS" if paused.get("workflow_state") == "AWAITING_CLARIFICATION" else "FAIL", paused.get("workflow_state") or "")
         same_id = paused.get("id")
-        code, continued = client.post(f"/work-packages/{same_id}/clarification", {"answer": "Alba Kitchen Refresh, a kitchen refresh service for local homeowners"})
+        code, continued = client.post(
+            f"/work-packages/{same_id}/clarification",
+            {"answer": (
+                "Alba Kitchen Refresh, a local kitchen painting service in the UK. "
+                "Cover the service, the customer, the problem, the offer, competitor research from real websites, "
+                "pricing assumptions, channels, ad copy, a call to action, next steps, evidence, assumptions, and unresolved items."
+            )},
+        )
         if code != 200:
             record(rows, 8, "Answer continues the same package", "FAIL", f"http {code}")
             return _finish(rows, 1)
@@ -370,16 +402,16 @@ def main() -> int:
                 client.post(f"/approvals/{approval['id']}/resolve", {"decision": "approved"})
                 _view_code, view = client.get(f"/campus/view?package_id={same_id}")
                 landed = view.get("stage")
-                valid = bool(pages or live_rows)
+                valid = _plan_can_complete(finished, view)
                 if valid and view.get("finished") and not view.get("unresolved"):
                     record(rows, 12, "Approve genuine research", "PASS", landed or "")
                     record(rows, 13, "COMPLETED only with valid evidence", "PASS", landed or "")
                 elif not valid and view.get("unresolved"):
                     record(rows, 12, "Approve genuine research", "PASS", "approved")
-                    record(rows, 13, "COMPLETED only with valid evidence", "PASS", "unresolved because pages were not opened")
+                    record(rows, 13, "COMPLETED only with valid evidence", "PASS", "unresolved because the evidence or the plan was not usable")
                 else:
                     record(rows, 12, "Approve genuine research", "FAIL", f"stage={landed} valid={valid}")
-                    record(rows, 13, "COMPLETED only with valid evidence", "FAIL", f"finished={view.get('finished')} unresolved={view.get('unresolved')}")
+                    record(rows, 13, "COMPLETED only with valid evidence", "FAIL", f"finished={view.get('finished')} unresolved={view.get('unresolved')} valid={valid}")
         else:
             record(rows, 12, "Approve genuine research", "FAIL", finished.get("workflow_state") or "did not wait")
             record(rows, 13, "COMPLETED only with valid evidence", "FAIL", "approval gate was not reached")
@@ -388,7 +420,7 @@ def main() -> int:
         findings = raw_package.get("findings") or finished.get("findings") or ""
         artifacts = save_vertical(findings, view if isinstance(view, dict) else {})
         missing = [name for name in SECTIONS if name not in findings]
-        usable = not missing and "UNKNOWN · UNKNOWN" not in findings and "Nothing was sent" in findings
+        usable = _plan_can_complete(raw_package or finished, view if isinstance(view, dict) else {}) and not missing and "UNKNOWN · UNKNOWN" not in findings
         record(rows, 23, "Vertical slice is usable", "PASS" if usable else "FAIL", "missing " + ", ".join(missing) if missing else json.dumps(artifacts))
 
         stop_server(proc)

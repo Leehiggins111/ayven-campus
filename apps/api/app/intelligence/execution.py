@@ -382,7 +382,11 @@ class Programme:
 
     def prompts(self, role: str) -> list[dict]:
         if role == "EMPLOYEE":
-            return [{"id": child["id"], "system": _employee_system(self), "user": _employee_user(self, child)} for child in self.children]
+            prompts = []
+            for child in self.children:
+                limit = 900 if self.task_class == "business_research" and child.get("focus") == "draft" else 320
+                prompts.append({"id": child["id"], "system": _employee_system(self), "user": _employee_user(self, child), "max_tokens": limit})
+            return prompts
         if role == "SUPERVISOR":
             return [{"id": child["id"], "system": _supervisor_system(), "user": _supervisor_user(self, child)} for child in self.children]
         if role == "MANAGER":
@@ -434,6 +438,11 @@ class Programme:
         self.grounded[package_id] = grounded["text"]
         self.removed.extend(grounded["removed"])
         self.removed_by.setdefault(package_id, []).extend(grounded["removed"])
+        if child["focus"] == "draft" and self.task_class == "business_research":
+            published = _publish_plan(self, text)
+            if published:
+                child["report"] = published
+                update_package(package_id, findings=published)
         update_package(package_id, selected_model=meta.get("model") or route_for(self.task_class, "draft")["model_id"])
         _set_agent(child["agent_id"], visual_state="COMPLETED", status="idle", last_summary="Ledger draft submitted", progress=0.7, current_tool=None)
 
@@ -617,6 +626,11 @@ class Programme:
         if grounded["text"]:
             self.grounded[self.parent_id] = grounded["text"]
         self.removed.extend(grounded["removed"])
+        from .deliverable import evidence_blob, plan_sections_filled
+
+        drafts = [child.get("report") or "" for child in self.children if child.get("focus") == "draft"]
+        self.research["objective"] = self.objective
+        self.research["deliverable_filled"] = bool(drafts) and plan_sections_filled(drafts[0], evidence_blob(self.research.get("evidence")))
         log_transition(self.parent_id, "UNDER_REVIEW", "manager is resolving the package")
         log_transition(self.parent_id, "READY", "supervisor audits are in")
         advisory = advisory_decision(text)
@@ -666,6 +680,16 @@ class Programme:
             "skills": [skill.name for skill in self.skills],
             "queries": self.research.get("queries") or [],
             "pages": [item.get("source_url") for item in self.research.get("evidence") or []],
+            "understood_objective": self.objective,
+            "evidence_preview": [
+                {
+                    "url": item.get("source_url") or "",
+                    "title": item.get("source_title") or "",
+                    "text": (item.get("extracted_content") or "")[:500],
+                }
+                for item in (self.research.get("evidence") or [])
+                if isinstance(item, dict)
+            ],
             "relevant_opened": sum(1 for item in self.research.get("evidence") or [] if (item.get("metadata") or {}).get("relevant")),
             "filtered_results": self.research.get("filtered") or [],
             "targets": self.research.get("targets") or [],
@@ -848,12 +872,42 @@ def run_objective(project_id: str, objective: str, task_id: str | None = None) -
 def _finish_roles(programme: Programme) -> None:
     for role in ("EMPLOYEE", "SUPERVISOR", "MANAGER"):
         for prompt in programme.prompts(role):
-            text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=320 if role != "MANAGER" else 480, programme=programme, package_id=prompt["id"])
+            limit = int(prompt.get("max_tokens") or (320 if role != "MANAGER" else 480))
+            text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=limit, programme=programme, package_id=prompt["id"])
             programme.bind(role, prompt["id"], text, meta)
 
 
-def answer_clarification(package_id: str, answer: str) -> str:
-    """Store Lee's answer and continue the same parent package."""
+def _publish_plan(self: Programme, model_text: str) -> str:
+    from .deliverable import plan_sections_filled, publish_business_plan, evidence_blob
+
+    published = publish_business_plan(self.objective, self.research, model_text)
+    blob = evidence_blob(self.research.get("evidence"))
+    if published and plan_sections_filled(published, blob):
+        return published
+    import os
+
+    if os.environ.get("AYVEN_LLM_STUB", "1") != "0":
+        return ""
+    from ..models import local_base
+
+    if not local_base():
+        return ""
+    repair, _tokens, _meta = _complete(
+        "EMPLOYEE",
+        _employee_system(self),
+        _business_repair_user(self, model_text),
+        max_tokens=900,
+        programme=self,
+        package_id=self.parent_id,
+    )
+    published = publish_business_plan(self.objective, self.research, repair)
+    if published and plan_sections_filled(published, blob):
+        return published
+    return ""
+
+
+def begin_clarification(package_id: str, answer: str) -> str:
+    """Validate and record the answer. The HTTP handler returns before the work continues."""
     from .store import package
     from .think import strip_think
 
@@ -867,6 +921,52 @@ def answer_clarification(package_id: str, answer: str) -> str:
         raise ValueError("answer is empty")
     update_package(package_id, clarification_answer=cleaned)
     log_transition(package_id, "IN_PROGRESS", "Lee answered; the same package continues")
+    return package_id
+
+
+_CLARIFICATION_WORKERS: dict[str, object] = {}
+
+
+def start_clarification_worker(package_id: str):
+    """Continue the package on a daemon thread, the same way a Milo job is started."""
+    import threading
+
+    thread = threading.Thread(target=continue_clarification, args=(package_id,), daemon=True, name=f"clarify-{package_id[:8]}")
+    _CLARIFICATION_WORKERS[package_id] = thread
+    thread.start()
+    return thread
+
+
+def wait_for_clarification(package_id: str, timeout: float = 90) -> bool:
+    thread = _CLARIFICATION_WORKERS.get(package_id)
+    if thread is None:
+        return True
+    thread.join(timeout)
+    return not getattr(thread, "is_alive")()
+
+
+def continue_clarification(package_id: str) -> str:
+    """Finish the package that begin_clarification already accepted."""
+    try:
+        return _continue_clarification(package_id)
+    except Exception as exc:
+        try:
+            log_transition(package_id, "FAILED", f"clarification continuation failed: {type(exc).__name__}")
+            update_package(package_id, status="failed", findings=f"FAILED. {type(exc).__name__}: {exc}"[:800])
+        except Exception:
+            pass
+        return package_id
+
+
+def _continue_clarification(package_id: str) -> str:
+    from .store import package
+
+    row = package(package_id)
+    if not row:
+        raise KeyError("package not found")
+    cleaned = (row.get("clarification_answer") or "").strip()
+    if not cleaned:
+        raise ValueError("answer is empty")
     programme = Programme(row["project_id"], row.get("objective") or "", row.get("task_id"))
     programme.resume_id = package_id
     programme.parent_id = package_id
@@ -881,6 +981,12 @@ def answer_clarification(package_id: str, answer: str) -> str:
         return package_id
     _finish_roles(programme)
     return package_id
+
+
+def answer_clarification(package_id: str, answer: str) -> str:
+    """Synchronous continuation for a caller that already holds the worker thread."""
+    begin_clarification(package_id, answer)
+    return _continue_clarification(package_id)
 
 
 def _approved_research_is_unresolved(row: dict, findings: str) -> bool:
@@ -929,6 +1035,8 @@ def _approved_research_is_unresolved(row: dict, findings: str) -> bool:
     if not research_like:
         return False
     if mode != "live" or not pages:
+        return True
+    if task == "business_research" and not _business_package_can_complete(row, findings, obs):
         return True
     contract = obs.get("contract_evaluation") or {}
     if isinstance(contract, dict) and contract.get("passed") is False:
@@ -1036,11 +1144,56 @@ def _employee_user(programme: Programme, child: dict) -> str:
     programme.memory_rows = memory.retrieve(programme.objective, limit=3)
     remembered = memory.format_for_prompt(programme.memory_rows)
     block = f"\n\n{remembered}" if remembered else ""
+    plan = ""
+    if programme.task_class == "business_research" and child.get("focus") == "draft":
+        plan = (
+            "\n\nWrite the launch plan for the owner. Put each heading on its own line:\n"
+            "Service\nTarget customer\nProblem\nOffer and positioning\n"
+            "Competitor and market research\nPricing\nChannels\nAdvert\nCall to action\nNext steps\nAssumptions\nUnresolved\n"
+            "Under Advert write three lines that start Headline:, Body:, and Call to action:.\n"
+            "Offer, positioning, the advert, channels, and next steps must be full sentences you write.\n"
+            "Pricing must cite an opened page or start with ASSUMPTION: and the reason. A price that no page stated is not a fact.\n"
+            "Do not leave a section as only the word Unresolved. An empty section is a failure.\n"
+            "End with: Nothing was sent.\n"
+        )
     return (
         "Ayven tool runtime. When you need a tool, emit a line "
         'TOOL ayven_tool {"tool":"record_review","payload":"why"} and then the answer.\n'
-        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\nPublished draft:\n{child['report'][:2500]}{block}"
+        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\nPublished draft:\n{child['report'][:2500]}{plan}{block}"
     )
+
+
+def _business_repair_user(programme: Programme, previous: str) -> str:
+    pages = []
+    for item in (programme.research.get("evidence") or [])[:6]:
+        pages.append(
+            f"{item.get('source_title') or 'page'} {item.get('source_url') or ''}\n{(item.get('extracted_content') or '')[:400]}"
+        )
+    return (
+        "The previous draft left required sections empty. Rewrite the whole launch plan.\n"
+        "Headings on their own lines: Service, Target customer, Problem, Offer and positioning, "
+        "Competitor and market research, Pricing, Channels, Advert, Call to action, Next steps, Assumptions, Unresolved.\n"
+        "Advert must contain Headline:, Body:, and Call to action:.\n"
+        "Use only the opened pages below. Pricing is an ASSUMPTION: with a reason when no page states a number.\n"
+        "End with: Nothing was sent.\n\n"
+        f"Objective:\n{programme.objective}\n\nPrevious draft:\n{(previous or '')[:1500]}\n\n"
+        f"Opened pages:\n{chr(10).join(pages)}"
+    )
+
+
+def _business_package_can_complete(row: dict, findings: str, obs: dict) -> bool:
+    from .deliverable import business_can_complete
+
+    understood = str(obs.get("understood_objective") or "")
+    if not understood:
+        understood = row.get("objective") or ""
+        answer = row.get("clarification_answer") or ""
+        if answer:
+            understood = understood.rstrip() + "\nLee answered: " + answer
+    previews = obs.get("evidence_preview")
+    if not isinstance(previews, list):
+        previews = []
+    return business_can_complete(findings or "", previews, understood)
 
 
 def _supervisor_system() -> str:

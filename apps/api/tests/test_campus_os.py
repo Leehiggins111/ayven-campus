@@ -136,6 +136,9 @@ def test_clarification_answer_continues_the_same_package():
     resumed = client.post(f"/work-packages/{parent}/clarification", json={"answer": "the north office"})
     assert resumed.status_code == 200
     assert resumed.json()["package_id"] == parent
+    from app.intelligence.execution import wait_for_clarification
+
+    assert wait_for_clarification(parent, timeout=90)
     after = _parent(parent)
     assert after["clarification_answer"] == "the north office"
     assert after["workflow_state"] != "AWAITING_CLARIFICATION"

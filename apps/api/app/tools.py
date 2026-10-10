@@ -64,6 +64,45 @@ def web_search(query: str, limit: int = 6) -> list[dict]:
     return results or [{"title": "no_results", "url": "", "snippet": query}]
 
 
+_CHROME = re.compile(
+    r"^(skip to (?:main )?content|top of page|shopping cart(?: \(\d+\))?|log in|sign in|privacy policy|cookie policy|wishlist \(\d+\))$",
+    re.I,
+)
+
+
+def extract_main_text(html: str, max_chars: int = 6000) -> str:
+    """Keep the article. Navigation and chrome are not the page."""
+    raw = html or ""
+    text = ""
+    try:
+        import trafilatura
+
+        extracted = trafilatura.extract(
+            raw,
+            include_comments=False,
+            include_tables=False,
+            favor_precision=True,
+        )
+        if extracted and len(extracted.strip()) >= 40:
+            text = extracted
+    except Exception:
+        text = ""
+    if not text:
+        cleaned = re.sub(r"(?is)<(script|style|nav|footer|header|noscript|form)[^>]*>.*?</\1>", " ", raw)
+        cleaned = re.sub(r"(?is)<br\s*/?>", "\n", cleaned)
+        cleaned = re.sub(r"(?is)</p>", "\n", cleaned)
+        text = re.sub("<.*?>", " ", unescape(cleaned))
+    kept = []
+    for line in re.split(r"\n+", text):
+        piece = re.sub(r"\s+", " ", line).strip()
+        if not piece or _CHROME.match(piece):
+            continue
+        if piece.lower() in {"top of page", "skip to main content", "shopping cart (0)"}:
+            continue
+        kept.append(piece)
+    return "\n".join(kept)[:max_chars].strip()
+
+
 def fetch_page(url: str, max_chars: int = 6000) -> dict:
     """Fetch a page and extract readable text."""
     parsed = urlparse(url)
@@ -77,12 +116,7 @@ def fetch_page(url: str, max_chars: int = 6000) -> dict:
         return {"url": url, "title": "", "text": "", "error": str(exc)[:200]}
     title_m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
     title = re.sub("<.*?>", "", unescape(title_m.group(1))).strip() if title_m else parsed.netloc
-    cleaned = re.sub(r"(?is)<(script|style|nav|footer|noscript)[^>]*>.*?</\1>", " ", html)
-    cleaned = re.sub(r"(?is)<br\s*/?>", "\n", cleaned)
-    cleaned = re.sub(r"(?is)</p>", "\n", cleaned)
-    text = re.sub("<.*?>", " ", unescape(cleaned))
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = extract_main_text(html, max_chars=max_chars)
     links = []
     for match in re.finditer(r'href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, re.I | re.S):
         href = unescape(match.group(1)).strip()

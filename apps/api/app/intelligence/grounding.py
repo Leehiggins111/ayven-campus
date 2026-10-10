@@ -12,7 +12,7 @@ from .think import strip_think
 
 _PREFIX = re.compile(
     r"^(FACT|INFERENCE|RECOMMENDATION|UNKNOWN|EVIDENCE-BACKED FACT|DETERMINISTIC RESULT|"
-    r"EXPLICIT INFERENCE|UNSUPPORTED FACT)\s*:\s*",
+    r"EXPLICIT INFERENCE|UNSUPPORTED FACT|ASSUMPTION)\s*:\s*",
     re.I,
 )
 _URL = re.compile(r"https?://[^\s)>\]]+")
@@ -63,6 +63,8 @@ def classify_sentence(sentence: str, evidence: str, deterministic: str) -> str:
     body = _PREFIX.sub("", sentence.strip()).strip() or sentence.strip()
     if _specifics_unsupported(body, corpus):
         return "UNSUPPORTED FACT"
+    if label == "ASSUMPTION" or (re.search(r"\bassumption\b", body, re.I) and label not in ("FACT", "EVIDENCE-BACKED FACT")):
+        return "EXPLICIT INFERENCE"
     if label in ("INFERENCE", "EXPLICIT INFERENCE"):
         return "EXPLICIT INFERENCE"
     if label == "RECOMMENDATION":
