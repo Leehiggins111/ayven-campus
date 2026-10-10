@@ -62,6 +62,13 @@ jobs:
           path: ~/.ollama/models
           key: ollama-qwen3-4b-${{ runner.os }}-v1
 
+      - name: Restore Ollama app cache
+        id: ollama-app
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ollama-app
+          key: ollama-windows-app-v0.40.2
+
       - name: Fetch qwen3:4b blobs
         id: fetch-model
         timeout-minutes: 40
@@ -132,28 +139,67 @@ jobs:
           }
           Write-Host "qwen3:4b blobs ready"
 
-      - name: Install Ollama and serve the cached model
-        timeout-minutes: 10
+      - name: Install Ollama from the zip and serve the cached model
+        id: serve-model
+        timeout-minutes: 20
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          function Receive-File([string]$url, [string]$dest) {
+            $partial = "$dest.partial"
+            foreach ($attempt in 1..6) {
+              Write-Host "attempt $attempt $url"
+              $curlArgs = @("-fL", "--retry", "3", "--retry-all-errors", "--retry-delay", "2", "-o", $partial, $url)
+              if (Test-Path $partial) {
+                $curlArgs = @("-fL", "--retry", "3", "--retry-all-errors", "--retry-delay", "2", "-C", "-", "-o", $partial, $url)
+              }
+              $proc = Start-Process -FilePath "curl.exe" -ArgumentList $curlArgs -PassThru -NoNewWindow
+              $last = -1
+              $stalls = 0
+              while (-not $proc.HasExited) {
+                Start-Sleep -Seconds 10
+                $len = 0
+                if (Test-Path $partial) { $len = (Get-Item $partial).Length }
+                Write-Host ("progress {0:N0}" -f $len)
+                if ($len -eq $last) { $stalls++ } else { $stalls = 0; $last = $len }
+                if ($stalls -ge 8) {
+                  Write-Host "stalled, restarting"
+                  try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+                  break
+                }
+              }
+              if ($proc.HasExited -and $proc.ExitCode -eq 0 -and (Test-Path $partial) -and (Get-Item $partial).Length -gt 1000000) {
+                Move-Item -Force $partial $dest
+                Write-Host "saved $dest"
+                return
+              }
+            }
+            throw "failed to download $url"
+          }
           $env:OLLAMA_NO_GPU = "1"
           $env:OLLAMA_MODELS = Join-Path $env:USERPROFILE ".ollama\models"
           $env:OLLAMA_HOST = "127.0.0.1:11434"
           Add-Content -Path $env:GITHUB_ENV -Value "OLLAMA_MODELS=$($env:OLLAMA_MODELS)"
           Add-Content -Path $env:GITHUB_ENV -Value "OLLAMA_HOST=127.0.0.1:11434"
-          Write-Host "installing Ollama"
-          Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile "$env:RUNNER_TEMP\OllamaSetup.exe"
-          Start-Process "$env:RUNNER_TEMP\OllamaSetup.exe" -ArgumentList "/VERYSILENT","/NORESTART" -Wait
-          $ollama = @(
-            "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe",
-            "$env:ProgramFiles\Ollama\ollama.exe"
-          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $ollama) { throw "Ollama.exe was not installed" }
+          $appRoot = Join-Path $env:USERPROFILE ".ollama-app"
+          New-Item -ItemType Directory -Force -Path $appRoot | Out-Null
+          $ollama = Get-ChildItem -Path $appRoot -Recurse -Filter ollama.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $ollama) {
+            $zip = Join-Path $env:RUNNER_TEMP "ollama-windows-amd64.zip"
+            Receive-File "https://github.com/ollama/ollama/releases/download/v0.40.2/ollama-windows-amd64.zip" $zip
+            Write-Host "extracting ollama zip"
+            tar -xf $zip -C $appRoot
+            $ollama = Get-ChildItem -Path $appRoot -Recurse -Filter ollama.exe | Select-Object -First 1
+          }
+          if (-not $ollama) { throw "ollama.exe was not extracted" }
+          Write-Host "ollama.exe $($ollama.FullName)"
+          Get-ChildItem -Path $env:OLLAMA_MODELS -Recurse -File | ForEach-Object {
+            Write-Host ("model-file {0} {1}" -f $_.FullName.Replace($env:OLLAMA_MODELS, ""), $_.Length)
+          }
           Get-Process | Where-Object { $_.ProcessName -match 'ollama' } | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
-          Write-Host "starting serve with OLLAMA_MODELS=$($env:OLLAMA_MODELS)"
-          Start-Process $ollama -ArgumentList "serve" -WindowStyle Hidden
+          Write-Host "starting serve"
+          Start-Process -FilePath $ollama.FullName -ArgumentList "serve" -WorkingDirectory $ollama.DirectoryName -WindowStyle Hidden
           $ready = $false
           foreach ($try in 1..30) {
             try {
@@ -174,6 +220,14 @@ jobs:
         with:
           path: ~/.ollama/models
           key: ollama-qwen3-4b-${{ runner.os }}-v1
+
+      - name: Save Ollama app cache
+        if: always() && steps.ollama-app.outputs.cache-hit != 'true' && steps.serve-model.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ollama-app
+          key: ollama-windows-app-v0.40.2
 
       - name: Run Campus acceptance
         shell: pwsh
