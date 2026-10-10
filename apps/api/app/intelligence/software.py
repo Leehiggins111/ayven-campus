@@ -18,8 +18,54 @@ def _strip_fence(body: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _qualify_tests(main_source: str, test_source: str) -> str:
+    """A bare assert add(...) has to call main.add once the function lives in main.py."""
+    names = re.findall(r"^def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", main_source, re.M)
+    test = test_source.strip()
+    if "import main" not in test:
+        test = "import main\n" + test
+    for name in names:
+        test = re.sub(rf"(?<![\w.]){name}\s*\(", f"main.{name}(", test)
+    return test if test.endswith("\n") else test + "\n"
+
+
+def _from_loose_code(text: str) -> dict[str, str]:
+    """A fenced program, or a def plus asserts, is still the two files."""
+    blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", text or "", re.S | re.I)
+    code = "\n\n".join(block.strip() for block in blocks if block.strip())
+    if not code:
+        lines = []
+        started = False
+        for line in (text or "").splitlines():
+            stripped = line.strip()
+            if re.match(r"^(def |class |import |from |assert )", stripped) or (started and (line.startswith((" ", "\t")) or not stripped)):
+                started = True
+                lines.append(line)
+                continue
+            if started and stripped:
+                break
+        code = "\n".join(lines).strip()
+    if "def " not in code or "assert " not in code:
+        return {}
+    body: list[str] = []
+    tests: list[str] = []
+    for line in code.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("assert ") or (tests and (line.startswith((" ", "\t")) or not stripped)):
+            tests.append(line)
+        elif stripped.startswith(("import main", "from main")):
+            tests.append(line)
+        else:
+            body.append(line)
+    main = "\n".join(body).strip()
+    test = "\n".join(tests).strip()
+    if not main or not test or "def " not in main:
+        return {}
+    return {"main.py": main + "\n", "test_main.py": _qualify_tests(main, test)}
+
+
 def parse_program(text: str) -> tuple[dict[str, str], str]:
-    """FILE blocks and one LAUNCH line. Anything else is not a file."""
+    """FILE blocks, or a fenced program with asserts. Anything else is not a file."""
     files: dict[str, list[str]] = {}
     order: list[str] = []
     current = ""
@@ -45,6 +91,11 @@ def parse_program(text: str) -> tuple[dict[str, str], str]:
         body = _strip_fence("\n".join(files[name]))
         if body:
             cleaned[name] = body + "\n"
+    if "main.py" in cleaned and "test_main.py" in cleaned:
+        return cleaned, launch or "python test_main.py"
+    loose = _from_loose_code(text or "")
+    if loose:
+        return loose, launch or "python test_main.py"
     return cleaned, launch or "python test_main.py"
 
 
@@ -89,9 +140,9 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
 
     text, tokens, meta = complete("Write the files only.", _prompt(objective), 1400)
     files, launch = parse_program(text or "")
-    result = run_files(files) if files else {
+    result = run_files(files) if files.get("main.py") and files.get("test_main.py") else {
         "passed": False,
-        "stderr": "The model did not write FILE blocks.",
+        "stderr": "The model did not write main.py and test_main.py.\n" + (text or "").strip()[:600],
         "stdout": "",
         "sandbox": "not-run",
         "exit_code": None,

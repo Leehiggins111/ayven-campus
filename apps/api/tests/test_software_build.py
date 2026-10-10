@@ -54,6 +54,27 @@ def test_a_program_request_is_not_web_research():
     assert plan["children"][0]["focus"] == "build"
 
 
+def test_a_fenced_program_is_split_and_run(monkeypatch):
+    from app.intelligence.software import parse_program
+
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+
+    text = (
+        "Here is the program:\n```python\n"
+        "def add(left, right):\n"
+        "    return left + right\n\n"
+        "assert add(2, 3) == 5\n"
+        "```\n"
+    )
+    files, _launch = parse_program(text)
+    assert "def add" in files["main.py"]
+    assert "assert " not in files["main.py"]
+    assert "import main" in files["test_main.py"]
+    assert "main.add(2, 3)" in files["test_main.py"]
+    ran = run_files(files)
+    assert ran["passed"] is True
+
+
 def test_files_run_without_a_namespace_and_general_code_does_not(monkeypatch):
     import app.intelligence.code_sandbox as sandbox
 

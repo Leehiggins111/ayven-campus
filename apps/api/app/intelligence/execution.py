@@ -1310,9 +1310,11 @@ def _price_notes(programme: Programme) -> str:
 
 
 def _section_jobs(objective: str) -> tuple:
-    """Section prompts quote this request. They do not name a fixed trade."""
-    brief = " ".join((objective or "").split())[:500]
-    request = f" Request: {brief}"
+    """Section prompts quote the service sentence. They do not name a fixed trade."""
+    from .deliverable import service_brief
+
+    brief = service_brief(objective)
+    request = f" Request: {brief}" if brief else ""
     return (
         ("service", "Service", "Write one sentence stating the service in this request." + request, "The service is "),
         ("target customer", "Target customer", "Write one sentence about who pays for the service in this request." + request, "The customer is "),
@@ -1330,16 +1332,16 @@ def _section_jobs(objective: str) -> tuple:
 
 
 def _section_budget(key: str, attempt: int) -> tuple[int, list[str]]:
-    """A short answer cannot wander into a prompt essay. Lists need more than one line."""
+    """A token cap keeps the answer short. A newline stop makes Ollama return nothing."""
     if key in {"advert", "pricing", "competitor and market research"}:
         return (160 if attempt > 1 else 220), []
-    return 96, ["\n"]
+    return 160, []
 
 
 def _section_missing(key: str, body: str, blob: str, objective: str = "") -> bool:
     from .deliverable import _advert_ok, _body_filled, _pricing_ok, section_has_anchor
 
-    body = body or ""
+    body = _section_body(body or "", key, objective)
     if key in ("assumptions", "unresolved"):
         missing = not _body_filled(body)
     elif key == "pricing":

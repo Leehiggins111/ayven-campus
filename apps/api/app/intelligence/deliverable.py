@@ -121,6 +121,8 @@ def instruction_echo(query: str) -> bool:
     if "do not search" in lowered or "one query per line" in lowered or "starting with" in lowered:
         return True
     words = lowered.split()
+    if len(words) > 12:
+        return True
     if len(words) > 14 and lowered.startswith(("the ", "this ", "a ")):
         return True
     return False
@@ -247,6 +249,24 @@ def _blob_has_term(term: str, blob: str) -> bool:
     return any(len(word) >= 5 and word.startswith(prefix) for word in re.findall(r"[a-z0-9]+", blob or ""))
 
 
+def service_brief(objective: str) -> str:
+    """The sentence that names the service. An instruction or a negated comparison is not the brief."""
+    anchors = [term for term in distinctive_terms(objective) if len(term) >= 5][:6]
+    best = ""
+    best_score = 0
+    for sentence in re.split(r"[.!?]", objective or ""):
+        lowered = sentence.lower()
+        if re.search(r"\b(not|other)\b", lowered):
+            continue
+        score = sum(1 for term in anchors if term in lowered)
+        if score > best_score and len(sentence.strip()) >= 20:
+            best = re.sub(r"\s+", " ", sentence).strip()
+            best_score = score
+    if best:
+        return best[:280]
+    return " ".join(anchors)[:280]
+
+
 def anchor_terms(objective: str) -> list[str]:
     """The earliest service words. A later comparison is not the search."""
     return [term for term in distinctive_terms(objective) if len(term) >= 5][:4]
@@ -350,6 +370,7 @@ _SCRATCH = (
     "home search", "research phase", "common situation", "or check if", "specific way",
     "you're using", "you are using", "is a phrase", "this seems",
     "if nothing was sent", "no doors", "not a standard", "standard phrase",
+    "nothink", "no_think", "/no_think",
 )
 _REFUSAL = (
     "doesn't state", "does not state", "doesn't specify", "does not specify",

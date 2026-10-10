@@ -93,6 +93,24 @@ def _coffee_section(user: str) -> str:
     return "The service is coffee machine rental for offices that want machines supplied and maintained."
 
 
+def test_the_service_sentence_is_the_section_brief_and_a_long_echo_is_not_a_query():
+    from app.intelligence.deliverable import instruction_echo, service_brief, targeted_queries, usable_search_queries
+
+    clarified = (
+        "Create a business launch plan. "
+        "Lee answered: The service replaces kitchen doors, worktops and handles, and it avoids a full kitchen replacement. "
+        "Painting and wrapping are other services, not this service. "
+        "Do not invent a service area, a home base, prices, testimonials, completed jobs, or guarantees."
+    )
+    brief = service_brief(clarified)
+    assert "replaces kitchen doors" in brief.lower()
+    assert "do not invent" not in brief.lower()
+    assert "painting and wrapping" not in brief.lower()
+    assert instruction_echo(COFFEE)
+    assert usable_search_queries([COFFEE], COFFEE) == []
+    assert any("coffee" in query and "rental" in query for query in targeted_queries(COFFEE))
+
+
 def test_a_foreign_trade_is_not_relevant_to_another_objective():
     coffee = "Prepare a UK business briefing for a coffee machine rental company."
     assert reject_search_query("kitchen cabinet painting UK prices", coffee) == "off_brief"
