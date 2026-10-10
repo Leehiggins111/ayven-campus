@@ -336,3 +336,48 @@ def test_ollama_native_generate_does_not_publish_reasoning(monkeypatch):
     assert calls[1]["body"]["think"] is False
     assert calls[1]["body"]["options"]["num_predict"] == 4096
     assert calls[1]["body"]["options"]["num_predict"] > first["options"]["num_predict"]
+
+
+def test_a_bare_prefill_is_not_the_answer_and_a_continuation_is_not_doubled(monkeypatch):
+    calls = []
+
+    class Response:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, json=None, timeout=None, headers=None):
+        calls.append({"url": url, "body": json})
+        if len(calls) == 1:
+            return Response({"response": "", "thinking": "SECRET_REASONING", "eval_count": 12})
+        return Response({
+            "response": "a conversation about painting their kitchen cabinets.",
+            "thinking": "SECRET_REASONING",
+            "eval_count": 24,
+        })
+
+    monkeypatch.setattr("httpx.post", fake_post)
+    from app.models import _openai_compat
+
+    text, _tokens, _info = _openai_compat(
+        "http://127.0.0.1:11434/v1",
+        "local",
+        "qwen3:4b",
+        "Write the finished lines only.",
+        "Nearby homeowners are reached through local search.",
+        96,
+        prefill="Homeowners nearby are reached through ",
+        stop=["\n"],
+    )
+    assert text == "Homeowners nearby are reached through a conversation about painting their kitchen cabinets."
+    assert "SECRET_REASONING" not in text
+    assert calls[0]["body"]["options"]["stop"] == ["<|im_end|>", "<|im_start|>", "\n"]
+    assert calls[0]["body"]["options"]["num_predict"] == 96
+    assert calls[0]["body"]["think"] is False
+    assert calls[1]["body"]["options"]["num_predict"] == 1024

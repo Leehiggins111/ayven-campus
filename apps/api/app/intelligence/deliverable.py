@@ -309,7 +309,17 @@ _SCRATCH = (
     "okay, the user", "the user wants", "the user needs", "the user specified", "the user provided",
     "looking at the context", "looking at the details", "i should", "i must", "hmm,", "hmm ",
     "they need the", "they want me", "important constraint", "the key is",
-    "the user has", "the user is", "/no_think", "two or three sentences",
+    "the user has", "the user is", "the user specifically", "/no_think", "two or three sentences",
+    "i see what", "i've identified", "i have identified", "you've done", "you have done",
+    "we are given", "we are to", "the instruction", "the problem says", "let's write", "lets write",
+    "would you like", "for example:", "for example,", "200+", "reached out", "potential homeowner",
+    "the phrase", "the answer is", "i'm not sure", "i am not sure", "without additional context",
+    "it sounds like", "previous response", "specific format", "line starting", "catchy phrase",
+    "i'm here to help", "i am here to help", "0 doors", "logic puzzle", "cabinet meeting",
+    "looking at the sources", "the most relevant", "the user says", "wait, the", "wait,",
+    "home search", "research phase", "common situation", "or check if", "specific way",
+    "you're using", "you are using", "is a phrase", "this seems",
+    "if nothing was sent", "no doors", "not a standard", "standard phrase",
 )
 _REFUSAL = (
     "doesn't state", "does not state", "doesn't specify", "does not specify",
@@ -344,7 +354,7 @@ def _narration_line(line: str) -> bool:
     compact = re.sub(r"\s+", "", lowered)
     if re.search(r"(.{1,4})\1{6,}", compact):
         return True
-    if any(phrase in lowered for phrase in ("mortgage", "loan-to-value", "24/7", "always ready")):
+    if any(phrase in lowered for phrase in ("mortgage", "loan-to-value", "24/7", "always ready", "monitoring system")):
         return True
     refusal = any(phrase in lowered for phrase in _REFUSAL)
     if refusal and not any(phrase in lowered for phrase in ("assumption", "recommend", "the offer is", "should ")):
@@ -372,10 +382,161 @@ def finished_lines(text: str) -> str:
     return "\n".join(kept).strip()
 
 
+def _owner_prose(body: str) -> str:
+    """Section sentences, without the opened-page list that is appended for the record."""
+    text = body or ""
+    match = re.search(r"\nopened sources\b", text, re.I)
+    if match:
+        text = text[: match.start()]
+    return text.strip()
+
+
+def detach_glued(line: str) -> str:
+    """A stem that was glued onto a new sentence is not the sentence."""
+    text = re.sub(r"\b(.{12,}?)\s+\1", r"\1", (line or "").strip(), count=1, flags=re.I)
+    if re.match(r"^(headline|body|call to action|assumption)\s*:", text, re.I):
+        return text
+    match = re.match(
+        r"^(?P<left>.{0,80}?\b(?:wants|is|through|replacement|assumes))\s+(?P<right>[A-Z].{30,}[.!?])$",
+        text,
+    )
+    if match and len(match.group("left").split()) <= 10:
+        return match.group("right").strip()
+    return text
+
+
+def _usable_sentences(text: str) -> list[str]:
+    kept: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        piece = detach_glued(line)
+        if not piece:
+            continue
+        parts = re.split(r"(?<=[.!?])\s+", piece) if re.search(r"[.!?]", piece) else [piece]
+        for sentence in parts:
+            sentence = re.sub(r"[*_]{1,3}", "", sentence).strip(" \t-\"'")
+            if not sentence or _narration_line(sentence):
+                continue
+            if re.fullmatch(r"(?:still open|assumption)\s*:\s*\d+\.?", sentence, re.I):
+                continue
+            key = re.sub(r"\s+", " ", sentence.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append(sentence)
+    return kept
+
+
+_ADVERT_BAD = (
+    "format", "starting with", "catchy", "[text]", "[some",
+    "placeholder", "a line about", "one sentence", "write exactly", "then stop",
+)
+_TOPIC = {
+    "service": ("kitchen", "cabinet", "paint", "respray", "cupboard"),
+    "target customer": ("kitchen", "cabinet", "paint", "homeowner", "household"),
+    "problem": ("kitchen", "cabinet", "paint", "replac"),
+    "offer and positioning": ("kitchen", "cabinet", "paint", "respray", "offer"),
+    "channels": ("search", "conversation", "leaflet", "local", "visit"),
+    "call to action": ("visit", "scope", "quote", "book"),
+    "next steps": ("town", "visit", "door", "quote"),
+    "assumptions": ("visit", "cabinet", "service", "request", "kitchen", "uk"),
+    "unresolved": ("town", "cabinet", "open", "visit", "price", "quote"),
+}
+
+
+def _advert_content_ok(label: str, content: str) -> bool:
+    content = (content or "").strip().strip('"').strip()
+    if len(content) < 12 or len(content) > 180:
+        return False
+    if _narration_line(content):
+        return False
+    lowered = content.lower()
+    if any(phrase in lowered for phrase in _ADVERT_BAD):
+        return False
+    if label in {"headline", "body"}:
+        return any(word in lowered for word in ("kitchen", "cabinet", "paint", "colour", "color", "refresh", "respray"))
+    return any(word in lowered for word in ("visit", "scope", "quote", "book"))
+
+
+def _on_topic(kind: str, sentence: str) -> bool:
+    words = _TOPIC.get(kind)
+    if not words:
+        return True
+    lowered = sentence.lower()
+    if kind == "channels":
+        if any(phrase in lowered for phrase in ("reached out", "potential homeowner", "200+", "monitoring", "home search")):
+            return False
+        if not any(word in lowered for word in ("cabinet", "kitchen", "paint", "homeowner", "leaflet")):
+            return False
+    return any(word in lowered for word in words)
+
+
+def _advert_from_lines(lines: list[str]) -> str:
+    """The first real Headline, Body, and Call to action. Notes around them are not the advert."""
+    headline = body = cta = ""
+    for line in lines:
+        stripped = line.strip().strip('"')
+        match = re.match(r"^(headline|body|call to action)\s*:\s*(.+)$", stripped, re.I)
+        if match:
+            label = match.group(1).lower()
+            content = match.group(2).strip().strip('"')
+            if not _advert_content_ok(label, content):
+                continue
+            if label == "headline" and not body:
+                headline, body, cta = content, "", ""
+            elif label == "body" and headline and not body:
+                body = content
+            elif label == "call to action" and headline and body and not cta:
+                cta = content
+            if headline and body and cta:
+                break
+            continue
+        if headline and body and not cta and _advert_content_ok("call to action", stripped):
+            cta = stripped
+            break
+    if not (headline and body and cta):
+        return ""
+    return f"Headline: {headline}\nBody: {body}\nCall to action: {cta}"
+
+
+def owner_section(kind: str, text: str) -> str:
+    """The lines an owner can use. A prompt essay is not returned."""
+    prose = _owner_prose(text or "")
+    if kind == "advert":
+        return _advert_from_lines(_usable_sentences(prose))
+    sentences = [sentence for sentence in _usable_sentences(prose) if _on_topic(kind, sentence)]
+    if kind == "pricing":
+        picked = []
+        for sentence in sentences:
+            if "$" in sentence or re.fullmatch(r"assumption:\s*\d+\.?", sentence, re.I):
+                continue
+            if "£" in sentence or "assumption" in sentence.lower():
+                picked.append(sentence)
+        if not picked:
+            return ""
+        body = "\n".join(picked[:6])
+        if "assumption" not in body.lower():
+            body = "Assumption: " + body
+        return body
+    if kind == "competitor and market research":
+        picked = [
+            sentence for sentence in sentences
+            if "£" in sentence or "http" in sentence.lower() or "paint" in sentence.lower() or "kitchen" in sentence.lower()
+        ]
+        return "\n".join(picked[:6])
+    limit = 2 if kind == "assumptions" else 1
+    return "\n".join(sentences[:limit])
+
+
 def _narrated(text: str) -> bool:
     """A drafting worksheet is not a section the owner can use."""
-    lowered = text.lower()
+    lowered = (text or "").lower()
     if any(phrase in lowered for phrase in _SCRATCH):
+        return True
+    if any(phrase in lowered for phrase in ("mortgage", "loan-to-value", "24/7", "always ready", "monitoring system")):
+        return True
+    compact = re.sub(r"\s+", "", lowered)
+    if re.search(r"(.{1,4})\1{6,}", compact):
         return True
     if lowered.count("unresolved") >= 2:
         return True
@@ -385,13 +546,20 @@ def _narrated(text: str) -> bool:
 
 
 def _body_filled(body: str) -> bool:
-    text = _strip_labels(body or "").strip()
-    if len(text) < 40:
+    text = _strip_labels(_owner_prose(body or "")).strip()
+    if len(text) < 40 or len(text) > 900:
+        return False
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) > 8:
+        return False
+    if not re.search(r"[.!?]", text):
         return False
     lowered = text.lower()
     if lowered.startswith("unresolved"):
         return False
     if _narrated(text):
+        return False
+    if any(_narration_line(line) for line in lines):
         return False
     if any(phrase in lowered for phrase in _BOILERPLATE_BODY) and len(text) < 220:
         return False
@@ -414,18 +582,20 @@ def _pricing_ok(body: str, evidence_blob: str) -> bool:
 
 
 def _advert_ok(sections: dict[str, str]) -> bool:
-    advert = sections.get("advert") or ""
-    headline = sections.get("headline") or ""
-    body = sections.get("body") or ""
-    cta = sections.get("call to action") or ""
-    combined = "\n".join(part for part in (advert, headline, body, cta) if part)
-    if not _body_filled(combined):
+    """The stored advert is three finished lines, not an essay that mentions the word headline."""
+    advert = _owner_prose(sections.get("advert") or "")
+    extra = ""
+    if "call to action" not in advert.lower():
+        extra = _owner_prose(sections.get("call to action") or "")
+    prose = "\n".join(
+        part for part in (advert, sections.get("headline") or "", sections.get("body") or "", extra) if part
+    )
+    lines = [line.strip() for line in prose.splitlines() if line.strip()]
+    if not lines or len(lines) > 5 or len(prose) > 900:
         return False
-    lowered = combined.lower()
-    has_headline = "headline" in lowered or _body_filled(headline) or bool(re.search(r"^headline\s*:", combined, re.I | re.M))
-    has_body = "body" in lowered or _body_filled(body) or len(advert) >= 80
-    has_cta = "call to action" in lowered or _body_filled(cta) or "cta" in lowered
-    return has_headline and has_body and has_cta
+    if any(_narration_line(line) for line in lines):
+        return False
+    return bool(owner_section("advert", prose))
 
 
 def plan_sections_filled(text: str, evidence_blob: str = "") -> bool:
@@ -517,6 +687,16 @@ def publish_business_plan(objective: str, research: dict | None, model_text: str
     sections = parse_sections(finished_lines(model_text or ""))
     if not sections:
         return ""
+    extracted: dict[str, str] = {}
+    for key, body in sections.items():
+        if key == "advert" and "call to action" not in (body or "").lower():
+            body = f"{body}\n{sections.get('call to action') or ''}"
+        kept = owner_section(key, body)
+        if kept:
+            extracted[key] = kept
+    if not extracted:
+        return ""
+    sections = extracted
     from .grounding import ground_text
 
     cleaned: dict[str, str] = {}

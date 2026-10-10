@@ -70,12 +70,12 @@ def _set_agent(agent_id: str, **fields) -> None:
     conn.close()
 
 
-def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = ""):
+def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = "", stop=None):
     from ..models import complete_role
 
     if plain:
         try:
-            text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens, prefill=prefill)
+            text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens, prefill=prefill, stop=stop)
         except Exception as exc:
             return "", 0, {"error": f"{type(exc).__name__}: {exc}", "backend": "unavailable", "completion_tokens": 0, "execution": "fail"}
         if not isinstance(text, str):
@@ -902,7 +902,7 @@ def _keep_model_draft(programme: Programme, child: dict) -> bool:
     if programme.task_class != "business_research" or child.get("focus") != "draft":
         return False
     report = child.get("report") or ""
-    return _model_sections(report) or _has_model_sentence(report)
+    return _model_sections(report)
 
 
 def _publish_plan(self: Programme, model_text: str) -> str:
@@ -929,8 +929,6 @@ def _publish_plan(self: Programme, model_text: str) -> str:
     if published and plan_sections_filled(published, blob):
         return published
     if plan_sections_filled(assembled, blob):
-        return assembled
-    if _has_model_sentence(assembled):
         return assembled
     return ""
 
@@ -1240,19 +1238,26 @@ def _price_notes(programme: Programme) -> str:
 
 
 _SECTION_JOBS = (
-    ("service", "Service", "Alba Kitchen Refresh paints kitchen cabinets in the customer's home.", "Alba Kitchen Refresh paints "),
-    ("target customer", "Target customer", "The person wants the cabinets painted and does not want the kitchen ripped out.", "The customer is a UK homeowner who wants "),
-    ("problem", "Problem", "Painting cabinets costs less and takes less time than replacing the kitchen.", "A full kitchen replacement "),
-    ("offer and positioning", "Offer and positioning", "What is sold is cabinet painting. It differs from replacing the kitchen because the existing kitchen stays.", "The offer is "),
-    ("competitor and market research", "Competitor and market research", "Name two opened UK pages and the £ prices those pages state.", "Opened UK pages state "),
-    ("pricing", "Pricing", "Cite one £ range from the prices below. A visit has to count the doors before a quote.", "Assumption: "),
-    ("channels", "Channels", "Local search and a conversation with homeowners. Nothing was sent.", "Homeowners nearby are reached through "),
-    ("advert", "Advert", "A headline about painting the cabinets they already own. Then a line starting Body: . Then a line starting Call to action: that asks for a visit.", "Headline: "),
-    ("call to action", "Call to action", "Ask for a visit and a written scope. No booking was made.", "Ask for a visit and a written scope "),
-    ("next steps", "Next steps", "Confirm the towns to cover, then count the doors on a visit. Nothing was sent.", "Next, the owner "),
-    ("assumptions", "Assumptions", "The service and the UK location come from the request. A visit still has to see the cabinets.", "The plan assumes "),
-    ("unresolved", "Unresolved", "The towns and the cabinet condition are still open.", "Still open: "),
+    ("service", "Service", "Write one sentence. Alba Kitchen Refresh paints the kitchen cabinets the household already owns.", "Alba Kitchen Refresh paints "),
+    ("target customer", "Target customer", "Write one sentence about a UK homeowner who wants the cabinets painted and the kitchen left in place.", "The customer is a UK homeowner who wants "),
+    ("problem", "Problem", "Write one sentence. Painting the cabinets costs less and takes less time than replacing the kitchen.", "Painting the cabinets "),
+    ("offer and positioning", "Offer and positioning", "Write one sentence. Cabinet painting leaves the existing kitchen in place, and replacement removes it.", "The offer is "),
+    ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened UK pages and the £ price each page states.", "Opened UK pages state "),
+    ("pricing", "Pricing", "Write two sentences. Start with Assumption. Cite one £ range from the prices below. Say that a visit counts the doors before a quote.", "Assumption: "),
+    ("channels", "Channels", "Write one sentence. Nearby homeowners are reached through local search and a conversation about painting their cabinets.", "Homeowners nearby are reached through local search and "),
+    ("advert", "Advert", "Write exactly three lines and stop. Headline: painting cabinets the household already owns. Body: one sentence. Call to action: ask for a visit.", "Headline: "),
+    ("call to action", "Call to action", "Write one sentence that asks for a visit and a written scope.", "Ask for a visit and a written scope "),
+    ("next steps", "Next steps", "Write one sentence. The owner confirms the towns to cover, then counts the cabinet doors on a visit.", "Next, the owner confirms "),
+    ("assumptions", "Assumptions", "Write one sentence. The service and the UK location come from the request, and a visit still has to see the cabinets.", "The plan assumes "),
+    ("unresolved", "Unresolved", "Write one sentence. The towns and the cabinet condition are still open.", "Still open: "),
 )
+
+
+def _section_budget(key: str, attempt: int) -> tuple[int, list[str]]:
+    """A short answer cannot wander into a prompt essay. Lists need more than one line."""
+    if key in {"advert", "pricing", "competitor and market research"}:
+        return (160 if attempt > 1 else 220), []
+    return 96, ["\n"]
 
 
 def _section_missing(key: str, body: str, blob: str) -> bool:
@@ -1267,34 +1272,32 @@ def _section_missing(key: str, body: str, blob: str) -> bool:
     return not _body_filled(body)
 
 
-def _section_body(text: str) -> str:
-    """Keep Headline and Call to action lines. Drop only a repeated heading with no sentence."""
-    from .deliverable import _split_heading, finished_lines
+def _section_body(text: str, kind: str) -> str:
+    """Owner sentences only. A prompt essay is discarded here, before it can be stored."""
+    from .deliverable import owner_section
 
-    lines = finished_lines(text or "").splitlines()
-    if lines:
-        heading, inline = _split_heading(lines[0])
-        if heading and not inline:
-            lines = lines[1:]
-    return "\n".join(lines).strip()
+    return owner_section(kind, text or "")
 
 
-def _write_one_section(programme: Programme, title: str, instruction: str, prefill: str = "") -> str:
+def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1) -> str:
     prices = ""
     if title in ("Pricing", "Competitor and market research"):
         prices = f"\nPrices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
-    user = f"{instruction}{prices}"
+    lead = instruction if attempt == 1 else f"Output only the finished lines.\n{instruction}"
+    user = f"{lead}{prices}"
+    limit, stop = _section_budget(key, attempt)
     text, _tokens, _meta = _complete(
         "EMPLOYEE",
-        "Finished sentences.",
+        "Write the finished lines only.",
         user,
-        max_tokens=480,
+        max_tokens=limit,
         programme=programme,
         package_id=programme.parent_id,
         plain=True,
         prefill=prefill,
+        stop=stop,
     )
-    return _section_body(text)
+    return _section_body(text, key)
 
 
 def _has_model_sentence(text: str) -> bool:
@@ -1317,10 +1320,8 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> None
         if not pending:
             return
         for key, title, instruction, prefill in pending:
-            written = _write_one_section(programme, title, instruction, prefill=prefill)
-            if not written:
-                continue
-            if not _section_missing(key, written, blob) or not (sections.get(key) or "").strip():
+            written = _write_one_section(programme, key, title, instruction, prefill=prefill, attempt=_pass + 1)
+            if written and not _section_missing(key, written, blob):
                 sections[key] = written
 
 

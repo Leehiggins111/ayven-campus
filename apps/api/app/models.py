@@ -40,7 +40,7 @@ def escalation_configured() -> bool:
     return bool(key) and os.environ.get("AYVEN_ALLOW_ESCALATION", "0") == "1"
 
 
-def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = ""):
+def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None):
     from .intelligence.think import strip_think
 
     started = time.time()
@@ -58,7 +58,7 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
         meta["elapsed_s"] = round(time.time() - started, 3)
         return strip_think(text), tokens, meta
     if local_base() and role.upper() != "ESCALATION":
-        text, tokens, constrained = _openai_compat(local_base(), os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ayven-local"), model, system, user, max_tokens, schema=schema, prefill=prefill)
+        text, tokens, constrained = _openai_compat(local_base(), os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ayven-local"), model, system, user, max_tokens, schema=schema, prefill=prefill, stop=stop)
         meta["backend"] = "local_openai_compat"
         meta["constrained"] = constrained
         meta["model_validated"] = False
@@ -109,9 +109,13 @@ def ollama_raw_prompt(system: str, user: str, prefill: str = "") -> str:
     )
 
 
-def ollama_native_body(model: str, system: str, user: str, max_tokens: int, prefill: str = "") -> dict:
+def ollama_native_body(model: str, system: str, user: str, max_tokens: int, prefill: str = "", stop=None) -> dict:
     """Native /api/generate with raw ChatML. The OpenAI route cannot turn qwen3 thinking off."""
     predict = max(int(max_tokens or 0), 64)
+    stops = ["<|im_end|>", "<|im_start|>"]
+    for item in stop or []:
+        if item and item not in stops:
+            stops.append(item)
     return {
         "model": model,
         "prompt": ollama_raw_prompt(system, user, prefill),
@@ -122,7 +126,7 @@ def ollama_native_body(model: str, system: str, user: str, max_tokens: int, pref
             "num_predict": predict,
             "num_ctx": max(8192, predict + 4096),
             "temperature": 0.2,
-            "stop": ["<|im_end|>", "<|im_start|>"],
+            "stop": stops,
         },
     }
 
@@ -144,14 +148,14 @@ def ollama_answer(payload: dict) -> str:
     return strip_think(content).strip()
 
 
-def _openai_compat(base, key, model, system, user, max_tokens, schema=None, prefill: str = ""):
+def _openai_compat(base, key, model, system, user, max_tokens, schema=None, prefill: str = "", stop=None):
     import httpx
     from .intelligence.constrained import enforce_output, server_body
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "600" if ":11434" in (base or "") else "90"))
     if ":11434" in (base or ""):
-        text, tokens = _ollama_native(base, model, messages, max_tokens, timeout, prefill=prefill)
+        text, tokens = _ollama_native(base, model, messages, max_tokens, timeout, prefill=prefill, stop=stop)
         text, info = enforce_output(schema, text)
         if not (text or "").strip():
             raise RuntimeError("empty model content")
@@ -187,7 +191,7 @@ def _ollama_root(base: str) -> str:
     return root
 
 
-def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int, timeout: float, prefill: str = "") -> tuple[str, int]:
+def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int, timeout: float, prefill: str = "", stop=None) -> tuple[str, int]:
     """Ask twice at most. A reasoning field is never copied into the answer."""
     import httpx
 
@@ -206,14 +210,17 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
     budgets = (first, second)
     last_tokens = 0
     for predict in budgets:
-        body = ollama_native_body(model, system, user, predict, prefill=prefill)
+        body = ollama_native_body(model, system, user, predict, prefill=prefill, stop=stop)
         response = httpx.post(url, json=body, timeout=timeout)
         response.raise_for_status()
         data = response.json()
         last_tokens = int(data.get("eval_count") or 0)
         text = ollama_answer(data)
-        if prefill:
-            text = (prefill + text).strip()
+        if not text:
+            continue
+        stem = (prefill or "").strip()
+        if stem and not text.lower().startswith(stem.lower()):
+            text = f"{stem} {text.strip()}".strip()
         if text:
             return text, last_tokens or max(1, len(text) // 4)
     raise RuntimeError("empty model content")

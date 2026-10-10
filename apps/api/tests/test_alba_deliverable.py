@@ -489,7 +489,7 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         "Offer and positioning": "The offer is an on-site cabinet painting service, which differs from a showroom replacement because the existing kitchen stays.",
         "Competitor and market research": "Opened pages describe UK cabinet painting prices, including a range of £80 to £100, and none of them is Alba.",
         "Pricing": "ASSUMPTION: plan around £80 to £100 from the opened painting page, because a visit still has to count the doors.",
-        "Channels": "Start with local search and a short conversation near the service area. Nothing was sent.",
+        "Channels": "Homeowners nearby are reached through local search and a short conversation about painting their cabinets. Nothing was sent.",
         "Advert": "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope.",
         "Call to action": "Ask for a visit and a written scope before any booking. Nothing was sent.",
         "Next steps": "Confirm the towns to cover, then set the visit before any price is published. Nothing was sent.",
@@ -500,19 +500,19 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
     by_prefill = {
         "Alba Kitchen Refresh paints ": answers["Service"],
         "The customer is a UK homeowner who wants ": answers["Target customer"],
-        "A full kitchen replacement ": answers["Problem"],
+        "Painting the cabinets ": answers["Problem"],
         "The offer is ": answers["Offer and positioning"],
         "Opened UK pages state ": answers["Competitor and market research"],
         "Assumption: ": answers["Pricing"],
-        "Homeowners nearby are reached through ": answers["Channels"],
+        "Homeowners nearby are reached through local search and ": answers["Channels"],
         "Headline: ": answers["Advert"],
         "Ask for a visit and a written scope ": answers["Call to action"],
-        "Next, the owner ": answers["Next steps"],
+        "Next, the owner confirms ": answers["Next steps"],
         "The plan assumes ": answers["Assumptions"],
         "Still open: ": answers["Unresolved"],
     }
 
-    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill=""):
+    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None):
         if prefill in by_prefill:
             return by_prefill[prefill], 12, {"backend": "test"}
         raise AssertionError(prefill or user[:160])
@@ -557,3 +557,117 @@ def test_opened_pages_stay_ahead_of_failed_fetches():
     assert live_rows
     assert PAINTER["url"] in live_rows[0]["sentence"]
     assert rows[0]["provenance"] == "LIVE"
+
+
+def test_a_prompt_essay_keeps_the_owner_lines_and_drops_the_notes():
+    """The Windows qwen3:4b answer buried a real offer, prices, and advert inside a worksheet."""
+    from app.intelligence.deliverable import owner_section
+
+    service = "Alba Kitchen Refresh paints Alba Kitchen Refresh paints kitchen cabinets in the customer's home."
+    customer = "The customer is a UK homeowner who wants The cabinets will be painted without any part of the kitchen being removed."
+    problem = "A full kitchen replacement Painting cabinets costs less and takes less time than replacing the kitchen."
+    offer = (
+        "The offer is Cabinet painting involves only painting the cabinets while the existing kitchen remains unchanged, "
+        "unlike kitchen replacement which involves removing and reinstalling the entire kitchen."
+    )
+    channels = "\n".join([
+        "Homeowners nearby are reached through I see what you're saying - you've done local search and reached out to 200+ potential homeowners, but no one has actually been contacted yet.",
+        "Would you like some suggestions on how to move forward from here?",
+        "I'm here to help you figure out the next step!",
+    ])
+    advert = "\n".join([
+        "Headline: We are given a specific format to follow:",
+        "Headline: a short, catchy phrase about painting cabinets they already own.",
+        "The instruction says we should discuss the format.",
+        "Headline: Paint Your Existing Cabinets for a Fresh Look",
+        "Body: Transform your kitchen with a simple paint refresh that enhances both style and functionality.",
+        "Call to action",
+        "Schedule a visit today to get your cabinets painted!",
+        "Let's write another version.",
+        'Headline: "Revitalize Your Kitchen Cabinets with a Simple Paint Refresh"',
+    ])
+    pricing = "\n".join([
+        "Assumption: 1.",
+        "Airtasker UK: Professional kitchen cabinet painting costs £80 to £100 in the UK.",
+        "MyJobQuote.co.uk: The average cost of painting a kitchen is around £700.",
+        "The user specifically wants a price range that accounts for the number of doors.",
+        "PriceYourJob.co.uk: Painting all of the cupboards is likely to cost between £200 and £550.",
+    ])
+    plan = "\n".join([
+        "Service", service,
+        "Target customer", customer,
+        "Problem", problem,
+        "Offer and positioning", offer,
+        "Competitor and market research", "Opened UK pages state I've identified two pages.",
+        "Pricing", pricing,
+        "Channels", channels,
+        "Advert", advert,
+        "Call to action", "Ask for a visit and a written scope.",
+        "Next steps", "Next, the owner confirms the towns, then counts the doors.\nThe answer is 0 doors.",
+        "Assumptions", "The plan assumes The service and the UK location come from the request.",
+        "Unresolved", "Still open: The towns and the cabinet condition are still open.",
+    ])
+    assert plan_sections_filled(plan) is False
+    assert owner_section("channels", channels) == ""
+    assert owner_section("service", service).count("Alba Kitchen Refresh paints") == 1
+    assert "without any part of the kitchen" in owner_section("target customer", customer)
+    assert "costs less" in owner_section("problem", problem)
+    assert "existing kitchen" in owner_section("offer and positioning", offer).lower()
+    prices = owner_section("pricing", pricing)
+    assert "£80" in prices and "£700" in prices and "£200" in prices
+    assert "user specifically" not in prices.lower()
+    ad = owner_section("advert", advert)
+    assert "Paint Your Existing Cabinets" in ad
+    assert "visit" in ad.lower()
+    assert "specific format" not in ad.lower()
+    assert "0 doors" not in owner_section("next steps", "Next, the owner confirms the towns, then counts the doors.\nThe answer is 0 doors.")
+
+
+def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.intelligence.execution import _publish_plan
+
+    monkeypatch.setenv("AYVEN_LLM_STUB", "0")
+    monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
+    programme = SimpleNamespace(
+        objective=OBJECTIVE,
+        parent_id="pkg-channels",
+        skills=[],
+        research={"evidence": [_preview(
+            PAINTER["url"],
+            PAINTER["title"],
+            "Professional kitchen cabinet painting costs £80 to £100 in the UK. We paint and respray kitchen cabinets.",
+        )]},
+    )
+    good = {
+        "Alba Kitchen Refresh paints ": "Alba Kitchen Refresh paints and resprays the kitchen cabinets a household already owns.",
+        "The customer is a UK homeowner who wants ": "Local UK homeowners who want the cabinets painted rather than ripped out.",
+        "Painting the cabinets ": "Painting the cabinets costs less and takes less time than replacing the kitchen.",
+        "The offer is ": "The offer is cabinet painting, and the existing kitchen stays in place.",
+        "Opened UK pages state ": "Opened pages state cabinet painting at £80 to £100 on the Airtasker page.",
+        "Assumption: ": "Assumption: plan around £80 to £100 from the opened page, because a visit still has to count the doors.",
+        "Headline: ": "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope.",
+        "Ask for a visit and a written scope ": "Ask for a visit and a written scope before any booking.",
+        "Next, the owner confirms ": "Next, the owner confirms the towns to cover, then counts the doors on a visit.",
+        "The plan assumes ": "The plan assumes the UK painting service comes from the request and a visit still has to see the cabinets.",
+        "Still open: ": "Still open: the towns and the cabinet condition are still open.",
+    }
+
+    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None):
+        if prefill.startswith("Homeowners nearby are reached through"):
+            if user.startswith("Output only"):
+                return "a conversation about painting their kitchen cabinets.", 8, {"backend": "test"}
+            return "I see what you're saying. You've reached out to 200+ potential homeowners.", 8, {"backend": "test"}
+        if prefill in good:
+            return good[prefill], 12, {"backend": "test"}
+        raise AssertionError(prefill or user[:180])
+
+    monkeypatch.setattr("app.intelligence.execution._complete", fake)
+    published = _publish_plan(programme, "No headings here.")
+    assert "200+" not in published
+    assert "i see what" not in published.lower()
+    assert "painting their kitchen cabinets" in published.lower()
+    assert "£80" in published
+    assert "Headline:" in published
+    assert plan_sections_filled(published, "costs £80 to £100") is True
