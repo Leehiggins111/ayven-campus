@@ -507,6 +507,11 @@ def _provenance(claim: dict, mode: str) -> tuple[str, str]:
     url = (claim.get("source_url") or "").strip()
     title = readable_prose(claim.get("source_title") or "", 120)
     when = (claim.get("retrieved_at") or "").strip()
+    if (claim.get("claim_type") or "") == "SOURCE_FAILURE" or (
+        (claim.get("status") or "") == "UNVERIFIED" and freshness == "UNKNOWN"
+    ):
+        reason = readable_prose(claim.get("evidence_text") or claim.get("claim_text") or "The page could not be opened.", 180)
+        return "UNRESOLVED", reason or "The page could not be opened."
     if source_type == "INPUT" or freshness == "INPUT":
         return "USER-PROVIDED", "This came from the request, not from a web page."
     if freshness == "LIVE" and url.startswith("http") and mode == "live":

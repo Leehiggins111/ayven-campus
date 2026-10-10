@@ -49,7 +49,7 @@ def transition(current: str, new: str) -> str:
 def state_for_manager(decision: str, *, approval_required: bool) -> str:
     if decision == "ESCALATE":
         return "ESCALATED"
-    if decision in ("CLARIFY", "APPROVAL_REQUIRED") or approval_required and decision in ("RETURN", "RESEARCH_MORE"):
+    if decision in ("CLARIFY", "APPROVAL_REQUIRED") or approval_required and decision in ("RETURN", "RESEARCH_MORE", "SYNTHESISE", "ACCEPT"):
         return "AWAITING_APPROVAL"
     if decision in ("SYNTHESISE", "ACCEPT"):
         return "COMPLETED"

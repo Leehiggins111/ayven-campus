@@ -123,6 +123,90 @@ def test_backup_copies_the_database_and_leaves_the_source():
     assert Path(body["path"]).read_bytes() == before
 
 
+def test_ollama_requests_are_plain_chat():
+    from app.models import local_request_body
+
+    guided = {"model": "qwen3:4b", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16, "temperature": 0.2, "guided_json": {"type": "object"}, "grammar": "root ::= "}
+    plain = local_request_body("http://127.0.0.1:11434/v1", guided)
+    assert "guided_json" not in plain
+    assert "grammar" not in plain
+    assert plain["think"] is False
+    assert local_request_body("http://127.0.0.1:9/v1", guided)["guided_json"]["type"] == "object"
+
+
+def test_local_model_is_used_when_the_stub_is_off(monkeypatch):
+    monkeypatch.setenv("AYVEN_LLM_STUB", "0")
+    monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
+    monkeypatch.setenv("AYVEN_ALLOW_ESCALATION", "0")
+    monkeypatch.setenv("AYVEN_EMPLOYEE_MODEL", "qwen3:4b")
+
+    def fake(base, key, model, system, user, max_tokens, schema=None):
+        assert base.startswith("http://127.0.0.1:11434")
+        assert model == "qwen3:4b"
+        return "The local model answered.", 4, {}
+
+    monkeypatch.setattr("app.models._openai_compat", fake)
+    from app.llm import complete
+
+    text, tokens = complete("sys", "Calculate 6 * 7")
+    assert text == "The local model answered."
+    assert tokens == 4
+    assert "stub" not in text.lower()
+
+
+def test_business_plan_lists_the_owner_sections_without_inventing_a_price():
+    from app.intelligence.render import render_focus
+
+    text = render_focus("draft", {
+        "task_class": "business_research",
+        "objective": "Create a business launch plan for Alba Kitchen Refresh.",
+        "research": {"evidence": [], "gaps": []},
+    })
+    for section in (
+        "Service",
+        "Target customer",
+        "Problem",
+        "Offer and positioning",
+        "Competitor and market research",
+        "Pricing",
+        "Channels",
+        "Advert",
+        "Call to action",
+        "Next steps",
+        "Assumptions",
+        "Unresolved",
+    ):
+        assert section in text
+    assert "Nothing was sent" in text
+    assert "£" not in text
+    assert "UNKNOWN · UNKNOWN" not in text
+
+
+def test_research_synthesis_still_waits_for_approval():
+    from app.models import set_role_generator
+
+    def gen(role, system, user, max_tokens):
+        if role == "MANAGER":
+            return "SYNTHESISE\nRationale: publish the briefing", 3, {"backend": "generator"}
+        if role == "SUPERVISOR":
+            return "ACCEPT", 2, {"backend": "generator"}
+        return "notes", 2, {"backend": "generator"}
+
+    set_role_generator(gen)
+    try:
+        parent = run_objective(
+            _project("Research the public market for office supplies and name the gaps."),
+            "Research the public market for office supplies and name the gaps.",
+            "task-synth-gate",
+        )
+    finally:
+        set_role_generator(None)
+    conn = connect()
+    state = conn.execute("SELECT workflow_state FROM work_packages WHERE id=?", (parent,)).fetchone()["workflow_state"]
+    conn.close()
+    assert state == "AWAITING_APPROVAL"
+
+
 def test_access_stays_off_when_the_key_is_unset(monkeypatch):
     monkeypatch.delenv("AYVEN_ACCESS_KEY", raising=False)
     os.environ.pop("AYVEN_ACCESS_KEY", None)

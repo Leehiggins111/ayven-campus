@@ -74,19 +74,41 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
     return strip_think(text), tokens, meta
 
 
+def local_request_body(base: str, body: dict) -> dict:
+    """Ollama serves plain chat completions. Guided-decoding keys are for vLLM and llama.cpp."""
+    if ":11434" not in (base or ""):
+        return body
+    plain = {
+        "model": body.get("model"),
+        "messages": body.get("messages") or [],
+        "max_tokens": body.get("max_tokens") or 400,
+        "temperature": body.get("temperature", 0.2),
+        "think": os.environ.get("AYVEN_OLLAMA_THINK", "0") == "1",
+    }
+    return plain
+
+
 def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
     import httpx
     from .intelligence.boundary import separate_channels
     from .intelligence.constrained import enforce_output, server_body
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    body = server_body(model, messages, max_tokens, schema)
+    body = local_request_body(base, server_body(model, messages, max_tokens, schema))
+    timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "180" if ":11434" in (base or "") else "90"))
     r = httpx.post(
         f"{base.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
         json=body,
-        timeout=90,
+        timeout=timeout,
     )
+    if r.status_code == 400 and any(key_name in body for key_name in ("guided_json", "grammar", "response_format")):
+        r = httpx.post(
+            f"{base.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json=local_request_body(base, {k: body[k] for k in ("model", "messages", "max_tokens", "temperature") if k in body}),
+            timeout=timeout,
+        )
     r.raise_for_status()
     data = r.json()
     message = data["choices"][0]["message"]
@@ -94,5 +116,7 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
     # A reasoning channel is not content. It is discarded before the caller sees the text.
     text = separate_channels(text, message.get("reasoning_content") or message.get("reasoning")).executable
     text, info = enforce_output(schema, text)
+    if not (text or "").strip():
+        raise RuntimeError("empty model content")
     tokens = int(data.get("usage", {}).get("total_tokens") or len(text) // 4)
     return text, tokens, info

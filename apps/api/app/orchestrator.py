@@ -69,6 +69,8 @@ def _run_project(project_id: str) -> None:
         project_status = "rejected"
     elif state == "COMPLETED":
         project_status = "complete"
+    elif state == "UNRESOLVED":
+        project_status = "unresolved"
     else:
         project_status = "complete" if findings else "running"
     conn.execute("UPDATE projects SET status=?, result=? WHERE id=?", (project_status, findings, project_id))

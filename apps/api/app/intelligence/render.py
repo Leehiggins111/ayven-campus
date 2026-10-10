@@ -258,11 +258,86 @@ def _draft(facts: dict) -> str:
             "Nothing was sent.",
             "Approval: required before any contact.",
         ])
+    if facts["task_class"] == "business_research":
+        return _business_plan(facts)
     return "\n".join([
         "Next action remains inside Ayven until a person approves it.",
         "Sent: no. Nothing was sent.",
         "No purchase was made.",
     ])
+
+
+def _business_plan(facts: dict) -> str:
+    """Owner-facing launch plan. Unopened facts stay unresolved."""
+    evidence = facts["research"].get("evidence") or []
+    opened = []
+    for item in evidence:
+        url = item.get("source_url") or ""
+        if url.startswith("http"):
+            opened.append(item)
+    objective = (facts.get("objective") or "").strip()
+    answered = ""
+    for line in objective.splitlines():
+        if line.lower().startswith("lee answered:"):
+            answered = line.split(":", 1)[-1].strip()
+    lines = [
+        "Business launch plan",
+        "Facts come from the request or from a page that was opened. Anything else is unresolved.",
+        "",
+        "Service",
+        "The request asks for a launch plan. The service is only what that request and the opened pages say.",
+        objective or "The request did not name a service.",
+        "",
+        "Target customer",
+        f"User-provided: {answered}" if answered else "Unresolved. The request did not name who pays.",
+        "",
+        "Problem",
+        "Unresolved. No opened page stated the customer's problem.",
+        "",
+        "Offer and positioning",
+        "Unresolved. No opened page stated an offer or how it differs from other providers.",
+        "",
+        "Competitor and market research",
+    ]
+    if not opened:
+        lines.append("Unresolved. No page was opened, so no competitor or market fact is stated.")
+    for item in opened:
+        meta = item.get("metadata") or {}
+        lines.append(item.get("source_title") or "Opened page")
+        lines.append(f"URL: {item.get('source_url')}")
+        retrieved = item.get("timestamp") or ""
+        if retrieved:
+            lines.append(f"Retrieved: {retrieved}")
+        excerpt = (item.get("extracted_content") or "").strip()
+        if excerpt:
+            lines.append(excerpt[:500])
+        lines.append(f"Label: {meta.get('freshness') or 'UNRESOLVED'}")
+        lines.append("")
+    lines += [
+        "Pricing",
+        "Unresolved. No opened page stated a price, so none is shown. A later number would be an assumption until a source states it.",
+        "",
+        "Channels",
+        "Unresolved as a researched fact. A direct conversation is the next step. Nothing was sent.",
+        "",
+        "Advert",
+        "Draft only, using the name in the request. This was not researched as a fact and it was not published.",
+        "Ask what the work includes and what it would cost before you decide.",
+        "",
+        "Call to action",
+        "Ask for a conversation. No booking was made. Nothing was sent.",
+        "",
+        "Next steps",
+        "Confirm the service and the customer with the owner, and do not publish a price that a page did not state.",
+        "",
+        "Assumptions",
+        "The business name is taken from the request. It is not evidence of demand.",
+        "",
+        "Unresolved",
+        "Problem, offer, positioning, price, and channels stay unresolved until a page or the owner supplies them.",
+        "Nothing was sent. No purchase was made.",
+    ]
+    return "\n".join(lines)
 
 
 def _suppliers(facts: dict) -> str:

@@ -1,0 +1,91 @@
+name: campus-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/ayven-v2-workable-a9eb
+
+jobs:
+  campus-ollama:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      AYVEN_ALLOW_ESCALATION: "0"
+      AYVEN_LLM_STUB: "0"
+      AYVEN_RESEARCH_MODE: live
+      AYVEN_LOCAL_LLM_BASE_URL: http://127.0.0.1:11434/v1
+      AYVEN_EMPLOYEE_MODEL: qwen3:4b
+      AYVEN_SUPERVISOR_MODEL: qwen3:4b
+      AYVEN_MANAGER_MODEL: qwen3:4b
+      AYVEN_LLM_TIMEOUT_S: "300"
+      AYVEN_STAGE_TIMEOUT_S: "900"
+      AYVEN_MAX_RESEARCH_ROUNDS: "1"
+      AYVEN_MAX_ATTEMPTS: "1"
+      AYVEN_OLLAMA_THINK: "0"
+      AYVEN_ACCESS_KEY: campus-windows-gate
+      OLLAMA_NO_GPU: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            apps/api/requirements.txt
+            apps/api/requirements-frankenstein.txt
+            apps/api/requirements-documents.txt
+            apps/api/requirements-crawl.txt
+            apps/api/requirements-memory.txt
+            apps/api/requirements-pydantic-ai.txt
+            apps/api/constraints.txt
+
+      - name: Install Campus dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r apps/api/requirements.txt -r apps/api/requirements-frankenstein.txt -r apps/api/requirements-documents.txt -r apps/api/requirements-pydantic-ai.txt -c apps/api/constraints.txt
+          python -m pip install -r apps/api/requirements-crawl.txt -c apps/api/constraints.txt
+          python -m pip install -r apps/api/requirements-memory.txt
+          python -m pip install click==8.3.3 pillow==12.3.0 uvicorn
+
+      - name: Install Ollama and pull qwen3:4b on CPU
+        shell: pwsh
+        run: |
+          $env:OLLAMA_NO_GPU = "1"
+          Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile "$env:RUNNER_TEMP\OllamaSetup.exe"
+          Start-Process "$env:RUNNER_TEMP\OllamaSetup.exe" -ArgumentList "/VERYSILENT","/NORESTART" -Wait
+          $ollama = @(
+            "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe",
+            "$env:ProgramFiles\Ollama\ollama.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $ollama) { throw "Ollama.exe was not installed" }
+          $env:Path = "$(Split-Path $ollama);$env:Path"
+          Start-Process $ollama -ArgumentList "serve" -WindowStyle Hidden
+          $ready = $false
+          foreach ($try in 1..30) {
+            try {
+              Invoke-RestMethod http://127.0.0.1:11434/api/tags | Out-Null
+              $ready = $true
+              break
+            } catch { Start-Sleep -Seconds 2 }
+          }
+          if (-not $ready) { throw "Ollama did not start" }
+          & $ollama pull qwen3:4b
+          if ($LASTEXITCODE -ne 0) { throw "qwen3:4b pull failed" }
+
+      - name: Run Campus acceptance
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }};${{ github.workspace }}\apps\api
+          AYVEN_ACCEPTANCE_DIR: ${{ github.workspace }}\acceptance-artifacts
+        run: python scripts/windows_campus_acceptance.py
+
+      - name: Upload Campus acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: campus-windows-acceptance
+          path: acceptance-artifacts/**
+          if-no-files-found: warn

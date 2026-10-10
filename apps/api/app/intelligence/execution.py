@@ -713,9 +713,10 @@ class Programme:
         for action in self.repairs:
             record_trace(self.parent_id, "repair", action)
         approval_required = decision in ("CLARIFY", "APPROVAL_REQUIRED") or (
-            bool(self.plan.get("human_approval_required")) and decision in ("ESCALATE", "RETURN", "RESEARCH_MORE", "CLARIFY")
+            bool(self.plan.get("human_approval_required"))
+            and decision in ("ESCALATE", "RETURN", "RESEARCH_MORE", "CLARIFY", "SYNTHESISE", "ACCEPT")
         )
-        final_state = state_for_manager(decision, approval_required=approval_required and decision in ("CLARIFY", "APPROVAL_REQUIRED", "RETURN", "RESEARCH_MORE"))
+        final_state = state_for_manager(decision, approval_required=approval_required)
         if decision == "ESCALATE":
             log_transition(self.parent_id, "ESCALATED", self.resolution.get("reason") or "escalated")
             if approval_required:
