@@ -197,3 +197,64 @@ def test_extraction_keeps_the_article_and_drops_navigation():
     assert "paints kitchen cabinets" in text
     assert "Shopping cart" not in text
     assert "Skip to main content" not in text
+
+
+def test_planner_instructions_are_not_searched(monkeypatch):
+    from app.models import set_role_generator
+
+    echo = "\n".join([
+        "The queries must:",
+        "Name the service, the place, or a price.",
+        "Shape: e.g., 'kitchen cabinet painting UK prices' or 'kitchen respray company prices'",
+        "Do not search the requester's name.",
+        "Do not search pronouns.",
+        "One query per line, each starting with '- '",
+    ])
+    monkeypatch.setenv("AYVEN_LLM_STUB", "0")
+    monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
+
+    def gen(role, system, user, max_tokens):
+        return echo, 12, {"backend": "generator"}
+
+    set_role_generator(gen)
+    try:
+        planned, source = plan_queries("business_research", OBJECTIVE)
+    finally:
+        set_role_generator(None)
+    blob = " ".join(planned).lower()
+    assert source == "model"
+    assert "pronoun" not in blob
+    assert "do not" not in blob
+    assert "the queries must" not in blob
+    assert "kitchen cabinet painting uk prices" in blob
+    assert "kitchen respray company prices" in blob
+
+
+def test_bold_and_inline_headings_still_count_as_a_written_plan():
+    text = "\n".join([
+        "**Service**",
+        "Alba Kitchen Refresh paints existing kitchen cabinets in the customer's home.",
+        "**Target customer:** UK homeowners who want the cabinets painted rather than replaced.",
+        "Problem: A full replacement is more disruption than the household wants when the units are sound.",
+        "Offer and positioning: The offer is an on-site cabinet respray that leaves the kitchen in place and sells the finish.",
+        "Competitor and market research",
+        "Opened painting pages describe respray work. This plan does not invent a competitor the pages did not name.",
+        "Pricing",
+        "ASSUMPTION: a price is not stated on the opened page, so the plan does not publish one. A visit has to count the doors.",
+        "Channels",
+        "Use local search and a short conversation with homeowners. Nothing was sent.",
+        "Advert",
+        "Headline: Same kitchen, new colour.",
+        "Body: Alba paints the cabinets you already own so the room can change without a refit.",
+        "Call to action: Ask what the visit includes before you book.",
+        "Call to action",
+        "Ask for a visit and a written scope. No booking was made.",
+        "Next steps",
+        "Open two UK kitchen painting pages and confirm the towns before any price is shown.",
+        "Assumptions",
+        "The service and the UK location come from the request. Demand is not proven.",
+        "Unresolved",
+        "The towns and the day rate are still open.",
+        "Nothing was sent.",
+    ])
+    assert plan_sections_filled(text) is True

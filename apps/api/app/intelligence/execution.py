@@ -444,6 +444,9 @@ class Programme:
             if published:
                 child["report"] = published
                 update_package(package_id, findings=published)
+            elif _model_sections(text):
+                child["report"] = text if "nothing was sent" in text.lower() else text.rstrip() + "\nNothing was sent.\n"
+                update_package(package_id, findings=child["report"])
         update_package(package_id, selected_model=meta.get("model") or route_for(self.task_class, "draft")["model_id"])
         _set_agent(child["agent_id"], visual_state="COMPLETED", status="idle", last_summary="Ledger draft submitted", progress=0.7, current_tool=None)
 
@@ -538,7 +541,8 @@ class Programme:
                 decision = "TAKE_OVER" if decision == "RETURN" else decision
                 update_package(package_id, findings=child["report"], review_status=decision, attempt_count=outcome["attempts"], return_reason="Retry limit reached" if outcome["limited"] else "")
         elif first == "TAKE_OVER":
-            child["report"] = render_focus(child["focus"], self._facts())
+            if not _keep_model_draft(self, child):
+                child["report"] = render_focus(child["focus"], self._facts())
             decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2, conflicts=conflicts or None)
             if decision != "ACCEPT":
                 decision = "TAKE_OVER"
@@ -876,6 +880,18 @@ def _finish_roles(programme: Programme) -> None:
             limit = int(prompt.get("max_tokens") or (320 if role != "MANAGER" else 480))
             text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=limit, programme=programme, package_id=prompt["id"])
             programme.bind(role, prompt["id"], text, meta)
+
+
+def _model_sections(text: str) -> bool:
+    from .deliverable import parse_sections
+
+    sections = parse_sections(text or "")
+    offer = (sections.get("offer and positioning") or "").strip()
+    return bool(offer) and not offer.lower().startswith("unresolved") and len(offer) >= 40
+
+
+def _keep_model_draft(programme: Programme, child: dict) -> bool:
+    return programme.task_class == "business_research" and child.get("focus") == "draft" and _model_sections(child.get("report") or "")
 
 
 def _publish_plan(self: Programme, model_text: str) -> str:

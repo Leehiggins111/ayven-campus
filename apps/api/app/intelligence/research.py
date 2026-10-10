@@ -100,6 +100,16 @@ def load_fixtures() -> list[dict]:
     return pages
 
 
+def _queries_cover_trade(queries: list[str], objective: str) -> bool:
+    from .deliverable import _trade_in_blob, _trade_stem, distinctive_terms
+
+    trades = [term for term in distinctive_terms(objective) if _trade_stem(term)]
+    if not trades:
+        return True
+    blob = " ".join(queries).lower()
+    return any(_trade_in_blob(term, blob) for term in trades)
+
+
 def generic_from_objective(objective: str) -> list[str]:
     """Queries from the brief only. No task-class table and no exam seed list.
 
@@ -171,14 +181,18 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
             from .boundary import queries_from_plan_text
 
             raw = _PLANNER(objective, guidance)
-            from .deliverable import reject_search_query
+            from .deliverable import targeted_queries, usable_search_queries
 
-            planned = [
-                item for item in queries_from_plan_text(raw if isinstance(raw, str) else "\n".join(str(item) for item in raw))
-                if not reject_search_query(item, objective)
-            ]
+            planned = usable_search_queries(
+                queries_from_plan_text(raw if isinstance(raw, str) else "\n".join(str(item) for item in raw)),
+                objective,
+            )
+            if planned and not _queries_cover_trade(planned, objective):
+                for extra in targeted_queries(objective):
+                    if extra not in planned:
+                        planned.append(extra)
             if planned:
-                return planned, "model"
+                return planned[:8], "model"
             return generic_from_objective(objective), "objective-fallback"
         except Exception:
             return generic_from_objective(objective), "objective-fallback"
@@ -198,19 +212,23 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
             )
             try:
                 from .boundary import queries_from_plan_text
-                from .deliverable import reject_search_query
+                from .deliverable import targeted_queries, usable_search_queries
                 from .schemas import ResearchPlan
 
                 text, _tokens, _meta = complete_role(
                     "EMPLOYEE",
-                    "You plan searches. Return a JSON object with a queries array. Do not answer the task.",
+                    "You plan searches. Return one search per line, or a JSON object with a queries array. Do not answer the task.",
                     user,
                     max_tokens=220,
                     schema=ResearchPlan,
                 )
-                planned = [item for item in queries_from_plan_text(text) if not reject_search_query(item, objective)]
+                planned = usable_search_queries(queries_from_plan_text(text), objective)
+                if planned and not _queries_cover_trade(planned, objective):
+                    for extra in targeted_queries(objective):
+                        if extra not in planned:
+                            planned.append(extra)
                 if planned:
-                    return planned, "model"
+                    return planned[:8], "model"
             except Exception:
                 pass
     return generic_from_objective(objective), "objective-fallback"

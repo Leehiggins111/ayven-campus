@@ -82,6 +82,30 @@ def requester_names(objective: str) -> set[str]:
     return names
 
 
+def instruction_echo(query: str) -> bool:
+    """True when the model repeated the planner's directions instead of a search."""
+    lowered = re.sub(r"\s+", " ", (query or "").strip().lower())
+    if not lowered:
+        return False
+    if lowered.startswith((
+        "the queries", "each query", "one query", "name the", "shape:", "shape ",
+        "do not", "don't", "write ", "return a",
+    )):
+        return True
+    if "do not search" in lowered or "one query per line" in lowered or "starting with" in lowered:
+        return True
+    return False
+
+
+def quoted_searches(text: str) -> list[str]:
+    found = []
+    for match in re.findall(r"['\"]([^'\"]{8,140})['\"]", text or ""):
+        item = re.sub(r"\s+", " ", match).strip()
+        if item and item not in found:
+            found.append(item)
+    return found
+
+
 def reject_search_query(query: str, objective: str = "") -> str:
     """Reject a search built from the requester's name, a pronoun, or instruction words."""
     from .boundary import reject_reasoning_query
@@ -100,6 +124,23 @@ def reject_search_query(query: str, objective: str = "") -> str:
     if not content:
         return "instruction_only"
     return ""
+
+
+def usable_search_queries(items: list[str], objective: str = "") -> list[str]:
+    """Drop instruction echoes. Keep a quoted search that was buried inside one."""
+    kept: list[str] = []
+    for item in items:
+        if instruction_echo(item) or reject_search_query(item, objective):
+            for quote in quoted_searches(item):
+                if instruction_echo(quote) or reject_search_query(quote, objective):
+                    continue
+                if quote not in kept:
+                    kept.append(quote[:180])
+            continue
+        short = (item or "").strip()[:180]
+        if short and short not in kept:
+            kept.append(short)
+    return kept[:8]
 
 
 def distinctive_terms(objective: str) -> list[str]:
@@ -192,25 +233,49 @@ def _similarity(left: str, right: str) -> float | None:
     return _cosine(vectors[0], vectors[1])
 
 
-def _normalise_heading(line: str) -> str:
-    match = _HEADING_LINE.match(line or "")
-    if not match:
-        return ""
-    label = re.sub(r"\s+", " ", match.group(1)).strip(" :").lower()
+def _heading_label(text: str) -> str:
+    label = re.sub(r"\s+", " ", (text or "")).strip(" :").lower()
     for canonical, aliases in _HEADINGS:
         if label in aliases:
             return canonical
     return ""
 
 
+def _split_heading(line: str) -> tuple[str, str]:
+    """A heading on its own line, or 'Heading: the sentence' on one line."""
+    cleaned = re.sub(r"[*_`]+", "", line or "").strip()
+    if not cleaned:
+        return "", ""
+    match = _HEADING_LINE.match(cleaned)
+    if match:
+        label = _heading_label(match.group(1))
+        if label:
+            return label, ""
+    head, sep, rest = cleaned.partition(":")
+    if not sep:
+        return "", ""
+    if head.strip().lower() in {"assumption", "fact", "inference", "recommendation", "unknown"}:
+        return "", ""
+    label = _heading_label(head)
+    if label:
+        return label, rest.strip()
+    return "", ""
+
+
+def _normalise_heading(line: str) -> str:
+    return _split_heading(line)[0]
+
+
 def parse_sections(text: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current = ""
     for line in (text or "").splitlines():
-        heading = _normalise_heading(line)
+        heading, inline = _split_heading(line)
         if heading:
             current = heading
             sections.setdefault(current, [])
+            if inline:
+                sections[current].append(inline)
             continue
         if current:
             sections[current].append(line)
