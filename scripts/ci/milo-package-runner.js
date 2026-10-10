@@ -104,6 +104,7 @@ function publicLine(line) {
 
 function redact(line) {
   return String(line || "")
+    .replace(/\u001b\[[0-9;]*m/g, "")
     .replace(/github_pat_[A-Za-z0-9_]+/g, "***")
     .replace(/ghp_[A-Za-z0-9]+/g, "***")
     .replace(/Bearer\s+\S+/gi, "Bearer ***")
@@ -111,6 +112,19 @@ function redact(line) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 180);
+}
+
+function diagnosticLines(output) {
+  const kept = [];
+  for (const raw of String(output || "").split(/\r?\n/)) {
+    const line = redact(raw);
+    if (!line) continue;
+    if (/^(def |class |function |const |import )/.test(line)) continue;
+    if (/ERROR:|error:|Failed|Could not|No matching|No module named|not recognized|requirements|Cannot find|exit code/i.test(line)) {
+      kept.push(line);
+    }
+  }
+  return kept.slice(-12);
 }
 
 function childEnv() {
@@ -205,9 +219,11 @@ function runPrelude(milo, vars) {
     const cwd = step.cwd ? path.resolve(milo, step.cwd) : milo;
     const result = runPwsh(["-File", file], cwd);
     fs.rmSync(file, { force: true });
-    forwardOutput(result);
+    const output = forwardOutput(result);
     if (result.status !== 0) {
-      fail(step.name || "prelude", reasonFrom(`${result.stdout || ""}\n${result.stderr || ""}`) || `exit ${result.status}`);
+      const lines = diagnosticLines(output);
+      if (!lines.length) fail(step.name || "prelude", reasonFrom(output) || `exit ${result.status}`);
+      for (const line of lines) fail(step.name || "prelude", line);
       return false;
     }
     say(`PASS ${step.name || "prelude"}`);
@@ -402,6 +418,14 @@ async function main() {
     process.exit(1);
   }
   const vars = { workspace: path.dirname(milo), miloSha, temp };
+  const campusLink = path.join(milo, "campus");
+  if (campus && milo && !fs.existsSync(campusLink)) {
+    try {
+      fs.symlinkSync(campus, campusLink, "junction");
+    } catch {
+      // The embed step can still use CAMPUS_DIR when the link cannot be created.
+    }
+  }
   const preludeOk = runPrelude(milo, vars);
   const discovered = discover([work, milo, campus, temp, process.env.RUNNER_TEMP || ""]);
   if (!preludeOk || !discovered.unpacked || !discovered.python) {
@@ -513,4 +537,5 @@ module.exports = {
   publicLine,
   redact,
   checksumHex,
+  diagnosticLines,
 };

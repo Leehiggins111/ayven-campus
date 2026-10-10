@@ -57,4 +57,9 @@ test("expressions are substituted and logs stay narrow", () => {
   assert.equal(runner.publicLine("PASS assemble"), "PASS assemble");
   assert.equal(runner.publicLine("the plan text"), "");
   assert.equal(runner.redact("token ghp_abcdefghijklmnopqrstuvwxyz and lee@example.com"), "token *** and ***");
+  const lines = runner.diagnosticLines("noise\n\u001b[31mERROR: Could not open requirements file: [Errno 2] No such file\nCampus requirements failed\n");
+  assert.deepEqual(lines, [
+    "ERROR: Could not open requirements file: [Errno 2] No such file",
+    "Campus requirements failed",
+  ]);
 });
