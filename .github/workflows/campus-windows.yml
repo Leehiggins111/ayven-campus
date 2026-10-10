@@ -230,6 +230,7 @@ jobs:
           key: ollama-windows-app-v0.40.2
 
       - name: Run Campus acceptance
+        timeout-minutes: 70
         shell: pwsh
         env:
           PYTHONPATH: ${{ github.workspace }};${{ github.workspace }}\apps\api

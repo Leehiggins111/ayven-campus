@@ -93,42 +93,52 @@ def local_request_body(base: str, body: dict) -> dict:
     return plain
 
 
-_CLOSED_THINK = "<think>\n\n</think>\n"
+def ollama_raw_prompt(system: str, user: str) -> str:
+    """ChatML that already closed the think block. qwen3 then writes the answer, not the reasoning."""
+    return (
+        "<|im_start|>system\n"
+        + (system or "").strip()
+        + "\n<|im_end|>\n"
+        + "<|im_start|>user\n"
+        + (user or "").strip()
+        + " /no_think<|im_end|>\n"
+        + "<|im_start|>assistant\n"
+        + "<think>\n\n</think>\n\n"
+    )
 
 
-def ollama_native_body(model: str, messages: list[dict], max_tokens: int, *, close_think: bool) -> dict:
-    """Native /api/chat. A closed think prefill stops qwen3 spending the whole budget inside <think>."""
-    sent = list(messages)
-    think = ollama_thinking_enabled()
-    if close_think and not think:
-        sent = sent + [{"role": "assistant", "content": _CLOSED_THINK}]
+def ollama_native_body(model: str, system: str, user: str, max_tokens: int) -> dict:
+    """Native /api/generate with raw ChatML. The OpenAI route cannot turn qwen3 thinking off."""
     predict = max(int(max_tokens or 0), 64)
     return {
         "model": model,
-        "messages": sent,
+        "prompt": ollama_raw_prompt(system, user),
+        "raw": True,
         "stream": False,
-        "think": think,
-        "truncate": False,
+        "think": ollama_thinking_enabled(),
         "options": {
             "num_predict": predict,
             "num_ctx": max(8192, predict + 4096),
             "temperature": 0.2,
+            "stop": ["<|im_end|>", "<|im_start|>"],
         },
     }
 
 
 def ollama_answer(payload: dict) -> str:
-    """Visible answer only. The thinking channel is never the deliverable."""
-    from .intelligence.boundary import separate_channels
+    """Visible answer only. Text inside a think block, and the thinking field, are discarded."""
     from .intelligence.think import strip_think
 
     message = payload.get("message") or {}
     if not message and payload.get("choices"):
         message = (payload["choices"][0] or {}).get("message") or {}
-    content = message.get("content") or ""
-    # reasoning / thinking is discarded even if the caller passes it in.
-    text = separate_channels(content).executable
-    return strip_think(text).strip()
+    content = message.get("content") or payload.get("response") or ""
+    marker = "</think>"
+    lowered = content.lower()
+    at = lowered.rfind(marker)
+    if at != -1:
+        content = content[at + len(marker) :]
+    return strip_think(content).strip()
 
 
 def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
@@ -178,19 +188,26 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
     """Ask twice at most. A reasoning field is never copied into the answer."""
     import httpx
 
-    url = f"{_ollama_root(base)}/api/chat"
-    attempts = (
-        ollama_native_body(model, messages, max_tokens, close_think=True),
-        ollama_native_body(model, messages, max(int(max_tokens or 0) * 2, 2048), close_think=False),
-    )
+    system = ""
+    user = ""
+    for message in messages:
+        if message.get("role") == "system":
+            system = message.get("content") or ""
+        elif message.get("role") == "user":
+            user = message.get("content") or ""
+    url = f"{_ollama_root(base)}/api/generate"
+    first = max(int(max_tokens or 0), 64)
+    # The second call runs only when the first answer is empty. It is larger so a
+    # think block that consumed the first budget can finish and still leave an answer.
+    second = min(4096, max(first * 2, 1024))
+    budgets = (first, second)
     last_tokens = 0
-    for body in attempts:
+    for predict in budgets:
+        body = ollama_native_body(model, system, user, predict)
         response = httpx.post(url, json=body, timeout=timeout)
-        if response.status_code == 400 and body["messages"][-1].get("content") == _CLOSED_THINK:
-            continue
         response.raise_for_status()
         data = response.json()
-        last_tokens = int(data.get("eval_count") or data.get("prompt_eval_count") or 0)
+        last_tokens = int(data.get("eval_count") or 0)
         text = ollama_answer(data)
         if text:
             return text, last_tokens or max(1, len(text) // 4)

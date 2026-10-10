@@ -116,11 +116,18 @@ def save_model_call(package_id: str, role: str, task_class: str, meta: dict, tex
     del text
 
 
+def _stored_excerpt(text: str, limit: int = 2000) -> str:
+    """Keep a stored passage whole up to the limit, and never end it mid-word."""
+    from .deliverable import clip_at_boundary
+
+    return clip_at_boundary(strip_think(text or ""), limit)
+
+
 def save_source(package_id: str, url: str, title: str, snippet: str, note: str) -> None:
     conn = connect()
     conn.execute(
         "INSERT INTO sources(id,package_id,url,title,snippet,note,created_at,trace_id) VALUES(?,?,?,?,?,?,?,?)",
-        (str(uuid.uuid4()), package_id, url, title, strip_think(snippet)[:500], note, now(), _trace_id()),
+        (str(uuid.uuid4()), package_id, url, title, _stored_excerpt(snippet), note, now(), _trace_id()),
     )
     conn.commit()
     conn.close()

@@ -237,7 +237,20 @@ def test_stored_offer_line_is_not_cut_mid_word():
     assert "how it differs from other providers." in stored
 
 
-def test_ollama_native_chat_does_not_publish_reasoning(monkeypatch):
+def test_ollama_answer_keeps_only_the_text_after_think():
+    from app.models import ollama_answer
+
+    text = ollama_answer({
+        "response": "I should think about the offer\n</think>\nOffer and positioning\nThe offer is an on-site cabinet respray.",
+        "thinking": "SECRET_REASONING",
+    })
+    assert text == "Offer and positioning\nThe offer is an on-site cabinet respray."
+    assert "I should think" not in text
+    assert "SECRET_REASONING" not in text
+    assert ollama_answer({"response": "", "thinking": "SECRET_REASONING the offer is half"}) == ""
+
+
+def test_ollama_native_generate_does_not_publish_reasoning(monkeypatch):
     calls = []
 
     class Response:
@@ -254,12 +267,10 @@ def test_ollama_native_chat_does_not_publish_reasoning(monkeypatch):
     def fake_post(url, json=None, timeout=None, headers=None):
         calls.append({"url": url, "body": json})
         if len(calls) == 1:
-            return Response({"message": {"content": "", "thinking": "SECRET_REASONING the offer is half"}, "eval_count": 40})
+            return Response({"response": "", "thinking": "SECRET_REASONING the offer is half", "eval_count": 40})
         return Response({
-            "message": {
-                "content": "Service\nAlba paints existing kitchen cabinets in the UK.\nOffer and positioning\nThe offer is an on-site respray that keeps the kitchen in place.",
-                "thinking": "SECRET_REASONING",
-            },
+            "response": "I should think about the offer\n</think>\nOffer and positioning\nThe offer is an on-site cabinet respray.",
+            "thinking": "SECRET_REASONING",
             "eval_count": 80,
         })
 
@@ -270,18 +281,23 @@ def test_ollama_native_chat_does_not_publish_reasoning(monkeypatch):
         "http://127.0.0.1:11434/v1", "local", "qwen3:4b", "Write the plan.", "Alba Kitchen Refresh", 2048,
     )
     assert "SECRET_REASONING" not in text
-    assert "on-site respray" in text
+    assert "I should think" not in text
+    assert "on-site cabinet respray" in text
     assert info["postcheck"] == "skipped"
-    assert calls[0]["url"].endswith("/api/chat")
+    assert calls[0]["url"].endswith("/api/generate")
     first = calls[0]["body"]
+    assert first["raw"] is True
     assert first["think"] is False
-    assert first["truncate"] is False
+    assert first["stream"] is False
     assert "grammar" not in first
     assert "guided_json" not in first
+    assert "response_format" not in first
+    assert "messages" not in first
     assert first["options"]["num_predict"] == 2048
     assert first["options"]["num_ctx"] >= 8192
-    assert first["messages"][-1]["role"] == "assistant"
-    assert first["messages"][-1]["content"].startswith("<think>")
+    assert first["prompt"].rstrip().endswith("</think>")
+    assert "/no_think" in first["prompt"]
+    assert "<|im_start|>assistant\n<think>\n\n</think>" in first["prompt"]
     assert calls[1]["body"]["think"] is False
-    assert calls[1]["body"]["messages"][-1]["role"] == "user"
-    assert calls[1]["body"]["options"]["num_predict"] >= 2048
+    assert calls[1]["body"]["options"]["num_predict"] == 4096
+    assert calls[1]["body"]["options"]["num_predict"] > first["options"]["num_predict"]

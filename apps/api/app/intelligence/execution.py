@@ -259,9 +259,9 @@ class Programme:
                 claim_ledger.add_claim(
                     self.parent_id,
                     "research-e3",
-                    (attached.get("extracted_content") or "")[:500],
+                    clip_at_boundary(attached.get("extracted_content") or "", 2000),
                     "DOCUMENT",
-                    evidence_text=(attached.get("extracted_content") or "")[:500],
+                    evidence_text=clip_at_boundary(attached.get("extracted_content") or "", 2000),
                     source_url=attached.get("source_url") or "",
                     source_type="PRIMARY_DOCUMENT",
                     freshness="INPUT",
@@ -291,7 +291,7 @@ class Programme:
             self._claims_for(child_id, spec)
             report = render_focus(spec["focus"], self._facts())
             if self.document and spec["focus"] in ("evidence", "gaps", "draft"):
-                report = (self.document.get("extracted_content") or "")[:1500] + "\n" + report
+                report = clip_at_boundary(self.document.get("extracted_content") or "", 1500) + "\n" + report
             critique_payload = critique(self.task_class, report, claim_ledger.list_claims(child_id), self.research, self.quote)
             verification = verify(self.objective, self.task_class, claim_ledger.list_claims(child_id), self.research)
             if verification["pass_rate"] < 1 and spec["focus"] == "scenarios":
@@ -1160,7 +1160,7 @@ def _employee_user(programme: Programme, child: dict) -> str:
     return (
         "Ayven tool runtime. When you need a tool, emit a line "
         'TOOL ayven_tool {"tool":"record_review","payload":"why"} and then the answer.\n'
-        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\nPublished draft:\n{child['report'][:2500]}{plan}{block}"
+        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\nPublished draft:\n{clip_at_boundary(child['report'], 6000)}{plan}{block}"
     )
 
 
@@ -1168,7 +1168,7 @@ def _business_repair_user(programme: Programme, previous: str) -> str:
     pages = []
     for item in (programme.research.get("evidence") or [])[:6]:
         pages.append(
-            f"{item.get('source_title') or 'page'} {item.get('source_url') or ''}\n{(item.get('extracted_content') or '')[:400]}"
+            f"{item.get('source_title') or 'page'} {item.get('source_url') or ''}\n{clip_at_boundary(item.get('extracted_content') or '', 2000)}"
         )
     return (
         "The previous draft left required sections empty. Rewrite the whole launch plan.\n"
@@ -1177,7 +1177,7 @@ def _business_repair_user(programme: Programme, previous: str) -> str:
         "Advert must contain Headline:, Body:, and Call to action:.\n"
         "Use only the opened pages below. Pricing is an ASSUMPTION: with a reason when no page states a number.\n"
         "End with: Nothing was sent.\n\n"
-        f"Objective:\n{programme.objective}\n\nPrevious draft:\n{(previous or '')[:1500]}\n\n"
+        f"Objective:\n{programme.objective}\n\nPrevious draft:\n{clip_at_boundary(previous or '', 6000)}\n\n"
         f"Opened pages:\n{chr(10).join(pages)}"
     )
 
@@ -1212,7 +1212,7 @@ def _supervisor_user(programme: Programme, child: dict) -> str:
     gaps = "; ".join((programme.research.get("gaps") or [])[:4])
     return (
         f"Objective:\n{programme.objective}\n\nPlan class: {programme.task_class}\n"
-        f"Gaps: {gaps}\n\nDraft:\n{child['report'][:2000]}\n\nClaims:\n{brief}"
+        f"Gaps: {gaps}\n\nDraft:\n{clip_at_boundary(child['report'], 6000)}\n\nClaims:\n{brief}"
     )
 
 

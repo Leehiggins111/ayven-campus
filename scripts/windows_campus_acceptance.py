@@ -25,7 +25,8 @@ OLLAMA = os.environ.get("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
 MODEL = os.environ.get("AYVEN_EMPLOYEE_MODEL", "qwen3:4b")
 KEY = os.environ.get("AYVEN_ACCESS_KEY", "")
 JOB_TIMEOUT = int(os.environ.get("AYVEN_ACCEPTANCE_JOB_TIMEOUT_S", "5400"))
-TERMINAL = {"COMPLETED", "FAILED", "UNRESOLVED", "AWAITING_APPROVAL", "AWAITING_CLARIFICATION"}
+# REPAIRING is where a manager RETURN stops. The worker has finished; polling it is not a running job.
+TERMINAL = {"COMPLETED", "FAILED", "UNRESOLVED", "AWAITING_APPROVAL", "AWAITING_CLARIFICATION", "REPAIRING"}
 SECTIONS = (
     "Service",
     "Target customer",

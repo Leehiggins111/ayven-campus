@@ -92,7 +92,7 @@ def public_text(value: str, limit: int = 280) -> str:
     lowered = text.lower()
     if "<think" in lowered or "chain of thought" in lowered or "chain-of-thought" in lowered:
         return ""
-    return " ".join(text.split())[:limit]
+    return clip_at_boundary(" ".join(text.split()), limit)
 
 
 def owner_findings(value: str) -> str:
@@ -114,10 +114,7 @@ def readable_prose(value: str, limit: int = 1200) -> str:
     text = re.sub(r"https?://\S+", " ", text)
     text = re.sub(r"[#>*_]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    if len(text) <= limit:
-        return text
-    clipped = text[:limit].rsplit(" ", 1)[0].strip()
-    return clipped or text[:limit]
+    return clip_at_boundary(text, limit)
 
 
 def build_workflow(stage: str, *, had_repair: bool, needs_gate: bool, clarifying: bool, rejected: bool, early_clarification: bool = False, unresolved: bool = False) -> list[dict]:

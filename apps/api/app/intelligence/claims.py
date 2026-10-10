@@ -202,6 +202,7 @@ def claims_from_evidence(package_id: str, agent_id: str, evidence: list[dict]) -
         if not passage or passage.count("<") >= 2:
             continue
         from .boundary import is_noise_hit
+        from .deliverable import clip_at_boundary
 
         if is_noise_hit(item.get("source_url") or "", item.get("source_title") or "", passage[:240]):
             continue
@@ -211,9 +212,9 @@ def claims_from_evidence(package_id: str, agent_id: str, evidence: list[dict]) -
         claim = add_claim(
             package_id,
             agent_id,
-            passage[:500],
+            clip_at_boundary(passage, 2000),
             "ROUTE" if meta.get("channel") else "FACT",
-            evidence_text=passage[:1200],
+            evidence_text=clip_at_boundary(passage, 4000),
             source_url=item.get("source_url") or "",
             source_type=source_type,
             retrieved_at=item.get("timestamp") or "",
