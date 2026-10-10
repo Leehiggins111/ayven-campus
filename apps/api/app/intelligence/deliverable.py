@@ -303,12 +303,86 @@ def _strip_labels(text: str) -> str:
     ).strip()
 
 
+_SCRATCH = (
+    "let me ", "i need to", "i'll ", "i’ll ", "i will ", "i have evidence", "i think",
+    "what i need", "this needs to be",
+)
+_REFUSAL = (
+    "doesn't state", "does not state", "doesn't specify", "does not specify",
+    "doesn't explicitly", "does not explicitly",
+)
+
+
+def _heading_name(line: str) -> bool:
+    lowered = line.strip().strip("#*_ ").lower().rstrip(":")
+    if not lowered:
+        return False
+    for key, aliases in _HEADINGS:
+        if lowered == key or lowered in aliases:
+            return True
+    return False
+
+
+def _narration_line(line: str) -> bool:
+    """One worksheet line. A heading is kept so the sections still parse."""
+    stripped = line.strip()
+    if not stripped or _heading_name(stripped):
+        return False
+    lowered = stripped.lower()
+    if re.fullmatch(r"\d+\.?", lowered):
+        return True
+    if lowered in {"unresolved.", "this is unresolved.", "this is unresolved", "a full sentence.", "a full sentence"}:
+        return True
+    if lowered.startswith(("unresolved -", "unresolved:")):
+        return True
+    if any(phrase in lowered for phrase in _SCRATCH):
+        return True
+    refusal = any(phrase in lowered for phrase in _REFUSAL)
+    if refusal and not any(phrase in lowered for phrase in ("assumption", "recommend", "the offer is", "should ")):
+        return True
+    return False
+
+
+def finished_lines(text: str) -> str:
+    """Drop drafting narration and repeated lines. Keep the sentences the owner can use."""
+    kept: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if kept and kept[-1] != "":
+                kept.append("")
+            continue
+        if _narration_line(stripped):
+            continue
+        key = re.sub(r"\s+", " ", stripped.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(stripped)
+    return "\n".join(kept).strip()
+
+
+def _narrated(text: str) -> bool:
+    """A drafting worksheet is not a section the owner can use."""
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in _SCRATCH):
+        return True
+    if lowered.count("unresolved") >= 2:
+        return True
+    if any(phrase in lowered for phrase in _REFUSAL):
+        return True
+    return False
+
+
 def _body_filled(body: str) -> bool:
     text = _strip_labels(body or "").strip()
     if len(text) < 40:
         return False
     lowered = text.lower()
     if lowered.startswith("unresolved"):
+        return False
+    if _narrated(text):
         return False
     if any(phrase in lowered for phrase in _BOILERPLATE_BODY) and len(text) < 220:
         return False
@@ -431,7 +505,7 @@ def publish_business_plan(objective: str, research: dict | None, model_text: str
     research = research or {}
     evidence = relevant_evidence(objective, research.get("evidence") or [])
     blob = evidence_blob(evidence)
-    sections = parse_sections(model_text or "")
+    sections = parse_sections(finished_lines(model_text or ""))
     if not sections:
         return ""
     from .grounding import ground_text

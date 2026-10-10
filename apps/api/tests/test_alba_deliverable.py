@@ -4,8 +4,10 @@ from app.intelligence.audit import authoritative_decision
 from app.intelligence.completion import score_task
 from app.intelligence.deliverable import (
     business_can_complete,
+    finished_lines,
     page_is_relevant,
     plan_sections_filled,
+    publish_business_plan,
     reject_search_query,
 )
 from app.intelligence.execution import _approved_research_is_unresolved
@@ -306,3 +308,129 @@ def test_bold_and_inline_headings_still_count_as_a_written_plan():
         "Nothing was sent.",
     ])
     assert plan_sections_filled(text) is True
+
+
+def _worksheet() -> str:
+    """The draft qwen3:4b stored on the Windows run: a scratchpad, not a launch plan."""
+    return "\n".join([
+        "Business launch plan",
+        "Service",
+        "The service is kitchen painting for UK homeowners who want the cabinets refreshed without a full renovation.",
+        "Target customer",
+        "UK homeowners with dated kitchen cabinets who want a refresh without full renovation.",
+        "Problem",
+        "The evidence doesn't explicitly state what the customer's problem is.",
+        "This is unresolved.",
+        "Unresolved - the evidence doesn't specify what problem Alba Kitchen Refresh solves.",
+        "Unresolved.",
+        "Offer and positioning",
+        "The evidence doesn't state what Alba Kitchen Refresh specifically offers or how it differs from other providers.",
+        "This is unresolved.",
+        "Unresolved.",
+        "Competitor and market research",
+        "I have evidence from opened pages about kitchen cabinet painting prices in the UK.",
+        "Airtasker lists professional cabinet painting at £80 to £100.",
+        "Pricing",
+        "The Airtasker page shows £80 to £100.",
+        "I'll need to make an assumption based on the evidence.",
+        "Channels",
+        "The evidence doesn't specify channels.",
+        "This is unresolved.",
+        "Unresolved.",
+        "The evidence doesn't specify channels that Alba Kitchen Refresh would use.",
+        "Advert",
+        "I need to create a 3-line ad copy.",
+        "Headline: Refresh your kitchen without the cost of a full renovation.",
+        "Body: Cabinet painting updates the kitchen the household already owns.",
+        "Call to action",
+        "This needs to be a full sentence.",
+        "Contact Alba Kitchen Refresh and ask what a visit includes before any booking.",
+        "Next steps",
+        "1.",
+        "Confirm the towns to cover, then set a price assumption beside the opened pages.",
+        "Assumptions",
+        "What I need to assume based on the evidence.",
+        "Homeowners with dated cabinets are the people the request describes.",
+        "Unresolved",
+        "Let me draft each section.",
+        "I think the draft meets the guidelines.",
+        "Nothing was sent.",
+    ])
+
+
+def test_a_drafting_worksheet_is_not_a_finished_plan():
+    worksheet = _worksheet()
+    assert plan_sections_filled(worksheet) is False
+    assert plan_sections_filled(_filled_plan()) is True
+    cleaned = finished_lines(worksheet)
+    assert "I'll need" not in cleaned
+    assert "doesn't state" not in cleaned
+    assert "Let me draft" not in cleaned
+    assert "Refresh your kitchen" in cleaned
+    assert plan_sections_filled(cleaned) is False
+    published = publish_business_plan(OBJECTIVE, {"evidence": [_preview(PAINTER["url"], PAINTER["title"], PAINTER["text"])]}, worksheet)
+    assert published == ""
+
+
+def test_narration_around_a_real_offer_is_dropped_and_the_offer_remains():
+    text = _filled_plan().replace(
+        "The offer is an on-site cabinet painting service positioned against replacement showrooms: shorter disruption, the existing kitchen stays, and the finish is the thing being sold.",
+        "The evidence doesn't state what Alba offers.\n"
+        "Let me draft the offer.\n"
+        "The offer is an on-site cabinet painting service positioned against replacement showrooms: shorter disruption, the existing kitchen stays, and the finish is the thing being sold.",
+    )
+    assert plan_sections_filled(text) is False
+    assert plan_sections_filled(finished_lines(text)) is True
+
+
+def test_the_blank_form_is_not_the_draft_the_model_continues():
+    from types import SimpleNamespace
+
+    from app.intelligence.execution import _employee_user
+
+    programme = SimpleNamespace(
+        objective=OBJECTIVE,
+        task_class="business_research",
+        research={"evidence": [_preview(PAINTER["url"], PAINTER["title"], "Professional kitchen cabinet painting costs £80 to £100 in the UK.")]},
+    )
+    child = {
+        "focus": "draft",
+        "report": "Unresolved. No opened page stated an offer or how it differs from other providers.",
+    }
+    user = _employee_user(programme, child)
+    assert "how it differs from other providers" not in user
+    assert "No owner plan has been written yet" in user
+    assert "£80" in user
+    assert PAINTER["url"] in user
+
+
+def test_opened_pages_stay_ahead_of_failed_fetches():
+    from app.intelligence.campus_view import _evidence
+
+    failures = [
+        {
+            "claim_text": "Retrieval failed at fetch: Client error '403 Forbidden'",
+            "claim_type": "SOURCE_FAILURE",
+            "freshness": "UNKNOWN",
+            "status": "UNVERIFIED",
+            "source_url": f"https://example.invalid/fail-{index}",
+            "evidence_text": '{"query": "kitchen respray company prices", "stage": "fetch"}',
+            "package_id": "gaps",
+        }
+        for index in range(12)
+    ]
+    live = {
+        "claim_text": "Professional kitchen cabinet painting costs £80 to £100 in the UK.",
+        "claim_type": "FACT",
+        "freshness": "LIVE",
+        "status": "SUPPORTED",
+        "source_url": PAINTER["url"],
+        "source_title": PAINTER["title"],
+        "evidence_text": PAINTER["text"],
+        "package_id": "evidence",
+    }
+    rows = _evidence(failures + [live], [], {}, {"research_mode": "live"})
+    live_rows = [row for row in rows if row.get("provenance") == "LIVE" and "http" in (row.get("sentence") or "")]
+    assert live_rows
+    assert PAINTER["url"] in live_rows[0]["sentence"]
+    assert rows[0]["provenance"] == "LIVE"

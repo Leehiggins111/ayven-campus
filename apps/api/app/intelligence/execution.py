@@ -883,11 +883,9 @@ def _finish_roles(programme: Programme) -> None:
 
 
 def _model_sections(text: str) -> bool:
-    from .deliverable import parse_sections
+    from .deliverable import plan_sections_filled
 
-    sections = parse_sections(text or "")
-    offer = (sections.get("offer and positioning") or "").strip()
-    return bool(offer) and not offer.lower().startswith("unresolved") and len(offer) >= 40
+    return plan_sections_filled(text or "")
 
 
 def _keep_model_draft(programme: Programme, child: dict) -> bool:
@@ -1162,39 +1160,76 @@ def _employee_user(programme: Programme, child: dict) -> str:
     remembered = memory.format_for_prompt(programme.memory_rows)
     block = f"\n\n{remembered}" if remembered else ""
     plan = ""
+    shown = f"Published draft:\n{clip_at_boundary(child['report'], 6000)}\n"
     if programme.task_class == "business_research" and child.get("focus") == "draft":
+        shown = "No owner plan has been written yet. Do not copy a blank form.\n"
         plan = (
             "\n\nWrite the launch plan for the owner. Put each heading on its own line:\n"
             "Service\nTarget customer\nProblem\nOffer and positioning\n"
             "Competitor and market research\nPricing\nChannels\nAdvert\nCall to action\nNext steps\nAssumptions\nUnresolved\n"
             "Under Advert write three lines that start Headline:, Body:, and Call to action:.\n"
-            "Offer, positioning, the advert, channels, and next steps must be full sentences you write.\n"
+            "Alba is not named on the opened pages. Still write the offer, the channels, the advert, and the next steps as recommendations.\n"
+            "The offer says what is sold and how that differs from replacing the kitchen.\n"
+            "Write each section once. Do not repeat a sentence. Do not narrate. Do not say I, let me, or I need to.\n"
+            "Do not write that the evidence does not state a section. Write the section.\n"
             "Pricing must cite an opened page or start with ASSUMPTION: and the reason. A price that no page stated is not a fact.\n"
-            "Do not leave a section as only the word Unresolved. An empty section is a failure.\n"
-            "End with: Nothing was sent.\n"
+            "End with: Nothing was sent.\n\n"
+            f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
+            f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
         )
     return (
         "Ayven tool runtime. When you need a tool, emit a line "
         'TOOL ayven_tool {"tool":"record_review","payload":"why"} and then the answer.\n'
-        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\nPublished draft:\n{clip_at_boundary(child['report'], 6000)}{plan}{block}"
+        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\n{shown}{plan}{block}"
     )
 
 
+def _opened_index(programme: Programme) -> str:
+    lines = []
+    for item in (programme.research.get("evidence") or [])[:8]:
+        title = item.get("source_title") or "page"
+        url = item.get("source_url") or ""
+        if url:
+            lines.append(f"- {title}: {url}")
+    return "\n".join(lines)
+
+
+def _price_notes(programme: Programme) -> str:
+    import re
+
+    notes = []
+    for item in (programme.research.get("evidence") or [])[:8]:
+        title = item.get("source_title") or "page"
+        url = item.get("source_url") or ""
+        text = item.get("extracted_content") or ""
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            if "£" not in sentence and "$" not in sentence:
+                continue
+            notes.append(f"{title} ({url}): {clip_at_boundary(sentence, 240)}")
+            if len(notes) >= 8:
+                return "\n".join(notes)
+    return "\n".join(notes)
+
+
 def _business_repair_user(programme: Programme, previous: str) -> str:
-    pages = []
-    for item in (programme.research.get("evidence") or [])[:6]:
-        pages.append(
-            f"{item.get('source_title') or 'page'} {item.get('source_url') or ''}\n{clip_at_boundary(item.get('extracted_content') or '', 2000)}"
-        )
+    from .deliverable import finished_lines
+
+    usable = finished_lines(previous or "")
     return (
-        "The previous draft left required sections empty. Rewrite the whole launch plan.\n"
+        "Rewrite the launch plan as finished sentences for the owner. Output only the headings and the sentences.\n"
         "Headings on their own lines: Service, Target customer, Problem, Offer and positioning, "
         "Competitor and market research, Pricing, Channels, Advert, Call to action, Next steps, Assumptions, Unresolved.\n"
-        "Advert must contain Headline:, Body:, and Call to action:.\n"
-        "Use only the opened pages below. Pricing is an ASSUMPTION: with a reason when no page states a number.\n"
+        "Do not repeat a sentence. Do not narrate. Do not say I, let me, or I need to.\n"
+        "Do not write that the evidence does not state a section. Write the section.\n"
+        "Offer and positioning: what Alba sells, and how that differs from replacing the whole kitchen.\n"
+        "Pricing: cite the £ figures below and start with ASSUMPTION: and which figure to plan around, and why.\n"
+        "Advert: exactly three lines, Headline:, Body:, and Call to action:.\n"
+        "Channels and next steps: full sentences about how a local UK service reaches homeowners.\n"
         "End with: Nothing was sent.\n\n"
-        f"Objective:\n{programme.objective}\n\nPrevious draft:\n{clip_at_boundary(previous or '', 6000)}\n\n"
-        f"Opened pages:\n{chr(10).join(pages)}"
+        f"Objective:\n{programme.objective}\n\n"
+        f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
+        f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n\n"
+        f"Sentences already written, with the worksheet removed:\n{usable or 'None.'}\n"
     )
 
 

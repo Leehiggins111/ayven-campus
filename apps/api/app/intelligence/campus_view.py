@@ -524,12 +524,12 @@ def _provenance(claim: dict, mode: str) -> tuple[str, str]:
         return "USER-PROVIDED", "This came from the request, not from a web page."
     if freshness == "LIVE" and url.startswith("http") and mode == "live":
         when_bit = f" Retrieved {when}." if when else ""
-        return "LIVE", f"Opened {title or url}.{when_bit}"
+        return "LIVE", _opened_note(title, url, when_bit)
     if freshness.startswith("FIXTURE") or (mode in {"fixtures", "fixture", "stub"} and (url or title)):
         name = title or url or "a local snapshot"
         return "FIXTURE", f"{name} is a local fixture. It was not opened on the live web."
     if url.startswith("http") and mode == "live":
-        return "LIVE", f"Opened {title or url}."
+        return "LIVE", _opened_note(title, url, "")
     if url and mode != "live":
         return "UNRESOLVED", "A link was recorded, but the page was not opened in live research."
     return "UNRESOLVED", "No opened page is linked to this claim."
@@ -574,7 +574,16 @@ def _evidence(claims: list[dict], children: list[dict], package: dict, obs: dict
             "file_hash": "",
             "supervisor": "",
         })
-    return rows[:12]
+    opened = [row for row in rows if row.get("provenance") == "LIVE"]
+    other = [row for row in rows if row.get("provenance") != "LIVE"]
+    return (opened + other)[:12]
+
+
+def _opened_note(title: str, url: str, when_bit: str) -> str:
+    """The owner sentence keeps the URL. Titles alone hid the opened page."""
+    if title and url and url not in title:
+        return f"Opened {title} ({url}).{when_bit}"
+    return f"Opened {title or url}.{when_bit}"
 
 
 def _result(package: dict, obs: dict, evaluation: dict, trust: str, cost: str, *, supported: int = 0, unresolved: bool = False) -> dict:
