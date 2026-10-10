@@ -812,21 +812,41 @@ def quote_draft(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def retained_draft(model_text: str, objective: str, blob: str = "", reasons: dict | None = None) -> str:
-    """The full draft and one reason per failed check. This is not a passed plan."""
+def retained_draft(
+    model_text: str,
+    objective: str,
+    blob: str = "",
+    reasons: dict | None = None,
+    sections: dict | None = None,
+) -> str:
+    """The repaired sections, one reason per failed check, and the full draft.
+
+    A check marked passed is the section that was kept. A one-shot fragment is not
+    reported as passed when a later repair replaced it. This text is not a passed plan.
+    """
     from_text = parse_sections(model_text or "")
+    repaired = sections or {}
     lines = [
         "Validation rejected this draft. No check was relaxed.",
         "",
     ]
     failed = 0
     for key in _REQUIRED:
-        reason = (reasons or {}).get(key) or section_rejection(key, from_text.get(key) or "", blob, objective)
+        reason = (reasons or {}).get(key) or ""
+        body = (repaired.get(key) or "").strip()
+        if not reason:
+            if body:
+                reason = section_rejection(key, body, blob, objective)
+            else:
+                reason = section_rejection(key, from_text.get(key) or "", blob, objective)
+                body = (from_text.get(key) or "").strip()
         if reason:
             failed += 1
             lines.append(f"[{key}] {reason}")
-        else:
-            lines.append(f"[{key}] passed")
+            continue
+        lines.append(f"[{key}] passed")
+        if body:
+            lines.append(quote_draft(body))
     if not failed and (model_text or "").strip():
         lines.append("[plan] The draft did not pass every check together.")
     lines += ["", "Full draft:", quote_draft(model_text or ""), "", "Nothing was sent."]

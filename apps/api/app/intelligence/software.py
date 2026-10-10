@@ -8,6 +8,23 @@ _FILE_LINE = re.compile(r"^FILE:\s*([A-Za-z0-9_.-]+)\s*$", re.I)
 _LAUNCH_LINE = re.compile(r"^LAUNCH:\s*(.+?)\s*$", re.I)
 _FENCE = re.compile(r"^```")
 
+PROGRAM_FORMAT = {
+    "type": "object",
+    "properties": {
+        "main.py": {"type": "string"},
+        "test_main.py": {"type": "string"},
+    },
+    "required": ["main.py", "test_main.py"],
+}
+
+SOFTWARE_STOPS = (
+    "We are to",
+    "Option 1",
+    "Possibility A",
+    "The problem says",
+    "Let me ",
+)
+
 
 def _strip_fence(body: str) -> str:
     lines = (body or "").splitlines()
@@ -181,7 +198,37 @@ def parse_program(text: str) -> tuple[dict[str, str], str]:
         loose = {name: _code_only(body) for name, body in loose.items()}
         if loose.get("main.py") and loose.get("test_main.py"):
             return loose, launch or "python test_main.py"
+    as_json = _from_json(text or "")
+    if as_json:
+        main = _code_only(as_json["main.py"])
+        test = _code_only(as_json["test_main.py"])
+        if main and test:
+            return {"main.py": main, "test_main.py": test}, launch or "python test_main.py"
     return {}, launch or "python test_main.py"
+
+
+def _from_json(text: str) -> dict[str, str]:
+    """A JSON object with the two file bodies. An essay inside the strings is still checked later."""
+    import json
+
+    raw = (text or "").strip()
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        data = json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    main = data.get("main.py")
+    test = data.get("test_main.py")
+    if not isinstance(main, str) or not isinstance(test, str):
+        return {}
+    if not main.strip() or not test.strip():
+        return {}
+    return {"main.py": main, "test_main.py": test}
 
 
 def format_deliverable(files: dict[str, str], launch: str, result: dict) -> str:
@@ -234,16 +281,16 @@ def stored_files(findings: str) -> dict[str, str]:
 
 def _prompt(objective: str, retry: bool = False) -> str:
     text = (
-        "Write the program for this request. Output only this shape, with real Python, and then stop.\n"
+        "Write the program for this request. Output only a JSON object with two string fields, main.py and test_main.py, and then stop.\n"
         "FILE: main.py\n"
         "FILE: test_main.py\n"
         "LAUNCH: python test_main.py\n"
         "test_main.py imports main and uses assert. The assert must fail if the program is wrong. "
-        "Do not use pytest. Do not use the network. Do not write assert True.\n\n"
+        "Do not use pytest. Do not use the network. Do not write assert True. Do not describe more than one program.\n\n"
         f"Request:\n{(objective or '')[:800]}\n"
     )
     if retry:
-        text += "\nThe previous answer was not Python. Output only the FILE blocks.\n"
+        text += "\nThe previous answer was not Python. Output only the JSON object or the FILE blocks.\n"
     return text
 
 
@@ -274,11 +321,16 @@ def _ambiguous_program(text: str) -> bool:
     return bool(prints) and bool(defs)
 
 
+def _looks_like_program_json(text: str) -> bool:
+    raw = (text or "").strip()
+    return raw.startswith("{") and '"main.py"' in raw and '"test_main.py"' in raw
+
+
 def classify_program(text: str) -> tuple[dict[str, str], str, str]:
     """One syntax-checked program, or a reason nothing was saved."""
     raw_blocks = _raw_blocks(text or "")
     named = "main.py" in raw_blocks and "test_main.py" in raw_blocks
-    if not named and _ambiguous_program(text or ""):
+    if not named and _ambiguous_program(text or "") and not _looks_like_program_json(text or ""):
         return {}, "python test_main.py", "The reply describes more than one program, so none was saved."
     files, launch = parse_program(text or "")
     if files.get("main.py") and files.get("test_main.py"):
@@ -287,7 +339,9 @@ def classify_program(text: str) -> tuple[dict[str, str], str, str]:
         if not _tests_are_meaningful(files["test_main.py"]):
             return {}, launch, "The test cannot fail, so the program was not saved."
         return files, launch, ""
-    if named:
+    if not named and _ambiguous_program(text or ""):
+        return {}, "python test_main.py", "The reply describes more than one program, so none was saved."
+    if named or _from_json(text or ""):
         return {}, "python test_main.py", "The file blocks failed the syntax check, so nothing was saved."
     return {}, "python test_main.py", "The reply did not contain one main.py and one test_main.py, so nothing was saved."
 
@@ -303,7 +357,7 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
     """Ask the model for files, run the test, and retry once without pasting the note back."""
     from .code_sandbox import run_files
 
-    text, tokens, meta = _invoke(complete, "Write the files only.", _prompt(objective), 1400, "FILE: main.py\n")
+    text, tokens, meta = _invoke(complete, "Write the files only.", _prompt(objective), 640, "")
     files, launch, rejection = classify_program(text or "")
     result = run_files(files) if files.get("main.py") and files.get("test_main.py") else {
         "passed": False,
@@ -318,8 +372,8 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
             complete,
             "Write the files only.",
             _prompt(objective, retry=True) + "\nCheck: " + (rejection or result.get("stderr") or "the tests failed.")[:300] + "\n",
-            1400,
-            "FILE: main.py\n",
+            640,
+            "",
         )
         files2, launch2, rejection2 = classify_program(text2 or "")
         if files2:

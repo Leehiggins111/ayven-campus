@@ -65,7 +65,7 @@ def _emit(role: str, text: str, tokens: int, meta: dict, raw: str | None = None)
     return strip_think(text or ""), tokens, meta
 
 
-def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None):
+def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None):
     started = time.time()
     model = role_model(role)
     meta = {"role": role.upper(), "model": model, "backend": "stub", "elapsed_s": 0.0, "provider": "ayven"}
@@ -85,7 +85,7 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
         meta["completion_tokens"] = int(tokens or 0)
         return _emit(role, text or "", tokens, meta, raw=text or "")
     if local_base() and role.upper() != "ESCALATION":
-        text, tokens, constrained = _openai_compat(local_base(), os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ayven-local"), model, system, user, max_tokens, schema=schema, prefill=prefill, stop=stop)
+        text, tokens, constrained = _openai_compat(local_base(), os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ayven-local"), model, system, user, max_tokens, schema=schema, prefill=prefill, stop=stop, expand_unfinished=expand_unfinished, ollama_format=ollama_format)
         meta["backend"] = "local_openai_compat"
         meta["constrained"] = {key: value for key, value in (constrained or {}).items() if key != "raw_response"}
         meta["model_validated"] = False
@@ -141,14 +141,14 @@ def ollama_raw_prompt(system: str, user: str, prefill: str = "") -> str:
     )
 
 
-def ollama_native_body(model: str, system: str, user: str, max_tokens: int, prefill: str = "", stop=None) -> dict:
+def ollama_native_body(model: str, system: str, user: str, max_tokens: int, prefill: str = "", stop=None, ollama_format=None) -> dict:
     """Native /api/generate with raw ChatML. The OpenAI route cannot turn qwen3 thinking off."""
     predict = max(int(max_tokens or 0), 64)
     stops = ["<|im_end|>", "<|im_start|>"]
     for item in stop or []:
         if item and item not in stops:
             stops.append(item)
-    return {
+    body = {
         "model": model,
         "prompt": ollama_raw_prompt(system, user, prefill),
         "raw": True,
@@ -161,6 +161,9 @@ def ollama_native_body(model: str, system: str, user: str, max_tokens: int, pref
             "stop": stops,
         },
     }
+    if ollama_format:
+        body["format"] = ollama_format
+    return body
 
 
 def ollama_answer(payload: dict) -> str:
@@ -180,14 +183,14 @@ def ollama_answer(payload: dict) -> str:
     return strip_think(content).strip()
 
 
-def _openai_compat(base, key, model, system, user, max_tokens, schema=None, prefill: str = "", stop=None):
+def _openai_compat(base, key, model, system, user, max_tokens, schema=None, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None):
     import httpx
     from .intelligence.constrained import enforce_output, server_body
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "600" if ":11434" in (base or "") else "90"))
     if ":11434" in (base or ""):
-        text, tokens, trace = _ollama_native(base, model, messages, max_tokens, timeout, prefill=prefill, stop=stop)
+        text, tokens, trace = _ollama_native(base, model, messages, max_tokens, timeout, prefill=prefill, stop=stop, expand_unfinished=expand_unfinished, ollama_format=ollama_format)
         text, info = enforce_output(schema, text)
         info = dict(info or {})
         info.update(trace)
@@ -242,7 +245,7 @@ def ollama_generation(payload: dict, elapsed_s: float = 0.0) -> dict:
     }
 
 
-def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int, timeout: float, prefill: str = "", stop=None) -> tuple[str, int, dict]:
+def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int, timeout: float, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None) -> tuple[str, int, dict]:
     """Ask twice at most. A reasoning field is never copied into the answer."""
     import httpx
 
@@ -262,17 +265,23 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
     last_trace = ollama_generation({})
     salvage: tuple[str, dict] | None = None
     for predict in budgets:
-        body = ollama_native_body(model, system, user, predict, prefill=prefill, stop=stop)
+        body = ollama_native_body(model, system, user, predict, prefill=prefill, stop=stop, ollama_format=ollama_format)
         started = time.time()
         response = httpx.post(url, json=body, timeout=timeout)
         response.raise_for_status()
         data = response.json()
         last_trace = ollama_generation(data, time.time() - started)
         text = ollama_answer(data)
-        if not text or _unfinished_essay(data, text):
+        if not text:
             log_generation("ollama", last_trace, last_trace.get("raw_response") or "")
-            if text:
-                salvage = (text, last_trace)
+            continue
+        if _unfinished_essay(data, text):
+            log_generation("ollama", last_trace, last_trace.get("raw_response") or "")
+            if not expand_unfinished:
+                text = _attach_prefill(prefill, text)
+                tokens = int(last_trace.get("completion_tokens") or 0) or max(1, len(text) // 4)
+                return text, tokens, last_trace
+            salvage = (text, last_trace)
             continue
         text = _attach_prefill(prefill, text)
         tokens = int(last_trace.get("completion_tokens") or 0) or max(1, len(text) // 4)

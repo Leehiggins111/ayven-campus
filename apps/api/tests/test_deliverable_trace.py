@@ -356,7 +356,8 @@ def test_a_retry_names_the_failed_check_and_does_not_repeat_the_rejected_line():
     from app.intelligence.execution import _section_prompt
 
     user = _section_prompt("Write exactly three lines and stop.", 2, "The line claims 24/7 availability. That claim is not stored.", "")
-    assert "24/7" in user
+    assert "availability" in user
+    assert "24/7" not in user
     assert "was rejected" in user
     assert "Kitchen Repair Service" not in user
     assert "Previous answer" not in user
@@ -385,3 +386,151 @@ assert True
     _files, _launch, weak = classify_program(clear)
     assert _files == {}
     assert "cannot fail" in weak.lower()
+
+
+def test_a_rejected_plan_keeps_the_repaired_sections_and_the_failed_check():
+    from app.intelligence.deliverable import plan_sections_filled, retained_draft
+
+    repaired = {
+        "pricing": "Assumption: plan around £10 to £40 per door for replacing kitchen doors, worktops and handles.",
+        "next steps": "The owner's first practical action is to replace kitchen doors, worktops and handles.",
+    }
+    one_shot = "Next steps\nReplace doors.\nPricing\nAbout £10.\n"
+    reason = "The line claims 24/7 availability. That claim is not stored."
+    kept = retained_draft(one_shot + "Advert\n" + _ADVERT_24, DOOR, "£10 to £40", {"advert": reason}, repaired)
+    assert "[next steps] passed" in kept
+    assert "The owner's first practical action" in kept
+    assert "[next steps] The section is too short" not in kept
+    assert "[pricing] passed" in kept
+    assert "Assumption:" in kept
+    assert "[advert] " + reason in kept
+    assert "Full draft:" in kept
+    assert "> " in kept
+    assert plan_sections_filled(kept, "£10 to £40") is False
+
+
+def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.intelligence.deliverable import _REQUIRED
+    from app.intelligence.execution import _fill_plan_sections
+
+    sentence = "The service replaces kitchen doors, worktops and handles without a full kitchen replacement."
+    sections = {key: sentence for key in _REQUIRED}
+    sections["pricing"] = "Assumption: plan around £10 to £40 for replacing kitchen doors, worktops and handles."
+    sections["advert"] = ""
+    sections["assumptions"] = sentence
+    sections["unresolved"] = "Still open: the towns to visit for kitchen door replacement are not settled."
+    bad = (
+        "Headline: 24/7 Kitchen Service\n"
+        "Body: We replace kitchen doors, worktops and handles without a full kitchen replacement.\n"
+        'Call to action: Reply yes to ask about kitchen doors.\n'
+    )
+    seen = []
+
+    def fake(role, system, user, max_tokens=400, programme=None, package_id="", plain=False, prefill="", stop=None, expand_unfinished=True, ollama_format=None):
+        seen.append(user)
+        if "was rejected" in user:
+            assert "24/7" not in user
+            assert "availability" in user
+            return "Replacement of kitchen doors, worktops and handles.", 8, {"backend": "test", "finish_reason": "stop", "raw_response": "Replacement of kitchen doors, worktops and handles."}
+        return bad, 12, {"backend": "test", "finish_reason": "stop", "raw_response": bad}
+
+    monkeypatch.setattr("app.intelligence.execution._complete", fake)
+    programme = SimpleNamespace(objective=DOOR, parent_id="", research={"evidence": []})
+    rejected = _fill_plan_sections(programme, sections, "£10 to £40")
+    assert rejected == {}
+    assert "24/7" not in sections["advert"]
+    assert sections["advert"].startswith("Headline: Replacement of kitchen doors")
+    assert "Body:" in sections["advert"]
+    assert len(seen) == 2
+
+
+def test_json_files_run_and_an_essay_is_not_saved(monkeypatch):
+    import json
+
+    from app.intelligence.software import build_deliverable, classify_program
+
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+    payload = json.dumps({
+        "main.py": "def add(left, right):\n    return left + right\n",
+        "test_main.py": "import main\nassert main.add(2, 3) == 5\n",
+    })
+    files, _launch, reason = classify_program(payload)
+    assert reason == ""
+    assert "def add" in files["main.py"]
+    essay_json = json.dumps({
+        "main.py": "Option 1: print(2 + 3)\nPossibility A:\ndef add():\n    print(2 + 3)\n",
+        "test_main.py": "assert True\n",
+    })
+    saved, _launch, rejection = classify_program(essay_json)
+    assert saved == {}
+    assert rejection
+
+    def complete(system, user, limit, prefill=""):
+        return _AMBIGUOUS, 20, {"finish_reason": "length", "raw_response": _AMBIGUOUS, "completion_tokens": 20}
+
+    text, meta = build_deliverable("Write a small Python program that adds 2 and 3 and prints the sum.", complete)
+    assert "No file was saved" in text
+    assert "more than one program" in text
+    assert meta["tests_passed"] is False
+    assert "## main.py" not in text
+
+    state = {"n": 0}
+
+    def retry(system, user, limit, prefill=""):
+        state["n"] += 1
+        if state["n"] == 1:
+            return _AMBIGUOUS, 20, {"finish_reason": "length", "raw_response": _AMBIGUOUS, "completion_tokens": 20}
+        return payload, 30, {"finish_reason": "stop", "raw_response": payload, "completion_tokens": 30}
+
+    ran, ran_meta = build_deliverable("Write a small Python program that adds 2 and 3 and prints the sum.", retry)
+    assert "tests: passed" in ran.lower()
+    assert "def add" in ran
+    assert ran_meta["tests_passed"] is True
+
+
+def test_a_software_essay_is_not_given_a_larger_budget(monkeypatch):
+    calls = []
+
+    class Response:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, json=None, timeout=None, headers=None):
+        calls.append(json)
+        return Response({
+            "response": "We are to write a program that adds 2 and 3 and prints the sum.",
+            "done_reason": "length",
+            "eval_count": 400,
+        })
+
+    monkeypatch.setattr("httpx.post", fake_post)
+    from app.intelligence.software import PROGRAM_FORMAT, SOFTWARE_STOPS
+    from app.models import _openai_compat
+
+    text, _tokens, info = _openai_compat(
+        "http://127.0.0.1:11434/v1",
+        "local",
+        "qwen3:4b",
+        "Write the files only.",
+        "Write a small Python program that adds 2 and 3 and prints the sum.",
+        640,
+        stop=list(SOFTWARE_STOPS),
+        expand_unfinished=False,
+        ollama_format=PROGRAM_FORMAT,
+    )
+    assert len(calls) == 1
+    assert calls[0]["options"]["num_predict"] == 640
+    assert calls[0]["format"]["required"] == ["main.py", "test_main.py"]
+    assert "We are to" in calls[0]["options"]["stop"]
+    assert "response_format" not in calls[0]
+    assert "We are to write a program" in text
+    assert info["finish_reason"] == "length"

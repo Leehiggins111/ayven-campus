@@ -6,6 +6,7 @@ Evidence defines the factual boundaries. The model may reason inside them.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -70,12 +71,15 @@ def _set_agent(agent_id: str, **fields) -> None:
     conn.close()
 
 
-def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = "", stop=None):
+def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None):
     from ..models import complete_role
 
     if plain:
         try:
-            text, tokens, meta = complete_role(role, system, user, max_tokens=max_tokens, prefill=prefill, stop=stop)
+            text, tokens, meta = complete_role(
+                role, system, user, max_tokens=max_tokens, prefill=prefill, stop=stop,
+                expand_unfinished=expand_unfinished, ollama_format=ollama_format,
+            )
         except Exception as exc:
             trace = getattr(exc, "trace", None) or {}
             meta = {
@@ -928,6 +932,8 @@ def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
     from .software import build_deliverable
 
     def complete(system: str, user: str, max_tokens: int, prefill: str = ""):
+        from .software import PROGRAM_FORMAT, SOFTWARE_STOPS
+
         text, tokens, meta = _complete(
             "EMPLOYEE",
             system,
@@ -937,6 +943,9 @@ def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
             package_id=package_id,
             plain=True,
             prefill=prefill,
+            stop=list(SOFTWARE_STOPS),
+            expand_unfinished=False,
+            ollama_format=PROGRAM_FORMAT,
         )
         raw = meta.get("raw_response") if isinstance(meta.get("raw_response"), str) else (text or "")
         _record_generation(programme, package_id, "software", raw or "", meta, kept="generated")
@@ -1019,7 +1028,7 @@ def _publish_plan(self: Programme, model_text: str) -> str:
     if plan_sections_filled(assembled, blob):
         return assembled
     if (model_text or "").strip():
-        return retained_draft(model_text, self.objective, blob, reasons)
+        return retained_draft(model_text, self.objective, blob, reasons, sections)
     return ""
 
 
@@ -1376,7 +1385,7 @@ def _section_jobs(objective: str) -> tuple:
         ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages and the price each page states. Use only prices from the list below." + request, "Opened pages state "),
         ("pricing", "Pricing", "Write two sentences. Start with Assumption. Cite one price from the list below and name the service in this request." + request, "Assumption: "),
         ("channels", "Channels", "Write one sentence about how customers for this service are reached." + request, "Customers are reached through "),
-        ("advert", "Advert", "Write exactly three lines and stop. Headline names the service in this request. Body is one sentence. Call to action asks the customer to respond." + request, "Headline: "),
+        ("advert", "Advert", "Write exactly three lines and stop. Headline names the service in this request. Do not mention hours or availability. Body is one sentence. Call to action asks the customer to respond." + request, "Headline: "),
         ("call to action", "Call to action", "Write one sentence that asks the customer to respond." + request, "Ask for "),
         ("next steps", "Next steps", "Write one sentence about the first practical action the owner takes." + request, "Next, the owner "),
         ("assumptions", "Assumptions", "Write one sentence. The service comes from the request. Say what still has to be confirmed." + request, "The plan assumes "),
@@ -1442,13 +1451,22 @@ def _record_generation(programme: Programme, package_id: str, kind: str, raw: st
     })
 
 
+def _check_for_model(reason: str) -> str:
+    """The retry names the check. It does not hand a rejected claim back to be copied."""
+    text = (reason or "").strip() or "it did not pass validation"
+    lowered = text.lower()
+    if "24/7" in lowered or "always ready" in lowered or "availability" in lowered:
+        return "The previous line was an availability claim. That claim is not stored. Do not mention hours or availability."
+    return text
+
+
 def _section_prompt(instruction: str, attempt: int, reason: str, prices: str) -> str:
     """A retry names the failed check. It does not paste the rejected lines back."""
     if attempt <= 1:
         return f"{instruction}{prices}"
     lead = (
         "The previous answer was rejected and was not stored.\n"
-        f"Check: {reason or 'it did not pass validation'}\n"
+        f"Check: {_check_for_model(reason)}\n"
         "Write the finished lines only. Do not repeat a rejected claim.\n"
         + instruction
     )
@@ -1489,24 +1507,75 @@ def _has_model_sentence(text: str) -> bool:
     return False
 
 
+def _advert_saved_lines(raw: str) -> tuple[str, str]:
+    """Body and call to action that already pass, when the headline does not."""
+    from .deliverable import _advert_content_ok, _visible_answer
+
+    body = cta = ""
+    for line in _visible_answer(raw or "").splitlines():
+        match = re.match(r"^(body|call to action)\s*:\s*(.+)$", line.strip(), re.I)
+        if not match:
+            continue
+        label = match.group(1).lower()
+        content = match.group(2).strip().strip('"')
+        if not _advert_content_ok(label, content):
+            continue
+        if label == "body" and not body:
+            body = content
+        elif label == "call to action" and not cta:
+            cta = content
+    return body, cta
+
+
+def _clean_headline(raw: str) -> str:
+    """A headline line that passes the same check as a stored advert line."""
+    from .deliverable import _advert_content_ok, _visible_answer
+
+    for line in _visible_answer(raw or "").splitlines():
+        stripped = line.strip().strip('"')
+        match = re.match(r"^headline\s*:\s*(.+)$", stripped, re.I)
+        content = match.group(1).strip() if match else stripped
+        if _advert_content_ok("headline", content):
+            return content
+    return ""
+
+
 def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict:
-    """Ask for each missing section on its own, at most twice. Return the reason each check still failed."""
+    """Ask for each missing section on its own, at most three times. Return the reason each check still failed."""
     jobs = _section_jobs(programme.objective)
     rejected: dict[str, str] = {}
-    for _pass in range(2):
+    advert_rest = ("", "")
+    for _pass in range(3):
         pending = [job for job in jobs if _section_missing(job[0], sections.get(job[0]) or "", blob, programme.objective)]
         if not pending:
             return {}
         for key, title, instruction, prefill in pending:
+            attempt = _pass + 1
+            use_instruction = instruction
+            use_prefill = prefill
+            if key == "advert" and attempt > 1 and advert_rest[0] and advert_rest[1]:
+                use_instruction = (
+                    "Write one line only. Start with Headline:. "
+                    "Name the service in this request. Do not mention hours or availability."
+                )
+                use_prefill = "Headline: "
             written, raw, meta = _write_one_section(
-                programme, key, title, instruction, prefill=prefill, attempt=_pass + 1, reason=rejected.get(key, ""),
+                programme, key, title, use_instruction, prefill=use_prefill, attempt=attempt, reason=rejected.get(key, ""),
             )
-            reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw, blob, programme.objective)
+            if key == "advert" and attempt > 1 and advert_rest[0] and advert_rest[1]:
+                headline = _clean_headline(raw)
+                if headline:
+                    written = f"Headline: {headline}\nBody: {advert_rest[0]}\nCall to action: {advert_rest[1]}"
+            reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw if not written else written, blob, programme.objective)
             meta = dict(meta or {})
             meta["reason"] = reason
             _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept")
             if reason:
                 rejected[key] = reason
+                if key == "advert":
+                    body, cta = _advert_saved_lines(raw)
+                    if body and cta:
+                        advert_rest = (body, cta)
                 continue
             sections[key] = written
             rejected.pop(key, None)
