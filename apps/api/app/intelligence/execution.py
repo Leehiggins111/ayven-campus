@@ -18,6 +18,7 @@ from .audit import advisory_decision, authoritative_decision, challenge_material
 from .calc import eval_arithmetic
 from .capabilities import frankenstein_status
 from .completion import score_task
+from .deliverable import clip_at_boundary
 from .critic import critique
 from .grounding import ground_text
 from .planner import build_plan, classify
@@ -384,7 +385,7 @@ class Programme:
         if role == "EMPLOYEE":
             prompts = []
             for child in self.children:
-                limit = 900 if self.task_class == "business_research" and child.get("focus") == "draft" else 320
+                limit = 2048 if self.task_class == "business_research" and child.get("focus") == "draft" else 320
                 prompts.append({"id": child["id"], "system": _employee_system(self), "user": _employee_user(self, child), "max_tokens": limit})
             return prompts
         if role == "SUPERVISOR":
@@ -685,7 +686,7 @@ class Programme:
                 {
                     "url": item.get("source_url") or "",
                     "title": item.get("source_title") or "",
-                    "text": (item.get("extracted_content") or "")[:500],
+                    "text": clip_at_boundary(item.get("extracted_content") or "", 2000),
                 }
                 for item in (self.research.get("evidence") or [])
                 if isinstance(item, dict)
@@ -896,7 +897,7 @@ def _publish_plan(self: Programme, model_text: str) -> str:
         "EMPLOYEE",
         _employee_system(self),
         _business_repair_user(self, model_text),
-        max_tokens=900,
+        max_tokens=2048,
         programme=self,
         package_id=self.parent_id,
     )

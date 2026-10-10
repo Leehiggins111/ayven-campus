@@ -295,6 +295,21 @@ def plan_sections_filled(text: str, evidence_blob: str = "") -> bool:
     return True
 
 
+def clip_at_boundary(text: str, limit: int) -> str:
+    """Shorten stored text on a sentence or word boundary. Never end mid-word."""
+    raw = re.sub(r"[ \t]+", " ", (text or "").strip())
+    if len(raw) <= limit:
+        return raw
+    window = raw[:limit]
+    cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "), window.rfind("\n"))
+    if cut >= 40:
+        return window[: cut + 1].strip()
+    space = window.rfind(" ")
+    if space >= 40:
+        return window[:space].strip()
+    return window.strip()
+
+
 def evidence_blob(evidence: list[dict] | None) -> str:
     parts = []
     for item in evidence or []:
@@ -377,9 +392,9 @@ def _format_sections(sections: dict[str, str], evidence: list[dict]) -> str:
             for item in evidence[:8]:
                 lines.append(item.get("source_title") or item.get("title") or "Opened page")
                 lines.append(f"URL: {item.get('source_url') or item.get('url')}")
-                excerpt = re.sub(r"\s+", " ", (item.get("extracted_content") or item.get("text") or "")).strip()
+                excerpt = clip_at_boundary(item.get("extracted_content") or item.get("text") or "", 2000)
                 if excerpt:
-                    lines.append(excerpt[:500])
+                    lines.append(excerpt)
                 lines.append("")
         lines.append("")
     if "nothing was sent" not in "\n".join(lines).lower():

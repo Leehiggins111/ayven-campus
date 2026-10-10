@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .deliverable import clip_at_boundary
+
 
 def _money_lines(lines: list[dict]) -> list[str]:
     rendered = []
@@ -233,7 +235,7 @@ def _general_evidence(facts: dict) -> str:
         lines.append("No page was opened. No fact is asserted from memory.")
     for item in evidence:
         lines.append(f"- {item.get('source_title') or 'page'}: {item.get('source_url')}")
-        excerpt = (item.get("extracted_content") or "")[:400]
+        excerpt = clip_at_boundary(item.get("extracted_content") or "", 2000)
         if excerpt:
             lines.append(excerpt)
     for gap in facts["research"].get("gaps") or []:
@@ -308,9 +310,9 @@ def _business_plan(facts: dict) -> str:
         retrieved = item.get("timestamp") or ""
         if retrieved:
             lines.append(f"Retrieved: {retrieved}")
-        excerpt = (item.get("extracted_content") or "").strip()
+        excerpt = clip_at_boundary(item.get("extracted_content") or "", 2000)
         if excerpt:
-            lines.append(excerpt[:500])
+            lines.append(excerpt)
         lines.append(f"Label: {meta.get('freshness') or 'UNRESOLVED'}")
         lines.append("")
     lines += [

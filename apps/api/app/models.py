@@ -74,8 +74,12 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
     return strip_think(text), tokens, meta
 
 
+def ollama_thinking_enabled() -> bool:
+    return os.environ.get("AYVEN_OLLAMA_THINK", "0") == "1"
+
+
 def local_request_body(base: str, body: dict) -> dict:
-    """Ollama serves plain chat completions. Guided-decoding keys are for vLLM and llama.cpp."""
+    """Ollama's OpenAI route ignores a `think` field. `reasoning_effort: none` is the switch it reads."""
     if ":11434" not in (base or ""):
         return body
     plain = {
@@ -83,19 +87,63 @@ def local_request_body(base: str, body: dict) -> dict:
         "messages": body.get("messages") or [],
         "max_tokens": body.get("max_tokens") or 400,
         "temperature": body.get("temperature", 0.2),
-        "think": os.environ.get("AYVEN_OLLAMA_THINK", "0") == "1",
+        "think": ollama_thinking_enabled(),
+        "reasoning_effort": "none" if not ollama_thinking_enabled() else "medium",
     }
     return plain
 
 
+_CLOSED_THINK = "<think>\n\n</think>\n"
+
+
+def ollama_native_body(model: str, messages: list[dict], max_tokens: int, *, close_think: bool) -> dict:
+    """Native /api/chat. A closed think prefill stops qwen3 spending the whole budget inside <think>."""
+    sent = list(messages)
+    think = ollama_thinking_enabled()
+    if close_think and not think:
+        sent = sent + [{"role": "assistant", "content": _CLOSED_THINK}]
+    predict = max(int(max_tokens or 0), 64)
+    return {
+        "model": model,
+        "messages": sent,
+        "stream": False,
+        "think": think,
+        "truncate": False,
+        "options": {
+            "num_predict": predict,
+            "num_ctx": max(8192, predict + 4096),
+            "temperature": 0.2,
+        },
+    }
+
+
+def ollama_answer(payload: dict) -> str:
+    """Visible answer only. The thinking channel is never the deliverable."""
+    from .intelligence.boundary import separate_channels
+    from .intelligence.think import strip_think
+
+    message = payload.get("message") or {}
+    if not message and payload.get("choices"):
+        message = (payload["choices"][0] or {}).get("message") or {}
+    content = message.get("content") or ""
+    # reasoning / thinking is discarded even if the caller passes it in.
+    text = separate_channels(content).executable
+    return strip_think(text).strip()
+
+
 def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
     import httpx
-    from .intelligence.boundary import separate_channels
     from .intelligence.constrained import enforce_output, server_body
 
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    body = local_request_body(base, server_body(model, messages, max_tokens, schema))
     timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "600" if ":11434" in (base or "") else "90"))
+    if ":11434" in (base or ""):
+        text, tokens = _ollama_native(base, model, messages, max_tokens, timeout)
+        text, info = enforce_output(schema, text)
+        if not (text or "").strip():
+            raise RuntimeError("empty model content")
+        return text, tokens, info
+    body = local_request_body(base, server_body(model, messages, max_tokens, schema))
     r = httpx.post(
         f"{base.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
@@ -111,12 +159,39 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None):
         )
     r.raise_for_status()
     data = r.json()
-    message = data["choices"][0]["message"]
-    text = message.get("content") or ""
-    # A reasoning channel is not content. It is discarded before the caller sees the text.
-    text = separate_channels(text, message.get("reasoning_content") or message.get("reasoning")).executable
+    text = ollama_answer(data)
     text, info = enforce_output(schema, text)
     if not (text or "").strip():
         raise RuntimeError("empty model content")
     tokens = int(data.get("usage", {}).get("total_tokens") or len(text) // 4)
     return text, tokens, info
+
+
+def _ollama_root(base: str) -> str:
+    root = (base or "").rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3]
+    return root
+
+
+def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int, timeout: float) -> tuple[str, int]:
+    """Ask twice at most. A reasoning field is never copied into the answer."""
+    import httpx
+
+    url = f"{_ollama_root(base)}/api/chat"
+    attempts = (
+        ollama_native_body(model, messages, max_tokens, close_think=True),
+        ollama_native_body(model, messages, max(int(max_tokens or 0) * 2, 2048), close_think=False),
+    )
+    last_tokens = 0
+    for body in attempts:
+        response = httpx.post(url, json=body, timeout=timeout)
+        if response.status_code == 400 and body["messages"][-1].get("content") == _CLOSED_THINK:
+            continue
+        response.raise_for_status()
+        data = response.json()
+        last_tokens = int(data.get("eval_count") or data.get("prompt_eval_count") or 0)
+        text = ollama_answer(data)
+        if text:
+            return text, last_tokens or max(1, len(text) // 4)
+    raise RuntimeError("empty model content")

@@ -9,6 +9,7 @@ from datetime import datetime
 from .. import events
 from ..db import connect
 from ..distribution import update_package
+from .deliverable import clip_at_boundary
 from .think import strip_think
 
 VISUAL_STATES = (
@@ -92,6 +93,16 @@ def public_text(value: str, limit: int = 280) -> str:
     if "<think" in lowered or "chain of thought" in lowered or "chain-of-thought" in lowered:
         return ""
     return " ".join(text.split())[:limit]
+
+
+def owner_findings(value: str) -> str:
+    """The stored plan, with reasoning tags removed and section text left whole."""
+    return strip_think(value or "").strip()
+
+
+def _summary_clip(text: str) -> str:
+    flat = " ".join((text or "").split())
+    return clip_at_boundary(flat, 400)
 
 
 def readable_prose(value: str, limit: int = 1200) -> str:
@@ -575,8 +586,8 @@ def _result(package: dict, obs: dict, evaluation: dict, trust: str, cost: str, *
         text = readable_prose(str(item), 180)
         if text:
             gaps.append(text)
-    findings = readable_prose(package.get("findings") or "", 1200)
-    deliverable = readable_prose((obs.get("plan") or {}).get("deliverable") or findings, 400)
+    findings = owner_findings(package.get("findings") or "")
+    deliverable = owner_findings((obs.get("plan") or {}).get("deliverable") or "") or findings
     manager = package.get("manager_decision") or ""
     verdict = evaluation.get("verdict") or ""
     if unresolved or (package.get("workflow_state") or "") == "UNRESOLVED":
@@ -588,7 +599,7 @@ def _result(package: dict, obs: dict, evaluation: dict, trust: str, cost: str, *
     else:
         summary = findings or "Recorded. See the findings below."
     return {
-        "summary": summary[:400],
+        "summary": _summary_clip(summary),
         "deliverable": deliverable,
         "findings": findings,
         "gaps": gaps[:6],

@@ -134,6 +134,7 @@ def test_ollama_requests_are_plain_chat():
     assert "guided_json" not in plain
     assert "grammar" not in plain
     assert plain["think"] is False
+    assert plain["reasoning_effort"] == "none"
     assert local_request_body("http://127.0.0.1:9/v1", guided)["guided_json"]["type"] == "object"
 
 
@@ -215,3 +216,72 @@ def test_access_stays_off_when_the_key_is_unset(monkeypatch):
     os.environ.pop("AYVEN_ACCESS_KEY", None)
     health = TestClient(app).get("/health").json()
     assert health["access_protected"] is False
+
+
+def test_stored_offer_line_is_not_cut_mid_word():
+    from app.intelligence.campus_view import owner_findings
+    from app.intelligence.deliverable import clip_at_boundary
+    from app.intelligence.render import render_focus
+
+    offer = "Unresolved. No opened page stated an offer or how it differs from other providers."
+    clipped = clip_at_boundary(offer, 74)
+    assert clipped.endswith("other")
+    assert not clipped.endswith("pr")
+    assert "providers." in offer
+    plan = render_focus("draft", {
+        "task_class": "business_research",
+        "objective": "Create a business launch plan for Alba Kitchen Refresh.",
+        "research": {"evidence": [], "gaps": []},
+    })
+    stored = owner_findings(plan)
+    assert "how it differs from other providers." in stored
+
+
+def test_ollama_native_chat_does_not_publish_reasoning(monkeypatch):
+    calls = []
+
+    class Response:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, json=None, timeout=None, headers=None):
+        calls.append({"url": url, "body": json})
+        if len(calls) == 1:
+            return Response({"message": {"content": "", "thinking": "SECRET_REASONING the offer is half"}, "eval_count": 40})
+        return Response({
+            "message": {
+                "content": "Service\nAlba paints existing kitchen cabinets in the UK.\nOffer and positioning\nThe offer is an on-site respray that keeps the kitchen in place.",
+                "thinking": "SECRET_REASONING",
+            },
+            "eval_count": 80,
+        })
+
+    monkeypatch.setattr("httpx.post", fake_post)
+    from app.models import _openai_compat
+
+    text, _tokens, info = _openai_compat(
+        "http://127.0.0.1:11434/v1", "local", "qwen3:4b", "Write the plan.", "Alba Kitchen Refresh", 2048,
+    )
+    assert "SECRET_REASONING" not in text
+    assert "on-site respray" in text
+    assert info["postcheck"] == "skipped"
+    assert calls[0]["url"].endswith("/api/chat")
+    first = calls[0]["body"]
+    assert first["think"] is False
+    assert first["truncate"] is False
+    assert "grammar" not in first
+    assert "guided_json" not in first
+    assert first["options"]["num_predict"] == 2048
+    assert first["options"]["num_ctx"] >= 8192
+    assert first["messages"][-1]["role"] == "assistant"
+    assert first["messages"][-1]["content"].startswith("<think>")
+    assert calls[1]["body"]["think"] is False
+    assert calls[1]["body"]["messages"][-1]["role"] == "user"
+    assert calls[1]["body"]["options"]["num_predict"] >= 2048
