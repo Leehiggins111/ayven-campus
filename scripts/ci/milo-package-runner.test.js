@@ -7,6 +7,38 @@ const os = require("os");
 const path = require("path");
 const runner = require("./milo-package-runner");
 
+test("the existing twelve package checks cannot qualify the full product", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "full-acceptance-"));
+  try {
+    assert.equal(runner.fullProductAccepted(dir), false);
+    fs.writeFileSync(path.join(dir, "acceptance.json"), JSON.stringify({ acceptance_scope: "existing-package-regressions", full_product_accepted: false, results: { "1": { status: "PASS" } } }));
+    assert.equal(runner.fullProductAccepted(dir), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a zero process exit cannot hide a failed acceptance check", () => {
+  assert.equal(runner.acceptancePassed({ status: 0, stdout: "PASS 1\nFAIL 2", stderr: "" }), false);
+  assert.equal(runner.acceptancePassed({ status: 1, stdout: "PASS 1", stderr: "" }), false);
+  assert.equal(runner.acceptancePassed({ status: 0, stdout: "PASS 1", stderr: "FAIL acceptance" }), false);
+  assert.equal(runner.acceptancePassed({ status: 0, stdout: "PASS 1", stderr: "" }), true);
+});
+
+test("the download checksum changes when archive bytes change", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "archive-checksum-"));
+  try {
+    const file = path.join(dir, "package.zip");
+    fs.writeFileSync(file, "first archive");
+    const first = runner.sha256File(file);
+    fs.writeFileSync(file, "changed archive");
+    assert.notEqual(runner.sha256File(file), first);
+    assert.equal(runner.sha256File(file), require("crypto").createHash("sha256").update("changed archive").digest("hex"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 const WORKFLOW = `
 name: windows-package
 on: workflow_dispatch

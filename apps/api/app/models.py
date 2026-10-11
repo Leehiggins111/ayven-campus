@@ -10,9 +10,9 @@ from pathlib import Path
 from . import llm
 
 DEFAULT_MODELS = {
-    "EMPLOYEE": os.environ.get("AYVEN_EMPLOYEE_MODEL", "Qwen/Qwen3-8B"),
-    "SUPERVISOR": os.environ.get("AYVEN_SUPERVISOR_MODEL", "Qwen/Qwen3-32B"),
-    "MANAGER": os.environ.get("AYVEN_MANAGER_MODEL", "Qwen/Qwen3-30B-A3B"),
+    "EMPLOYEE": (os.environ.get("AYVEN_EMPLOYEE_MODEL") or "Qwen/Qwen3-8B"),
+    "SUPERVISOR": (os.environ.get("AYVEN_SUPERVISOR_MODEL") or "Qwen/Qwen3-32B"),
+    "MANAGER": (os.environ.get("AYVEN_MANAGER_MODEL") or "Qwen/Qwen3-30B-A3B"),
     "ESCALATION": os.environ.get("AYVEN_ESCALATION_MODEL", ""),
 }
 
@@ -26,7 +26,7 @@ def set_role_generator(fn):
 
 
 def role_model(role: str) -> str:
-    return DEFAULT_MODELS.get(role.upper(), DEFAULT_MODELS["EMPLOYEE"])
+    return os.environ.get(f"AYVEN_{role.upper()}_MODEL") or DEFAULT_MODELS.get(role.upper(), DEFAULT_MODELS["EMPLOYEE"])
 
 
 def plan_model() -> str:
@@ -145,6 +145,8 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
         meta["elapsed_s"] = round(time.time() - started, 3)
         meta["completion_tokens"] = int(tokens or 0)
         return _emit(role, text, tokens, meta)
+    if os.environ.get("AYVEN_LLM_STUB", "1") == "0":
+        raise RuntimeError("Live workforce endpoint is not configured; fixture fallback is disabled")
     text, tokens = llm.complete(f"[{role}/{model}] {system}", user, max_tokens=max_tokens)
     meta["elapsed_s"] = round(time.time() - started, 3)
     meta["backend"] = "stub"
@@ -288,6 +290,8 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None, pref
     import httpx
     from .intelligence.constrained import enforce_output, server_body
 
+    if os.environ.get("AYVEN_PROVIDER_FORMAT") == "ollama":
+        return _ollama_chat(base, model, system, user, max_tokens, schema)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "600" if ":11434" in (base or "") else "90"))
     if ":11434" in (base or ""):
@@ -301,6 +305,13 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None, pref
             raise err
         return text, tokens, info
     body = local_request_body(base, server_body(model, messages, max_tokens, schema))
+    if os.environ.get("AYVEN_PROVIDER_FORMAT", "qwen") in ("openai", "json_object"):
+        body.pop("guided_json", None)
+        body.pop("grammar", None)
+        if schema is not None and os.environ.get("AYVEN_PROVIDER_FORMAT") == "json_object":
+            import json
+            body["response_format"] = {"type": "json_object"}
+            body["messages"][0]["content"] += "\nReturn JSON matching this schema: " + json.dumps(schema.model_json_schema())
     r = httpx.post(
         f"{base.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
@@ -455,3 +466,30 @@ def _attach_prefill(stem: str, text: str) -> str:
         return text
     joiner = "" if stem.endswith((" ", "\n")) else " "
     return f"{stem}{joiner}{text.strip()}".strip()
+
+def _ollama_chat(base, model, system, user, max_tokens, schema=None):
+    """Native local API: explicit thinking control and model timings, no cloud fallback."""
+    import httpx
+    from urllib.parse import urlparse
+    from .intelligence.boundary import separate_channels
+    from .intelligence.constrained import enforce_output
+    parsed = urlparse(base)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ("localhost", "127.0.0.1", "::1") or "cloud" in model.lower():
+        raise ValueError("Ollama workforce mode permits local models only")
+    endpoint = f"{parsed.scheme}://{parsed.netloc}/api/chat"
+    body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "stream": False, "think": False, "keep_alive": "15m",
+            "options": {"num_predict": max_tokens, "temperature": 0.2}}
+    if schema is not None:
+        body["format"] = schema.model_json_schema()
+    response = httpx.post(endpoint, json=body, timeout=120, follow_redirects=False)
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("done") or data.get("done_reason") == "length":
+        raise RuntimeError("The local model did not finish its answer")
+    message = data.get("message") or {}
+    text = separate_channels(message.get("content") or "", message.get("thinking") or "").executable
+    text, info = enforce_output(schema, text)
+    info.update({"thinking_requested": False, "total_duration_s": round((data.get("total_duration") or 0) / 1e9, 3),
+                 "load_duration_s": round((data.get("load_duration") or 0) / 1e9, 3), "output_tokens": data.get("eval_count") or 0})
+    return text, int(data.get("prompt_eval_count") or 0) + int(data.get("eval_count") or 0), info

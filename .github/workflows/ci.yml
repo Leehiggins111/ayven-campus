@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - "cursor/**"
+      - "codex/**"
 
 jobs:
   non-gpu:
@@ -31,6 +32,7 @@ jobs:
             apps/api/requirements-crawl.txt
             apps/api/requirements-memory.txt
             apps/api/requirements-pydantic-ai.txt
+            apps/api/requirements-browser.txt
             apps/api/constraints.txt
 
       - uses: actions/cache@v4
@@ -55,6 +57,7 @@ jobs:
           python -m pip install -r apps/api/requirements-crawl.txt -c apps/api/constraints.txt
           python -m pip install -r apps/api/requirements-memory.txt
           python -m pip install click==8.3.3 pillow==12.3.0
+          python -m pip install -r apps/api/requirements-browser.txt
           python -m playwright install --with-deps chromium
 
       - name: Allow the sandbox user namespace

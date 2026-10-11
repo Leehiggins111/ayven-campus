@@ -118,6 +118,8 @@ _TASK_SKILLS = {
     "web_research": ["research-web", "verify-claims"],
     "calculation": ["calculation", "verify-claims"],
     "software_build": ["verify-claims"],
+    "website_build": ["verify-claims"],
+    "application_build": ["verify-claims"],
     "trivial": [],
 }
 

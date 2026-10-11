@@ -2,6 +2,55 @@ import sqlite3
 from pathlib import Path
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
+import threading
+
+_stage_connection = ContextVar("stage_connection", default=None)
+
+
+class StageConnection:
+    """One owner transaction; legacy commit/close calls cannot split its checkpoint."""
+    def __init__(self, connection):
+        self.connection = connection
+        self.active = True
+        self.lock = threading.RLock()
+
+    def execute(self, *args, **kwargs):
+        with self.lock:
+            if not self.active:
+                raise RuntimeError("stage transaction has ended")
+            return self.connection.execute(*args, **kwargs)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@contextmanager
+def stage_transaction():
+    if _stage_connection.get() is not None:
+        raise RuntimeError("nested stage transaction")
+    connection = connect()
+    connection.execute("BEGIN IMMEDIATE")
+    proxy = StageConnection(connection)
+    token = _stage_connection.set(proxy)
+    try:
+        yield proxy
+        with proxy.lock:
+            connection.commit()
+    except BaseException:
+        with proxy.lock:
+            connection.rollback()
+        raise
+    finally:
+        with proxy.lock:
+            proxy.active = False
+        _stage_connection.reset(token)
+        connection.close()
+
 
 _state = {"path": None}
 
@@ -16,9 +65,12 @@ def reset_connection_state() -> None:
 
 
 def connect() -> sqlite3.Connection:
+    owned = _stage_connection.get()
+    if owned is not None:
+        return owned
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=180)
     conn.row_factory = sqlite3.Row
     if _state["path"] != str(path):
         init_db(conn)
