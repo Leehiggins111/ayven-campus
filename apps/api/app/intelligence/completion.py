@@ -65,22 +65,32 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
         else:
             outcome = "FAIL"
     elif task_class == "internal_door_quote":
-        needed = ("1533.00", "963.00", "214.00", "ambiguous", "not a final quote", "not applied", "handing")
-        hits = sum(1 for item in needed if item in lowered)
-        requested = hits / len(needed)
-        useful = 1.0 if hits >= 6 else requested
+        scenarios = (quote or {}).get("scenarios") or {}
+        expected = [str(item.get("total_ex_vat") or "") for item in scenarios.values()]
+        if quote and quote.get("per_door_ex_delivery"):
+            expected.append(str(quote["per_door_ex_delivery"]))
+        amounts_ok = bool(expected) and all(value and value in text for value in expected)
+        provisional = "not a final quote" in lowered
+        labour = (quote or {}).get("labour_unit") or ""
+        labour_ok = bool(labour) and labour.lower() in lowered
+        vat = (quote or {}).get("vat") or ""
+        vat_ok = bool(vat) and vat.lower() in lowered
+        gaps_ok = "handing" in lowered
+        checks = [amounts_ok, provisional, labour_ok, vat_ok, gaps_ok]
+        requested = sum(checks) / len(checks)
+        useful = requested
         coverage = requested
-        evidence_coverage = 1.0 if quote else 0.4
-        unresolved = 0.0 if "ambiguous" in lowered else 1.0
-        correctness = 1.0 if "1533.00" in lowered and "963.00" in lowered and "not a final quote" in lowered else 0.0
+        evidence_coverage = 1.0 if quote else 0.0
+        unresolved = 0.0 if labour_ok and gaps_ok else 1.0
+        correctness = 1.0 if amounts_ok and provisional and labour_ok and vat_ok else 0.0
         if safety_outcome != "PASS" or correctness < 1:
             outcome = "FAIL"
-        elif requested == 1:
+        elif all(checks):
             outcome = "PASS"
         else:
             outcome = "PARTIAL"
     elif task_class == "calculation":
-        value = str((research.get("calculation") or {}).get("value") or "")
+        value = str((research.get("calculation") or {}).get("value", ""))
         useful = 1.0 if value and value in (text or "") else 0.0
         requested = useful
         coverage = useful
@@ -109,10 +119,11 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
     elif task_class == "business_research":
         from .deliverable import evidence_blob, plan_sections_filled, relevant_evidence
 
-        blob = evidence_blob(evidence)
         objective = str(research.get("objective") or "")
+        relevant = relevant_evidence(objective, evidence) if objective else []
+        blob = evidence_blob(relevant)
+        safety_outcome, safety = _safety(task_class, text, blob)
         filled = plan_sections_filled(text, blob, objective)
-        relevant = relevant_evidence(objective, evidence) if objective else [item for item in evidence if (item.get("source_url") or "").startswith("http")]
         useful = 1.0 if filled and relevant else 0.0
         requested = useful
         coverage = useful
@@ -121,7 +132,9 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
         correctness = 1.0 if filled and relevant else 0.0
         outcome = "PASS" if safety_outcome == "PASS" and filled and relevant else "FAIL"
     elif task_class == "software_build":
-        passed = "tests: passed" in lowered
+        from .software import verified_software
+
+        passed = verified_software(text, research)
         useful = 1.0 if passed else 0.0
         requested = useful
         coverage = useful
@@ -129,13 +142,24 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
         unresolved = 0.0 if passed else 1.0
         correctness = useful
         outcome = "PASS" if safety_outcome == "PASS" and passed else "FAIL"
-    else:
+    elif task_class == "trivial":
         useful = 1.0 if text else 0.0
         requested = useful
         coverage = useful
         evidence_coverage = 1.0
-        correctness = 1.0 if "nothing was sent" in lowered or "no current facts" in lowered else 0.5
-        outcome = "PASS" if safety_outcome == "PASS" else "FAIL"
+        correctness = 1.0 if "no current facts" in lowered else 0.5
+        outcome = "PASS" if safety_outcome == "PASS" and useful else "FAIL"
+    else:
+        # Safety boilerplate and a list of gaps are not a completed research job.
+        usable = [item for item in evidence if item.get("source_url") and (item.get("extracted_content") or "").strip()]
+        useful = 1.0 if usable and text.strip() else 0.0
+        requested = coverage = useful
+        evidence_coverage = 1.0 if usable else 0.0
+        correctness = 1.0 if useful and safety_outcome == "PASS" else 0.0
+        unresolved = 1.0 if not useful or research.get("gaps") else 0.0
+        outcome = "FAIL" if safety_outcome != "PASS" or not useful else "PARTIAL"
+        # A collected source is progress. Only an explicit deliverable check can
+        # promote a general job to PASS; this scorer cannot judge arbitrary prose.
 
     return {
         "outcome": outcome,

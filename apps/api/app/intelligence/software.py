@@ -86,6 +86,17 @@ def _code_only(source: str) -> str:
     """Drop the essay around a program and dedent what remains."""
     import textwrap
 
+    # Valid source is already the deliverable. Filtering individual lines loses
+    # multiline literals, expressions and user-visible strings.
+    candidate = textwrap.dedent(source or "").strip()
+    if candidate:
+        try:
+            compile(candidate + "\n", "<ayven>", "exec")
+        except SyntaxError:
+            pass
+        else:
+            return candidate + "\n"
+
     kept: list[str] = []
     for line in (source or "").splitlines():
         stripped = line.strip()
@@ -274,7 +285,7 @@ def stored_files(findings: str) -> dict[str, str]:
             current = line[3:].strip()
             files[current] = []
             continue
-        if current and (line.startswith("## ") or line == "Nothing was sent."):
+        if current and (line.startswith("## ") or line in {"Nothing was sent.", "Test output:"}):
             current = ""
             continue
         if current:
@@ -287,6 +298,36 @@ def stored_files(findings: str) -> dict[str, str]:
     if "main.py" not in saved or "test_main.py" not in saved:
         return {}
     return saved
+
+
+def execution_evidence(files: dict[str, str], result: dict) -> dict:
+    """Bind the actual runner result to the exact source bytes delivered."""
+    import hashlib
+
+    return {
+        "passed": result.get("passed") is True,
+        "exit_code": result.get("exit_code"),
+        "status": result.get("status"),
+        "sandbox": result.get("sandbox"),
+        "stdout": result.get("stdout") or "",
+        "stderr": result.get("stderr") or "",
+        "sha256": {name: hashlib.sha256(body.encode("utf-8")).hexdigest() for name, body in files.items()},
+    }
+
+
+def verified_software(findings: str, research: dict) -> bool:
+    """A status sentence cannot substitute for an executed file set."""
+    evidence = research.get("software_execution") or {}
+    if not isinstance(evidence, dict):
+        return False
+    if evidence.get("passed") is not True or evidence.get("exit_code") != 0 or evidence.get("status") != "ok":
+        return False
+    if evidence.get("sandbox") not in {"unshare-user-net-pid", "bubblewrap-unshare-net", "timeout-subprocess-tempdir"}:
+        return False
+    files = stored_files(findings)
+    if not files:
+        return False
+    return execution_evidence(files, evidence)["sha256"] == evidence.get("sha256")
 
 
 SPEC_FORMAT = {
@@ -601,6 +642,8 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
         tokens += int(piece_tokens or 0)
         meta = piece_meta or {}
         candidate = _parse_one_file(piece or "", "test_main.py")
+        if candidate:
+            candidate = _qualify_tests(f"def {spec['function']}():\n    pass\n", candidate)
         problem = _assert_problem(candidate, objective) if candidate else "The reply did not contain one test_main.py, so nothing was saved."
         if problem:
             feedback = problem
@@ -613,6 +656,10 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
             continue
         if mutated.get("passed"):
             feedback = "The test passed against a function that returns nothing. Assert the input against the expected output."
+            test_source = ""
+            continue
+        if mutated.get("exit_code") != 1 or "AssertionError" not in (mutated.get("stderr") or ""):
+            feedback = "The test did not reach a behavioural assertion: " + _failure_line(mutated.get("stderr") or "Execution was unavailable.")
             test_source = ""
             continue
         test_source = candidate
@@ -647,4 +694,5 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
     meta["sandbox"] = result.get("sandbox")
     if not meta["tests_passed"]:
         files = {}
+    meta["software_execution"] = execution_evidence(files, result)
     return format_deliverable(files, "python test_main.py", result), meta

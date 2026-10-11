@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -265,6 +266,19 @@ class Programme:
             mark_stage(self.parent_id, "PLANNING", project_id=self.project_id, task_id=self.task_id or "")
         events.emit("agent.planning", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="PLANNING", summary=f"Classified as {self.task_class}")
         question = blocking_question(self.objective) if not self.clarification_answer else ""
+        if self.task_class == "web_research" and os.environ.get("AYVEN_LLM_STUB", "1") == "0":
+            from .delivery_plan import plan_delivery
+            self.plan, planning_meta = plan_delivery(
+                self.objective + ("\nUser clarification: " + self.clarification_answer if self.clarification_answer else ""), self.plan,
+            )
+            save_model_call(self.parent_id, "PLANNING", self.task_class, planning_meta, json.dumps(self.plan))
+            self.tokens += int(planning_meta.get("completion_tokens") or 0)
+            if not question:
+                question = self.plan.get("clarification_question") or ""
+        if self.task_class == "calculation":
+            self.calculation = _calculation_from_objective(self.clarification_answer or self.objective)
+            if not self.calculation and not question:
+                question = "Which numbers and operation should I calculate? I could not reliably interpret that expression."
         if question:
             self.paused = "clarification"
             update_package(
@@ -290,7 +304,6 @@ class Programme:
             selected_model=route_for(self.task_class, "planning")["model_id"],
         )
         if self.task_class == "calculation":
-            self.calculation = _calculation_from_objective(self.objective)
             self.research["calculation"] = self.calculation or {}
         if "research" in self.plan["stages"]:
             from .recovery import run_bounded
@@ -513,6 +526,9 @@ class Programme:
         evidence, deterministic = self._corpus()
         grounded = ground_text(text, evidence, deterministic)
         self.grounded[package_id] = grounded["text"]
+        if child["focus"] == "deliverable":
+            child["report"] = grounded["text"]
+            update_package(package_id, findings=child["report"])
         self.removed.extend(grounded["removed"])
         self.removed_by.setdefault(package_id, []).extend(grounded["removed"])
         if child["focus"] == "draft" and self.task_class == "business_research":
@@ -607,7 +623,7 @@ class Programme:
         advisory = advisory_decision(text)
 
         def _decide(attempt: int, report=child["report"]) -> str:
-            return authoritative_decision(report, self.task_class, child["focus"], attempt, conflicts=conflicts or None)
+            return authoritative_decision(report, self.task_class, child["focus"], attempt, conflicts=conflicts or None, quote=self.quote, calculation=self.calculation)
 
         first = _decide(1)
         if first == "RETURN":
@@ -624,7 +640,7 @@ class Programme:
         elif first == "TAKE_OVER":
             if not _keep_model_draft(self, child) and not _protect_draft(self, child):
                 child["report"] = render_focus(child["focus"], self._facts())
-            decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2, conflicts=conflicts or None)
+            decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2, conflicts=conflicts or None, quote=self.quote, calculation=self.calculation)
             if decision != "ACCEPT":
                 decision = "TAKE_OVER"
             update_package(package_id, findings=child["report"], review_status="TAKE_OVER", return_reason="Supervisor rewrote from the ledger")
@@ -734,12 +750,52 @@ class Programme:
         )
         proposal, rationale = parse_manager_decision(strip_think(text))
         self.resolution = apply_manager_veto(proposal, safety)
+        verified_calculation = self.task_class == "calculation" and self.calculation and safety["decision"] == "SYNTHESISE"
+        if verified_calculation:
+            # Publishing a checked arithmetic result needs no external-action approval.
+            # Preserve the model proposal for audit without blocking the calculator.
+            self.resolution = {**safety, "safety_decision": safety["decision"],
+                "model_proposal": proposal, "decision_source": "deterministic-calculation",
+                "veto": proposal != "SYNTHESISE",
+                "reason": "The restricted calculator and safety checks settled the arithmetic. No external action is requested."}
         self.resolution["rationale"] = rationale
-        self.resolution["model_judgement"] = True
+        self.resolution["model_judgement"] = not bool(verified_calculation)
         decision = self.resolution["decision"]
+        delivery_review = None
+        if self.plan.get("planning_source") == "live_model":
+            from .delivery_plan import review_delivery
+            deliverable = "\n\n".join(child["report"] for child in self.children if child["focus"] == "deliverable")
+            delivery_review = review_delivery(self.objective, self.plan, deliverable, self.research.get("evidence") or [])
+            if not delivery_review["passed"] and int(self.plan.get("budget", {}).get("max_attempts", 2)) > 1:
+                self.retries += 1
+                mark_stage(self.parent_id, "REPAIR", project_id=self.project_id, task_id=self.task_id or "")
+                child = next(item for item in self.children if item["focus"] == "deliverable")
+                repair_text, _, repair_meta = _complete(
+                    "EMPLOYEE", _employee_system(self),
+                    _employee_user(self, child) + "\nFix these reviewer findings and return the entire corrected deliverable:\n" + json.dumps({key: value for key, value in delivery_review.items() if key != "calls"}),
+                    max_tokens=1400, programme=self, package_id=child["id"],
+                )
+                if not repair_meta.get("error"):
+                    self._bind_employee(child["id"], repair_text, repair_meta)
+                    revised = review_delivery(self.objective, self.plan, child["report"], self.research.get("evidence") or [])
+                    revised["calls"] = delivery_review.get("calls", []) + revised.get("calls", [])
+                    delivery_review = revised
+                else:
+                    self.errors.append("Deliverable repair failed")
+            for review_meta in delivery_review.pop("calls", []):
+                self.tokens += int(review_meta.get("completion_tokens") or 0)
+                save_model_call(self.parent_id, "DELIVERY_REVIEW", self.task_class, review_meta, json.dumps(delivery_review))
+            save_verification(self.parent_id, "delivery_review", SUPERVISOR, "PASS" if delivery_review["passed"] else "FAIL", delivery_review)
         facts = self._facts()
         completion = score_task(self.task_class, render_parent(facts, self.audits, decision), self.research, self.quote)
+        if delivery_review is not None:
+            sources_required = "research" in self.plan.get("stages", [])
+            sources_present = any(item.get("source_url") and item.get("extracted_content") for item in self.research.get("evidence") or [])
+            delivered = delivery_review["passed"] and (not sources_required or sources_present) and not self.errors
+            completion.update({"outcome": "PASS" if delivered and completion["safety_outcome"] == "PASS" else "FAIL", "delivery_review": delivery_review})
         findings = render_parent(facts, self.audits, decision, completion)
+        if delivery_review is not None and not delivery_review["passed"]:
+            findings += "\n## Work still missing\n" + "\n".join("- " + item for item in delivery_review.get("missing_items", [])) + "\n"
         verification = verify(self.objective, self.task_class, all_claims, self.research)
         quality = quality_score(self.task_class, all_claims, self.research, verification, "ACCEPT", self.quote)
         save_verification(self.parent_id, "manager", MANAGER, decision, {
@@ -805,6 +861,7 @@ class Programme:
             "trace_id": self.trace_id,
             "calculation": self.calculation or {},
             "research_mode": self.research.get("mode"),
+            "software_execution": self.research.get("software_execution") or {},
             "frontier_called": False,
             "quality": quality,
         }
@@ -850,6 +907,11 @@ class Programme:
             else:
                 _set_agent(MANAGER, visual_state="WAITING", status="idle", last_summary="Escalation disabled", progress=1)
             return
+        if delivery_review is not None and completion["outcome"] != "PASS":
+            log_transition(self.parent_id, "FAILED", "Required deliverable did not pass its checks")
+            update_package(self.parent_id, findings=findings, status="failed", stage="delivery_incomplete", requires_approval=0, next_action="Review missing items and retry the job")
+            _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="The requested deliverable is incomplete", progress=1)
+            return
         log_transition(self.parent_id, final_state, decision)
         clarification = bool(approval_required)
         update_package(
@@ -877,21 +939,14 @@ class Programme:
 
 
 def _calculation_from_objective(objective: str) -> dict | None:
-    import re
+    from .calc import CalcError, expression_from_objective
 
-    from .calc import CalcError
-
-    match = re.search(r"sum of\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)", objective or "", re.I)
-    if match:
-        expression = f"{match.group(1)}+{match.group(2)}"
-    else:
-        found = re.search(r"\d+(?:\.\d+)?(?:\s*[\+\-\*/]\s*\d+(?:\.\d+)?)+", objective or "")
-        if not found:
-            return None
-        expression = re.sub(r"\s+", "", found.group(0))
+    expression = expression_from_objective(objective)
+    if not expression:
+        return None
     try:
         value = eval_arithmetic(expression)
-    except CalcError:
+    except (CalcError, ArithmeticError):
         return None
     return {"expression": expression, "value": value}
 
@@ -966,6 +1021,8 @@ def _finish_roles(programme: Programme) -> None:
                 programme.bind(role, prompt["id"], text, meta)
                 continue
             limit = int(prompt.get("max_tokens") or (320 if role != "MANAGER" else 480))
+            if role == "EMPLOYEE" and programme.plan.get("planning_source") == "live_model":
+                limit = 1400
             plan_write = False
             if role == "EMPLOYEE" and programme.task_class == "business_research":
                 child = next((item for item in programme.children if item["id"] == prompt["id"]), None)
@@ -1005,6 +1062,7 @@ def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
         text = f"# Software deliverable\nTests: FAILED\n\n{type(exc).__name__}: {exc}\n\nNothing was sent.\n"
         meta = {"error": f"{type(exc).__name__}: {exc}", "backend": "software", "tests_passed": False}
     programme.research["tests_passed"] = bool(meta.get("tests_passed"))
+    programme.research["software_execution"] = meta.get("software_execution") or {}
     programme.research["mode"] = "software"
     return text, meta
 
@@ -1171,7 +1229,17 @@ def _approved_research_is_unresolved(row: dict, findings: str) -> bool:
     if task in {"calculation", "trivial"}:
         return False
     if task == "software_build":
-        return "tests: passed" not in (findings or "").lower()
+        from .software import verified_software
+
+        try:
+            research = json.loads(row.get("research_json") or "{}")
+            obs = json.loads(row.get("observability_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return True
+        if not isinstance(research, dict) or not isinstance(obs, dict):
+            return True
+        evidence = research.get("software_execution") or obs.get("software_execution") or {}
+        return not verified_software(findings, {"software_execution": evidence})
     text = (findings or "").lower()
     obs: dict = {}
     try:
@@ -1405,6 +1473,14 @@ def _employee_user(programme: Programme, child: dict) -> str:
                     + (f"\n{_component_price_block(programme)}\n" if _component_price_block(programme) else "")
                 )
             )
+        )
+    if child["focus"] == "deliverable":
+        return (
+            f"Objective:\n{programme.objective}\n"
+            f"Required output: {programme.plan.get('deliverable')}\n"
+            f"Required items: {programme.plan.get('requirements', [])}\n"
+            f"Evidence:\n{json.dumps(programme.research.get('evidence') or [], ensure_ascii=False)[:10000]}\n"
+            f"Published draft:\n{child['report'][:2500]}{block}"
         )
     return (
         "Ayven tool runtime. When you need a tool, emit a line "

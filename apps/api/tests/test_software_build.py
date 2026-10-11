@@ -130,7 +130,67 @@ def test_files_run_without_a_namespace_and_general_code_does_not(monkeypatch):
 def test_approval_completes_only_when_the_tests_passed():
     row = {"task_class": "software_build", "observability_json": "{}", "research_json": ""}
     assert _approved_research_is_unresolved(row, "Tests: FAILED\nNothing was sent.\n") is True
-    assert _approved_research_is_unresolved(row, "Tests: PASSED\nNothing was sent.\n") is False
+    assert _approved_research_is_unresolved(row, "Tests: PASSED\nNothing was sent.\n") is True
+
+
+def test_delivered_files_keep_multiline_python_and_execute(monkeypatch):
+    from app.intelligence.software import parse_program, format_deliverable, stored_files
+
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+    text = '''FILE: main.py
+def message():
+    parts = [
+        "important: customer note",
+        "However this is real content",
+    ]
+    return " ".join(parts)
+FILE: test_main.py
+import main
+assert main.message() == "important: customer note However this is real content"
+'''
+    files, launch = parse_program(text)
+    result = run_files(files)
+    assert result["passed"] is True, result
+    downloaded = stored_files(format_deliverable(files, launch, result))
+    assert downloaded == files
+    assert run_files(downloaded)["passed"] is True
+
+
+def test_completion_requires_execution_of_the_exact_delivered_files(monkeypatch):
+    import json
+    from app.intelligence.software import parse_program, format_deliverable, execution_evidence
+    from app.intelligence.completion import score_task
+
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+    files, launch = parse_program(_PROGRAM)
+    result = run_files(files)
+    findings = format_deliverable(files, launch, result)
+    evidence = execution_evidence(files, result)
+    research = {"software_execution": evidence}
+    row = {"task_class": "software_build", "research_json": json.dumps(research)}
+    assert score_task("software_build", findings, research)["outcome"] == "PASS"
+    assert _approved_research_is_unresolved(row, findings) is False
+    changed = findings.replace("return left + right", "return left - right")
+    assert _approved_research_is_unresolved(row, changed) is True
+    assert score_task("software_build", findings, {})["outcome"] == "FAIL"
+    evidence["exit_code"] = 1
+    assert score_task("software_build", findings, research)["outcome"] == "FAIL"
+
+
+def test_a_broken_test_import_is_not_proof_of_a_meaningful_assertion(monkeypatch):
+    import json
+    from app.intelligence.software import build_deliverable
+
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+    def complete(system, user, limit, *args, **kwargs):
+        if "specification" in system:
+            return json.dumps({"function": "add", "parameters": ["a", "b"], "example_input": [2, 3], "example_output": 5}), 1, {}
+        if "test" in system:
+            return json.dumps({"test_main.py": "import missing_dependency\nimport main\nassert main.add(2, 3) == 5\n"}), 1, {}
+        raise AssertionError("A broken test must be repaired before implementation")
+    findings, meta = build_deliverable("Write a Python program that adds 2 and 3", complete)
+    assert meta["tests_passed"] is False
+    assert "behavioural assertion" in findings
 
 
 def _run(monkeypatch, program: str, objective: str) -> str:

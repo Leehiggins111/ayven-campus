@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from .db import connect, init_db
@@ -18,9 +20,14 @@ from .version import VALIDATION_STATUS, __version__
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 app = FastAPI(title="Ayven Campus API", version=__version__)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-from .access import access_middleware, access_key, protected
-app.middleware("http")(access_middleware)
+from .access import boundary, login, create_session, validate_public_configuration, protected, access_key, session_value, TTL
+app.middleware("http")(boundary)
+app.add_api_route("/login", login, methods=["GET"])
+app.add_api_route("/session", create_session, methods=["POST"])
+origins = [x.strip() for x in os.environ.get("AYVEN_CORS_ORIGINS", "").split(",") if x.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
+from .milo_bridge import router as milo_router
+app.include_router(milo_router)
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
 
 def _campus_index() -> Path:
@@ -40,10 +47,19 @@ def campus_legacy():
     return FileResponse(STATIC / "campus.html")
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
+    validate_public_configuration()
     conn = connect()
     init_db(conn)
     conn.close()
+    from .durable import enabled, initialize
+    if enabled():
+        await run_in_threadpool(initialize)
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    from .durable import shutdown as stop_worker
+    await run_in_threadpool(stop_worker)
 
 class ObjectiveIn(BaseModel):
     objective: str
@@ -67,9 +83,11 @@ def health():
         "version": __version__,
         "validation_status": VALIDATION_STATUS,
         "gpu_validated": False,
+        "runtime": "durable" if os.environ.get("AYVEN_DURABLE") == "1" else "ephemeral",
         "access_protected": protected(),
-        "research_mode": __import__("os").environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
-        "persistence": "local_sqlite_not_verified_durable",
+        "research_mode": os.environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
+        "persistence": "local_sqlite",
+        "model_mode": "fixture" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" and not local_configured() else "configured",
         "workforce": {"roles": DEFAULT_MODELS, "local_endpoint": local_configured(), "escalation_enabled": escalation_configured()},
     }
 
@@ -225,21 +243,11 @@ def _traces(package_id: str) -> list[dict]:
     return traces_for(package_id)
 
 @app.post("/projects")
-def create_project(body: ObjectiveIn):
-    from .milo_handoff import find_duplicate
-
-    existing = find_duplicate(body.objective)
-    if existing:
-        return existing
-    pid = str(uuid.uuid4())
-    title = body.title or body.objective[:80]
-    conn = connect()
-    conn.execute("INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)", (pid, title, body.objective, "running", datetime.now(timezone.utc).isoformat()))
-    conn.commit()
-    conn.close()
-    events.emit("project.created", project_id=pid, agent_id="milo", department_id="command", status="running", summary=f"Project opened: {title}")
-    orchestrator.run_project(pid)
-    return {"project_id": pid}
+def create_project(body: ObjectiveIn, request: Request):
+    from .milo_handoff import submit_job
+    key = request.headers.get("Idempotency-Key", "").strip()
+    result = submit_job(body.objective, key, body.title)
+    return {**result, "replayed": result.get("duplicate", False)}
 
 @app.get("/projects/{pid}")
 def get_project(pid: str):
@@ -286,15 +294,19 @@ class ClarificationIn(BaseModel):
 
 @app.post("/work-packages/{package_id}/clarification")
 def answer_clarification(package_id: str, body: ClarificationIn):
-    from .intelligence.execution import begin_clarification, start_clarification_worker
-
+    from .durable import enabled
     try:
-        begin_clarification(package_id, body.answer)
+        if enabled():
+            from .durable import answer_clarification as resume_clarification
+            resume_clarification(package_id, body.answer)
+        else:
+            from .intelligence.execution import begin_clarification, start_clarification_worker
+            begin_clarification(package_id, body.answer)
+            start_clarification_worker(package_id)
     except KeyError:
         raise HTTPException(404)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    start_clarification_worker(package_id)
     return {"ok": True, "package_id": package_id}
 
 @app.get("/approvals")
@@ -305,10 +317,20 @@ def list_approvals():
 def resolve(aid: str, body: ApprovalIn):
     if body.decision not in ("approved", "rejected"):
         raise HTTPException(400, "decision must be approved|rejected")
+    from .durable import enabled, resolve_approval as durable_resolve
+    if enabled():
+        try:
+            return {"ok": True, "resumed": durable_resolve(aid, body.decision)}
+        except KeyError:
+            raise HTTPException(404)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
     try:
         orchestrator.resolve_approval(aid, body.decision)
     except KeyError:
         raise HTTPException(404)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
     resumed = []
     if body.decision == "approved":
         from .intelligence.execution import resume_packages_for_approval
@@ -331,7 +353,7 @@ class LoginIn(BaseModel):
 
 
 @app.post("/login")
-def login(body: LoginIn):
+def json_login(body: LoginIn, request: Request):
     import hashlib
     from fastapi.responses import JSONResponse
     if not protected():
@@ -339,14 +361,18 @@ def login(body: LoginIn):
     if body.key != access_key():
         raise HTTPException(401, "login required")
     response = JSONResponse({"ok": True, "protected": True})
-    response.set_cookie("ayven_session", hashlib.sha256(access_key().encode()).hexdigest(), httponly=True, samesite="lax")
+    import time
+    response.set_cookie("ayven_session", session_value(int(time.time())), max_age=TTL, httponly=True, samesite="strict", secure=request.url.scheme == "https")
     return response
 
 
 @app.post("/milo/jobs")
-def milo_submit(body: ObjectiveIn, idempotency_key: str = ""):
+def milo_submit(body: ObjectiveIn, request: Request, idempotency_key: str = ""):
     from .milo_handoff import submit_job
-    return submit_job(body.objective, idempotency_key)
+    header_key = request.headers.get("Idempotency-Key", "").strip()
+    if header_key and idempotency_key and header_key != idempotency_key:
+        raise HTTPException(400, "Idempotency keys disagree")
+    return submit_job(body.objective, header_key or idempotency_key, body.title)
 
 
 @app.get("/milo/jobs/{project_id}")
@@ -359,12 +385,22 @@ def milo_status(project_id: str):
 
 
 @app.get("/admin/backup")
-def backup():
+def backup(request: Request):
     import hashlib
-    import shutil
+    import hmac
+    import sqlite3
+    import tempfile
     from .db import db_path
-    target = Path("/tmp/ayven-backup.db")
-    shutil.copy(db_path(), target)
+    supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if protected() and not hmac.compare_digest(supplied.encode(), access_key().encode()):
+        raise HTTPException(403, "Admin bearer token required")
+    backup_dir = db_path().resolve().parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="ayven-", suffix=".db", dir=backup_dir)
+    os.close(fd)
+    target = Path(name)
+    with sqlite3.connect(db_path()) as source, sqlite3.connect(target) as destination:
+        source.backup(destination)
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     return {"ok": True, "path": str(target), "sha256": digest, "durable": False, "note": "Local copy only. No free remote store is connected."}
 

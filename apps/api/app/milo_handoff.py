@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from datetime import datetime, timezone
 
@@ -16,47 +15,33 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _same_objective(left: str, right: str) -> bool:
-    def norm(text: str) -> str:
-        return re.sub(r"\s+", " ", (text or "").strip()).casefold()
-    return bool(norm(left)) and norm(left) == norm(right)
-
-
-_IN_FLIGHT = {"running", "waiting"}
-
-
-def find_duplicate(objective: str, idempotency_key: str = "") -> dict | None:
-    """An in-flight job, or the same idempotency key.
-
-    A finished project is not a duplicate. Rejecting a later submission of the
-    same words has to land on that later project, not on the earlier result.
-    """
+def submit_job(objective: str, idempotency_key: str = "", title: str | None = None) -> dict:
+    from fastapi import HTTPException
+    objective = objective.strip()
+    idempotency_key = idempotency_key.strip()
+    if not objective:
+        raise HTTPException(400, "Objective is empty")
+    if len(idempotency_key) > 200:
+        raise HTTPException(400, "Idempotency key is too long")
+    project_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "ayven-project:" + idempotency_key)) if idempotency_key else str(uuid.uuid4())
+    title = title or objective[:80]
     conn = connect()
+    conn.execute("BEGIN IMMEDIATE")
     if idempotency_key:
         existing = conn.execute(
-            "SELECT id, status FROM projects WHERE title=?",
-            (f"milo:{idempotency_key}",),
+            "SELECT id, status, objective, title FROM projects WHERE id=?",
+            (project_id,),
         ).fetchone()
-        if existing and (existing["status"] or "") != "failed":
+        if existing:
             conn.close()
+            if existing["objective"] != objective or existing["title"] != title:
+                raise HTTPException(409, "Idempotency key already belongs to another request")
             return {"project_id": existing["id"], "duplicate": True, "status": existing["status"]}
-    rows = conn.execute("SELECT id, status, objective FROM projects ORDER BY created_at DESC").fetchall()
-    conn.close()
-    for row in rows:
-        if (row["status"] or "") not in _IN_FLIGHT:
-            continue
-        if _same_objective(row["objective"], objective):
-            return {"project_id": row["id"], "duplicate": True, "status": row["status"]}
-    return None
-
-
-def submit_job(objective: str, idempotency_key: str = "") -> dict:
-    existing = find_duplicate(objective, idempotency_key)
-    if existing:
-        return existing
-    conn = connect()
-    project_id = str(uuid.uuid4())
-    title = f"milo:{idempotency_key}" if idempotency_key else objective[:80]
+    else:
+        for existing in conn.execute("SELECT id, status, objective FROM projects WHERE status IN ('running','waiting')").fetchall():
+            if " ".join(existing["objective"].split()).casefold() == " ".join(objective.split()).casefold():
+                conn.close()
+                return {"project_id": existing["id"], "duplicate": True, "status": existing["status"]}
     conn.execute(
         "INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)",
         (project_id, title, objective, "running", _now()),

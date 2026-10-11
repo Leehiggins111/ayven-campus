@@ -29,7 +29,7 @@ def claims_live_availability(text: str) -> bool:
     return any(phrase in lowered for phrase in _LIVE)
 
 
-def authoritative_decision(report: str, task_class: str, focus: str, attempt: int, conflicts: list | None = None) -> str:
+def authoritative_decision(report: str, task_class: str, focus: str, attempt: int, conflicts: list | None = None, quote: dict | None = None, calculation: dict | None = None) -> str:
     limit = int(os.environ.get("AYVEN_MAX_ATTEMPTS", "2"))
     if conflicts:
         return "ESCALATE"
@@ -41,11 +41,19 @@ def authoritative_decision(report: str, task_class: str, focus: str, attempt: in
         return "TAKE_OVER"
     text = (report or "").lower()
     if focus == "scenarios":
-        if "1533.00" not in report or "963.00" not in report:
+        if task_class == "calculation":
+            value = (calculation or {}).get("value")
+            return "ACCEPT" if value is not None and str(value) in report else ("RETURN" if attempt < limit else "TAKE_OVER")
+        totals = [str(item.get("total_ex_vat") or "") for item in (quote or {}).get("scenarios", {}).values()]
+        if not totals or not all(total and total in report for total in totals):
             return "RETURN" if attempt < limit else "TAKE_OVER"
-        if "ambiguous" not in text:
+        if str(quote.get("labour_unit") or "").lower() not in text:
             return "TAKE_OVER"
-        if "not applied" not in text and "unknown_not_applied" not in text:
+        vat = quote.get("vat") or ""
+        if vat == "UNKNOWN_NOT_APPLIED":
+            if "not applied" not in text and "unknown_not_applied" not in text:
+                return "TAKE_OVER"
+        elif vat.lower() not in text:
             return "TAKE_OVER"
         if "not a final quote" not in text:
             return "TAKE_OVER"
