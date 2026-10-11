@@ -36,30 +36,36 @@ COFFEE = (
 def _door_section(user: str) -> str:
     if "three lines" in user:
         return (
-            "Headline: Replacement kitchen doors and worktops\n"
-            "Body: The service replaces kitchen doors, worktops and handles.\n"
+            "Headline: Worn kitchen doors, same room.\n"
+            "Body: Households can replace the kitchen doors, worktops and handles they already have without a full kitchen replacement.\n"
             "Call to action: Ask for a visit and a written scope."
         )
-    if "who pays" in user:
+    if "Name the customer." in user:
         return "The customer is a household that wants the kitchen doors, worktops and handles replaced."
-    if "problem this request" in user:
+    if "Name the problem." in user:
         return "The problem is that a full kitchen replacement costs more than replacing the doors, worktops and handles."
-    if "what is sold" in user:
+    if "Name the offer." in user:
         return "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement."
-    if "two opened pages" in user:
+    if "Name two opened pages." in user:
         return "Opened pages state the worktops and handles at https://doors.example/replace and no second price was stated."
-    if "Start with Assumption" in user:
-        return "Assumption: the opened page did not state a durable price, so the doors, worktops and handles are counted on a visit."
-    if "how customers" in user:
-        return "Customers are reached through local search and a conversation about replacing kitchen doors, worktops and handles."
-    if "asks the customer" in user:
+    if "Label each part." in user:
+        return (
+            "Assumption: doors — not stated as a durable price, so the kitchen doors are counted on a visit.\n"
+            "Assumption: worktops — not stated on an opened page.\n"
+            "Assumption: handles — not stated on an opened page."
+        )
+    if "Name the channel." in user:
+        return "Customers are reached through local search, where the owner posts one note about replacing kitchen doors, worktops and handles."
+    if "Ask the customer to take a step" in user:
         return "Ask for a visit and a written scope before any booking is made."
-    if "first practical" in user:
-        return "Next, the owner confirms which kitchens to visit and counts the doors, worktops and handles."
-    if "still has to be confirmed" in user:
-        return "The plan assumes the request named replacement of kitchen doors, worktops and handles, and a visit still has to see them."
-    if "does not settle" in user:
+    if "Name the owner's next action." in user:
+        return "The owner opens two supplier pages and writes down the prices they publish for the doors, worktops and handles."
+    if "Name one assumption." in user:
+        return "The plan assumes a visit still has to see the kitchen doors, worktops and handles before any figure is used."
+    if "Name one open fact." in user:
         return "Still open: the towns to cover and the condition of the doors, worktops and handles."
+    if "one line only" in user:
+        return "Headline: Worn kitchen doors, same room."
     return "The service replaces kitchen doors, worktops and handles for households that want to avoid a full kitchen replacement."
 
 
@@ -67,29 +73,31 @@ def _coffee_section(user: str) -> str:
     if "three lines" in user:
         return (
             "Headline: Coffee machine rental for offices\n"
-            "Body: The service is coffee machine rental for the working day.\n"
+            "Body: An office can rent a coffee machine for the working day.\n"
             "Call to action: Ask for a visit and a written scope."
         )
-    if "who pays" in user:
+    if "Name the customer." in user:
         return "The customer is an office that rents a coffee machine rather than buying one outright."
-    if "problem this request" in user:
+    if "Name the problem." in user:
         return "The problem is that buying a coffee machine costs more than renting one for a small office."
-    if "what is sold" in user:
+    if "Name the offer." in user:
         return "The offer is coffee machine rental, which differs from selling a machine outright to the office."
-    if "two opened pages" in user:
+    if "Name two opened pages." in user:
         return "Opened pages state the coffee machine rental terms at https://brew.example/rental and no second price was stated."
-    if "Start with Assumption" in user:
+    if "Label each part." in user:
         return "Assumption: the opened page did not state a durable coffee machine rental price, so a visit still has to see the office."
-    if "how customers" in user:
-        return "Customers are reached through local search and a conversation about coffee machine rental."
-    if "asks the customer" in user:
+    if "Name the channel." in user:
+        return "Customers are reached through local search, where the owner posts one note about coffee machine rental."
+    if "Ask the customer to take a step" in user:
         return "Ask for a visit and a written scope before any booking is made."
-    if "first practical" in user:
-        return "Next, the owner confirms which offices to visit and counts the coffee machines to rent."
-    if "still has to be confirmed" in user:
-        return "The plan assumes the request named coffee machine rental, and a visit still has to see the office."
-    if "does not settle" in user:
+    if "Name the owner's next action." in user:
+        return "The owner confirms which offices to visit and counts the coffee machines to rent."
+    if "Name one assumption." in user:
+        return "The plan assumes a visit still has to see the office before a coffee machine rental price is used."
+    if "Name one open fact." in user:
         return "Still open: which offices want coffee machine rental, and what each visit must count."
+    if "one line only" in user:
+        return "Headline: Coffee machines for the working day."
     return "The service is coffee machine rental for offices that want machines supplied and maintained."
 
 
@@ -241,8 +249,8 @@ def test_door_job_then_coffee_job_share_nothing(monkeypatch):
     assert "https://doors.example/replace" in door_sources
     assert "worktop" in door_text
     assert "replaces kitchen doors" in door_text
-    assert plan_sections_filled(door["findings"] or "")
-    assert plan_sections_filled(coffee["findings"] or "")
+    assert plan_sections_filled(door["findings"] or "", "", DOOR)
+    assert plan_sections_filled(coffee["findings"] or "", "", COFFEE)
     assert "https://brew.example/rental" not in door_text
     assert all("brew.example" not in url for url in door_sources)
     assert "https://brew.example/rental" in coffee_sources

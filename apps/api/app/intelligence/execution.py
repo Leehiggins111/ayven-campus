@@ -676,7 +676,9 @@ class Programme:
 
         drafts = [child.get("report") or "" for child in self.children if child.get("focus") == "draft"]
         self.research["objective"] = self.objective
-        self.research["deliverable_filled"] = bool(drafts) and plan_sections_filled(drafts[0], evidence_blob(self.research.get("evidence")))
+        self.research["deliverable_filled"] = bool(drafts) and plan_sections_filled(
+            drafts[0], evidence_blob(self.research.get("evidence")), self.objective,
+        )
         log_transition(self.parent_id, "UNDER_REVIEW", "manager is resolving the package")
         log_transition(self.parent_id, "READY", "supervisor audits are in")
         advisory = advisory_decision(text)
@@ -931,7 +933,7 @@ def _finish_roles(programme: Programme) -> None:
 def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
     from .software import build_deliverable
 
-    def complete(system: str, user: str, max_tokens: int, prefill: str = ""):
+    def complete(system: str, user: str, max_tokens: int, prefill: str = "", ollama_format=None):
         from .software import PROGRAM_FORMAT, SOFTWARE_STOPS
 
         text, tokens, meta = _complete(
@@ -945,7 +947,7 @@ def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
             prefill=prefill,
             stop=list(SOFTWARE_STOPS),
             expand_unfinished=False,
-            ollama_format=PROGRAM_FORMAT,
+            ollama_format=ollama_format or PROGRAM_FORMAT,
         )
         raw = meta.get("raw_response") if isinstance(meta.get("raw_response"), str) else (text or "")
         _record_generation(programme, package_id, "software", raw or "", meta, kept="generated")
@@ -1007,7 +1009,7 @@ def _publish_plan(self: Programme, model_text: str) -> str:
 
     published = publish_business_plan(self.objective, self.research, model_text)
     blob = evidence_blob(self.research.get("evidence"))
-    if published and plan_sections_filled(published, blob):
+    if published and plan_sections_filled(published, blob, self.objective):
         return published
     import os
 
@@ -1023,9 +1025,9 @@ def _publish_plan(self: Programme, model_text: str) -> str:
     reasons = _fill_plan_sections(self, sections, blob)
     assembled = _assemble_plan(sections, self.objective)
     published = publish_business_plan(self.objective, self.research, assembled)
-    if published and plan_sections_filled(published, blob):
+    if published and plan_sections_filled(published, blob, self.objective):
         return published
-    if plan_sections_filled(assembled, blob):
+    if plan_sections_filled(assembled, blob, self.objective):
         return assembled
     if (model_text or "").strip():
         return retained_draft(model_text, self.objective, blob, reasons, sections)
@@ -1329,7 +1331,8 @@ def _employee_user(programme: Programme, child: dict) -> str:
             "Under Advert write three lines that start Headline:, Body:, and Call to action:.\n"
             "The name in the request may not appear on the opened pages. Still write the offer, the channels, the advert, and the next steps as recommendations.\n"
             "The offer says what is sold and how that differs from the alternatives named in the request.\n"
-            "Write each section once. Do not repeat a sentence. Do not narrate. Do not say I, let me, or I need to.\n"
+            "Write each section once. Do not repeat a sentence. Do not narrate. Do not say I, let me, let's, I think, we need to, or the user.\n"
+            "Do not quote a sentence from the objective.\n"
             "Use only the service in this request and the pages opened for this request.\n"
             "Pricing must cite an opened page or start with ASSUMPTION: and the reason. A price that no page stated is not a fact.\n"
             "End with: Nothing was sent.\n\n"
@@ -1372,24 +1375,33 @@ def _price_notes(programme: Programme) -> str:
 
 
 def _section_jobs(objective: str) -> tuple:
-    """Section prompts quote the service sentence. They do not name a fixed trade."""
-    from .deliverable import service_brief
+    """One focused prompt per section. The example is a different trade, not this request."""
+    from .deliverable import covered_items, distinctive_terms
 
-    brief = service_brief(objective)
-    request = f" Request: {brief}" if brief else ""
+    words = ", ".join(distinctive_terms(objective)[:8]) or "the service in the objective"
+    parts = covered_items(objective)
+    labeled = ", ".join(parts) if parts else "the service"
+    shape = (
+        "Example of the shape, for a bicycle repair service, not this request: "
+    )
+    shared = (
+        f"\nService words: {words}.\n"
+        "Use those words. Do not quote a sentence from the objective. "
+        "Do not say let's, I think, we need to, or the user.\n"
+    )
     return (
-        ("service", "Service", "Write one sentence stating the service in this request." + request, "The service is "),
-        ("target customer", "Target customer", "Write one sentence about who pays for the service in this request." + request, "The customer is "),
-        ("problem", "Problem", "Write one sentence about the problem this request is solving." + request, "The problem is "),
-        ("offer and positioning", "Offer and positioning", "Write one sentence. Say what is sold and how it differs from the alternatives named in this request." + request, "The offer is "),
-        ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages and the price each page states. Use only prices from the list below." + request, "Opened pages state "),
-        ("pricing", "Pricing", "Write two sentences. Start with Assumption. Cite one price from the list below and name the service in this request." + request, "Assumption: "),
-        ("channels", "Channels", "Write one sentence about how customers for this service are reached." + request, "Customers are reached through "),
-        ("advert", "Advert", "Write exactly three lines and stop. Headline names the service in this request. Do not mention hours or availability. Body is one sentence. Call to action asks the customer to respond." + request, "Headline: "),
-        ("call to action", "Call to action", "Write one sentence that asks the customer to respond." + request, "Ask for "),
-        ("next steps", "Next steps", "Write one sentence about the first practical action the owner takes." + request, "Next, the owner "),
-        ("assumptions", "Assumptions", "Write one sentence. The service comes from the request. Say what still has to be confirmed." + request, "The plan assumes "),
-        ("unresolved", "Unresolved", "Write one sentence about a fact the request does not settle." + request, "Still open: "),
+        ("service", "Service", "Write one sentence. Name the service. " + shape + "The service repairs bicycles at the rider's home so the rider does not buy a new bicycle." + shared, ""),
+        ("target customer", "Target customer", "Write one sentence. Name the customer. " + shape + "A household that wants a worn bicycle repaired rather than replaced." + shared, ""),
+        ("problem", "Problem", "Write one sentence. Name the problem. " + shape + "Buying a new bicycle costs more than repairing one that still has a sound frame." + shared, ""),
+        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. " + shape + "The offer is a home repair, which differs from selling a new bicycle." + shared, ""),
+        ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages. State a price each page gives. Use only prices from the list below." + shared, ""),
+        ("pricing", "Pricing", "Write one assumption line for each part. Label each part. " + shape + "Assumption: frames — £40 on the opened page, a planning figure only.\nAssumption: chains — not stated on an opened page.\nParts: " + labeled + "." + shared, ""),
+        ("channels", "Channels", "Write one sentence. Name the channel. Name the action on it. " + shape + "Riders are reached through a local Facebook group, where the owner posts one finished repair and asks for a reply." + shared, ""),
+        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline: a short promise.\nBody: one sentence about the result.\nCall to action: one sentence that asks the customer to take a step.\n" + shape + "Headline: Your bicycle, working again\nBody: A home visit repairs the bicycle the rider already owns.\nCall to action: Ask for a visit and a written scope." + shared, ""),
+        ("call to action", "Call to action", "Write one sentence. Ask the customer to take a step, such as a visit or a written scope. Do not ask them to confirm the request." + shared, ""),
+        ("next steps", "Next steps", "Write one sentence. Name the owner's next action. It is not the service itself. " + shape + "The owner phones two repair shops and writes down the prices they publish." + shared, ""),
+        ("assumptions", "Assumptions", "Write one sentence. Name one assumption. Say what still has to be checked on a visit." + shared, ""),
+        ("unresolved", "Unresolved", "Write one sentence. Name one open fact. The objective does not settle it." + shared, ""),
     )
 
 
@@ -1411,20 +1423,7 @@ def _join_advert(sections: dict) -> dict:
 
 
 def _section_missing(key: str, body: str, blob: str, objective: str = "") -> bool:
-    from .deliverable import _advert_ok, _body_filled, _pricing_ok, section_has_anchor
-
-    body = _section_body(body or "", key, objective)
-    if key in ("assumptions", "unresolved"):
-        missing = not _body_filled(body)
-    elif key == "pricing":
-        missing = not _pricing_ok(body, blob)
-    elif key == "advert":
-        missing = not _advert_ok({"advert": body})
-    else:
-        missing = not _body_filled(body)
-    if missing:
-        return True
-    return not section_has_anchor(key, body, objective)
+    return bool(_section_drop_reason(key, body, blob, objective))
 
 
 def _section_body(text: str, kind: str, objective: str = "") -> str:
@@ -1466,7 +1465,7 @@ def _check_for_model(reason: str) -> str:
     text = (reason or "").strip() or "it did not pass validation"
     lowered = text.lower()
     if "24/7" in lowered or "always ready" in lowered or "availability" in lowered:
-        return "The previous line was an availability claim. That claim is not stored. Do not mention hours or availability."
+        return "The previous line was an availability claim. That claim is not stored."
     return text
 
 
@@ -1564,10 +1563,7 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             use_instruction = instruction
             use_prefill = prefill
             if key == "advert" and attempt > 1 and advert_rest[0] and advert_rest[1]:
-                use_instruction = (
-                    "Write one line only. Start with Headline:. "
-                    "Name the service in this request. Do not mention hours or availability."
-                )
+                use_instruction = "Write one line only. Start with Headline:. Name the result for the customer."
                 use_prefill = "Headline: "
             written, raw, meta = _write_one_section(
                 programme, key, title, use_instruction, prefill=use_prefill, attempt=attempt, reason=rejected.get(key, ""),

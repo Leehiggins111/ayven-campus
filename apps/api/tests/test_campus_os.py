@@ -94,6 +94,55 @@ def test_http_approve_resumes_the_same_package_and_direct_resolve_stays_approved
     assert "UNKNOWN · UNKNOWN" not in json.dumps(view["evidence"])
 
 
+def test_a_later_submission_of_the_same_objective_can_be_rejected():
+    import time
+
+    objective = "Research the public market for office supplies and name the gaps. later-reject-only."
+    project = _project(objective)
+    parent = run_objective(project, objective, "task-later-approve-only")
+    conn = connect()
+    approval = conn.execute("SELECT id FROM approvals WHERE task_id=?", ("task-later-approve-only",)).fetchone()
+    conn.close()
+    client = TestClient(app)
+    approved = client.post(f"/approvals/{approval['id']}/resolve", json={"decision": "approved"})
+    assert approved.status_code == 200
+    assert _parent(parent)["workflow_state"] == "UNRESOLVED"
+    conn = connect()
+    status = conn.execute("SELECT status FROM projects WHERE id=?", (project,)).fetchone()["status"]
+    conn.close()
+    assert status == "unresolved"
+    second = client.post("/projects", json={"objective": objective, "title": "fixture reject"}).json()
+    assert second["project_id"] != project
+    assert second.get("duplicate") is not True
+    package = None
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        conn = connect()
+        row = conn.execute(
+            "SELECT id, workflow_state FROM work_packages WHERE project_id=? AND workflow_state='AWAITING_APPROVAL'",
+            (second["project_id"],),
+        ).fetchone()
+        conn.close()
+        if row and row["workflow_state"] == "AWAITING_APPROVAL":
+            package = dict(row)
+            break
+        time.sleep(0.2)
+    assert package
+    conn = connect()
+    approval2 = conn.execute(
+        "SELECT id FROM approvals WHERE project_id=? AND status='pending'",
+        (second["project_id"],),
+    ).fetchone()
+    conn.close()
+    assert approval2
+    client.post(f"/approvals/{approval2['id']}/resolve", json={"decision": "rejected"})
+    after = _parent(package["id"])
+    assert after["workflow_state"] == "FAILED"
+    view = client.get("/campus/view", params={"package_id": package["id"]}).json()
+    assert view["rejected"] is True
+    assert _parent(parent)["workflow_state"] == "UNRESOLVED"
+
+
 def test_http_reject_lands_in_the_rejected_state():
     objective = "Research the public market for office supplies and name the gaps."
     project = _project(objective)

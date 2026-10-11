@@ -144,8 +144,12 @@ def _run(monkeypatch, program: str, objective: str) -> str:
             return "SYNTHESISE\nRationale: the files are the deliverable", 3, {"backend": "generator"}
         if role == "SUPERVISOR":
             return "ACCEPT\nNothing was sent.", 2, {"backend": "generator"}
-        if "FILE: main.py" in user:
+        if "Write the test file only" in user or "Write main.py only" in user:
             return program, 40, {"backend": "generator"}
+        if "example_output" in user:
+            import json
+            spec = json.dumps({"function": "add", "parameters": ["left", "right"], "example_input": [2, 3], "example_output": 5})
+            return spec, 8, {"backend": "generator"}
         return "Nothing was sent.", 2, {"backend": "generator"}
 
     set_role_generator(gen)

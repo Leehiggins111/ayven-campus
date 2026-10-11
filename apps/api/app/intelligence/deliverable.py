@@ -423,6 +423,10 @@ def narration_reason(line: str) -> str:
     compact = re.sub(r"\s+", "", lowered)
     if re.search(r"(.{1,4})\1{6,}", compact):
         return "The line is repeated characters, not a sentence."
+    if re.search(r"\b(let's|let’s|i think|we need to|the user)\b", lowered):
+        return "The line is model self-talk, not a sentence the owner can use."
+    if re.search(r"\b(does not imply|do not imply|service name that|hours or availability)\b", lowered):
+        return "The line repeats the instruction instead of answering it."
     if "24/7" in lowered:
         return "The line claims 24/7 availability. That claim is not stored."
     if "always ready" in lowered:
@@ -737,29 +741,22 @@ def _advert_ok(sections: dict[str, str]) -> bool:
     return bool(owner_section("advert", prose))
 
 
-def plan_sections_filled(text: str, evidence_blob: str = "") -> bool:
+def plan_sections_filled(text: str, evidence_blob: str = "", objective: str = "") -> bool:
     """True only when the owner sections are written, not left as Unresolved."""
     sections = parse_sections(text)
     if not sections:
         return False
     for key in _REQUIRED:
-        if key == "advert":
-            if not _advert_ok(sections):
-                return False
-            continue
-        if key == "call to action":
-            own = sections.get("call to action") or ""
-            advert = sections.get("advert") or ""
-            if _body_filled(own):
-                continue
-            if "call to action" in advert.lower() and _body_filled(advert):
-                continue
+        raw = sections.get(key) or ""
+        if any(narration_reason(line) for line in raw.splitlines()):
             return False
-        if key == "pricing":
-            if not _pricing_ok(sections.get("pricing") or "", evidence_blob):
-                return False
-            continue
-        if not _body_filled(sections.get(key) or ""):
+        if key == "advert":
+            extra = sections.get("call to action") or ""
+            if extra and "call to action" not in raw.lower():
+                raw = (raw + "\nCall to action: " + extra).strip()
+        elif key == "call to action" and not raw.strip():
+            raw = sections.get("advert") or ""
+        if section_rejection(key, raw, evidence_blob, objective):
             return False
     return True
 
@@ -814,14 +811,193 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
                 if reason:
                     return reason
             return "The advert is not three finished lines."
+    elif key == "call to action":
+        if not _body_filled(cleaned) and not _advert_ok({"advert": raw}):
+            return _body_rejection(cleaned) or "The call to action is too short to use."
     elif not _body_filled(cleaned):
         return _body_rejection(cleaned) or "The section did not pass the sentence check."
-    if not section_has_anchor(key, cleaned, objective):
-        return "The section does not use the service words from this request."
     if _unsupported_percent(cleaned, blob):
         return "The section states a percentage that is not on an opened page."
     if _invented_service_area(cleaned, objective):
         return "The section invents a service area. The request says not to."
+    if _confirm_request(cleaned):
+        return "The section asks the reader to confirm the request."
+    if _echoes_objective(cleaned, objective):
+        return "The section repeats the objective instead of answering it."
+    shape = _section_shape(key, cleaned, objective)
+    if shape:
+        return shape
+    if not section_has_anchor(key, cleaned, objective):
+        return "The section does not use the service words from this request."
+    return ""
+
+
+_BUYERS = (
+    "homeowner", "household", "landlord", "tenant", "family", "families",
+    "office", "renter", "buyer", "cafe", "restaurant", "hotel", "school",
+    "couple", "occupier", "developer", "shop", "clinic", "pub", "venue",
+    "company", "firm", "studio", "resident", "people", "person", "client",
+    "rider", "cyclist",
+)
+_PROBLEM_CUES = (
+    "cost", "costs", "expensive", "longer", "disruption", "waste", "worn",
+    "dated", "outdated", "budget", "delay", "buying", "outright", "sound",
+    "price", "time", "cheaper", "afford", "damage", "broken", "old", "tired",
+    "slow", "inconvenient", "difficult",
+)
+_CONTRAST = (
+    "differ", "rather", "instead", "without", "against", "compared", "unlike",
+    "alternative", "avoids", "avoid", "shorter", "keeps", "stays", "in place",
+    "leaves",
+)
+_CHANNELS = (
+    "search", "leaflet", "facebook", "instagram", "google", "referral",
+    "directory", "email", "flyer", "poster", "marketplace", "nextdoor",
+    "press", "website", "seo", "social", "checkatrade", "gumtree",
+    "neighbour", "neighbor", "whatsapp", "radio", "linkedin", "youtube",
+    "mailshot", "mail",
+)
+_OWNER_ACTIONS = (
+    "confirm", "contact", "open", "write", "visit", "compare", "measure",
+    "count", "draft", "publish", "phone", "email", "list", "choose", "check",
+    "collect", "decide", "photograph", "call", "meet", "read", "ask", "record",
+    "book", "research", "scope", "note", "post", "reach", "start", "use",
+    "send", "share",
+)
+_CONFIRM_REQUEST = re.compile(
+    r"\b(?:could you confirm|can you confirm|please confirm if|confirm if this|"
+    r"confirm that this|is this what you|you(?:'re| are) looking for|"
+    r"the solution you|as per the request|as per the instruction|"
+    r"lee answered|the request is)\b",
+    re.I,
+)
+
+
+def _has_word(text: str, word: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(word)}s?\b", text or "", re.I))
+
+
+def _confirm_request(text: str) -> bool:
+    return bool(_CONFIRM_REQUEST.search(text or ""))
+
+
+def _word_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+", (text or "").lower())
+
+
+def _echoes_objective(section: str, objective: str) -> bool:
+    """A long copied stretch of the objective is not a section."""
+    if not (section or "").strip() or not (objective or "").strip():
+        return False
+    if re.search(r"\b(?:lee answered|the request is|as per the request|as per the instruction)\b", section or "", re.I):
+        return True
+    objective_tokens = _word_tokens(objective)
+    section_tokens = _word_tokens(section)
+    if len(section_tokens) >= 10:
+        objective_text = " ".join(objective_tokens)
+        for index in range(len(section_tokens) - 9):
+            if " ".join(section_tokens[index : index + 10]) in objective_text:
+                return True
+    if len(section_tokens) < 8 or len(objective_tokens) < 6:
+        return False
+    objective_grams = {
+        tuple(objective_tokens[index : index + 6])
+        for index in range(len(objective_tokens) - 5)
+    }
+    grams = [tuple(section_tokens[index : index + 6]) for index in range(len(section_tokens) - 5)]
+    if len(grams) < 3:
+        return False
+    hits = sum(1 for gram in grams if gram in objective_grams)
+    return hits / len(grams) >= 0.6
+
+
+def covered_items(objective: str) -> list[str]:
+    """The parts a service sentence lists together, such as a comma-and list."""
+    brief = service_brief(objective).lower()
+    match = re.search(
+        r"\b([a-z]{4,}(?: [a-z]{4,})?(?:, [a-z]{4,}(?: [a-z]{4,})?)+,? and [a-z]{4,}(?: [a-z]{4,})?)\b",
+        brief,
+    )
+    if not match:
+        return []
+    items: list[str] = []
+    for part in re.split(r",\s*|\s+and\s+", match.group(1)):
+        words = [word for word in part.split() if word not in _GENERIC_TERMS and len(word) >= 4]
+        if not words:
+            continue
+        label = words[-1]
+        if label in _GENERIC_TERMS or label in items:
+            continue
+        items.append(label)
+    return items if len(items) >= 2 else []
+
+
+def _item_present(item: str, text: str) -> bool:
+    stem = item[:-1] if item.endswith("s") and len(item) > 4 else item
+    return bool(re.search(rf"\b{re.escape(stem)}s?\b", text or "", re.I))
+
+
+def _pricing_parts(body: str, objective: str) -> str:
+    items = covered_items(objective)
+    if len(items) < 2:
+        return ""
+    missing = [item for item in items if not _item_present(item, body)]
+    if missing:
+        return "Pricing does not label an assumption for every part of the service: " + ", ".join(missing) + "."
+    unlabeled = []
+    lines = [line for line in (body or "").splitlines() if line.strip()] or [body or ""]
+    for item in items:
+        labeled = False
+        for line in lines:
+            if not _item_present(item, line):
+                continue
+            lowered = line.lower()
+            if "assumption" in lowered or re.search(rf"\b{re.escape(item)}\s*:", lowered):
+                labeled = True
+                break
+        if not labeled:
+            unlabeled.append(item)
+    if unlabeled:
+        return "Pricing does not label an assumption for every part of the service: " + ", ".join(unlabeled) + "."
+    return ""
+
+
+def _section_shape(key: str, body: str, objective: str) -> str:
+    """Missing elements. Empty when this section has the element it needs."""
+    lowered = (body or "").lower()
+    if key == "target customer":
+        if "responsible for the cost" in lowered or not any(_has_word(lowered, word) for word in _BUYERS):
+            return "The section does not name a customer segment."
+    elif key == "problem":
+        if not any(cue in lowered for cue in _PROBLEM_CUES):
+            return "The section does not state a concrete problem."
+    elif key == "offer and positioning":
+        if not any(marker in lowered for marker in _CONTRAST):
+            return "The section does not state what is sold and how it differs."
+    elif key == "channels":
+        if re.search(r"three lines|headline\s*:|call to action\s*:", lowered):
+            return "The section describes the advert format instead of a channel."
+        named = any(_has_word(lowered, word) for word in _CHANNELS)
+        action = any(_has_word(lowered, word) for word in _OWNER_ACTIONS) or "through" in lowered
+        if not named or not action:
+            return "The section does not name a channel and an action."
+    elif key == "next steps":
+        if "first practical action" in lowered or not any(_has_word(lowered, word) for word in _OWNER_ACTIONS):
+            return "The next step repeats the service instead of an action the owner takes."
+    elif key == "pricing":
+        return _pricing_parts(body, objective)
+    elif key == "call to action":
+        if not re.search(r"\b(ask|reply|call|visit|phone|email|write|contact|book|request|quote)\b", lowered):
+            return "The call to action does not ask the customer to take a step."
+        if len(lowered.strip()) < 20:
+            return "The call to action is too short to use."
+    elif key == "advert":
+        match = re.search(r"call to action\s*:\s*(.+)", body or "", re.I)
+        cta = match.group(1) if match else ""
+        if cta and _confirm_request(cta):
+            return "The call to action asks the reader to confirm the request."
+        if cta and not re.search(r"\b(ask|reply|call|visit|phone|email|write|contact|book|request|quote)\b", cta, re.I):
+            return "The call to action does not ask the customer to take a step."
     return ""
 
 
@@ -941,7 +1117,7 @@ def relevant_evidence(objective: str, evidence: list[dict] | None) -> list[dict]
 def business_can_complete(findings: str, evidence: list[dict] | None, objective: str) -> bool:
     """COMPLETED needs relevant opened pages and filled sections. Empty safety text cannot pass."""
     blob = evidence_blob(evidence)
-    if not plan_sections_filled(findings or "", blob):
+    if not plan_sections_filled(findings or "", blob, objective):
         return False
     return bool(relevant_evidence(objective, evidence))
 
@@ -978,7 +1154,7 @@ def publish_business_plan(objective: str, research: dict | None, model_text: str
             prose = "Assumption: " + prose
         cleaned[key] = prose
     draft = _format_sections(cleaned, evidence)
-    if not plan_sections_filled(draft, blob):
+    if not plan_sections_filled(draft, blob, objective):
         return ""
     return draft
 

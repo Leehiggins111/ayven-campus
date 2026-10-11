@@ -73,7 +73,7 @@ def _filled_plan() -> str:
         "Competitor and market research",
         "Opened sources describe cabinet painting and respray work. No opened page was a UK painting competitor in this fixture, so the positioning stays cautious.",
         "Pricing",
-        "ASSUMPTION: a price is not stated on the opened page, so the plan does not publish one. The reason is that a durable quote depends on the cabinet count and the condition seen at a visit.",
+        "ASSUMPTION: a kitchen painting price is not stated on the opened page, so the plan does not publish one. The reason is that a durable quote depends on the cabinet count and the condition seen at a visit.",
         "Channels",
         "Start with local search and a short homeowner leaflet near the service area. Do not buy ads until a page states a result worth copying.",
         "Advert",
@@ -504,24 +504,25 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         "Unresolved": "The towns to cover and the condition of the cabinets stay open until a visit.",
     }
 
-    by_prefill = {
-        "The service is ": answers["Service"],
-        "The customer is ": answers["Target customer"],
-        "The problem is ": answers["Problem"],
-        "The offer is ": answers["Offer and positioning"],
-        "Opened pages state ": answers["Competitor and market research"],
-        "Assumption: ": answers["Pricing"],
-        "Customers are reached through ": answers["Channels"],
-        "Headline: ": answers["Advert"],
-        "Ask for ": answers["Call to action"],
-        "Next, the owner ": answers["Next steps"],
-        "The plan assumes ": answers["Assumptions"],
-        "Still open: ": answers["Unresolved"],
-    }
+    by_marker = (
+        ("Name the customer.", answers["Target customer"]),
+        ("Name the problem.", answers["Problem"]),
+        ("Name the offer.", answers["Offer and positioning"]),
+        ("Name two opened pages.", answers["Competitor and market research"]),
+        ("Label each part.", answers["Pricing"]),
+        ("Name the channel.", answers["Channels"]),
+        ("three lines", answers["Advert"]),
+        ("Ask the customer to take a step", answers["Call to action"]),
+        ("Name the owner's next action.", answers["Next steps"]),
+        ("Name one assumption.", answers["Assumptions"]),
+        ("Name one open fact.", answers["Unresolved"]),
+        ("Name the service.", answers["Service"]),
+    )
 
     def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None):
-        if prefill in by_prefill:
-            return by_prefill[prefill], 12, {"backend": "test"}
+        for marker, answer in by_marker:
+            if marker in user:
+                return answer, 12, {"backend": "test"}
         raise AssertionError(prefill or user[:160])
 
     monkeypatch.setattr("app.intelligence.execution._complete", fake)
@@ -647,27 +648,28 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
             "Professional kitchen cabinet painting costs £80 to £100 in the UK. We paint and respray kitchen cabinets.",
         )]},
     )
-    good = {
-        "The service is ": "Alba Kitchen Refresh paints and resprays the kitchen cabinets a household already owns.",
-        "The customer is ": "Local UK homeowners who want the cabinets painted rather than ripped out.",
-        "The problem is ": "Painting the cabinets costs less and takes less time than replacing the kitchen.",
-        "The offer is ": "The offer is cabinet painting, and the existing kitchen stays in place.",
-        "Opened pages state ": "Opened pages state cabinet painting at £80 to £100 on the Airtasker page.",
-        "Assumption: ": "Assumption: plan around £80 to £100 from the opened kitchen painting page, because a visit still has to see the units.",
-        "Headline: ": "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope.",
-        "Ask for ": "Ask for a visit and a written scope before any booking.",
-        "Next, the owner ": "Next, the owner confirms the towns to cover, then books the visit.",
-        "The plan assumes ": "The plan assumes the UK painting service comes from the request and a visit still has to see the cabinets.",
-        "Still open: ": "Still open: the towns and the cabinet condition are still open.",
-    }
+    good = (
+        ("Name the customer.", "Local UK homeowners who want the cabinets painted rather than ripped out."),
+        ("Name the problem.", "Painting the cabinets costs less and takes less time than replacing the kitchen."),
+        ("Name the offer.", "The offer is cabinet painting, and the existing kitchen stays in place."),
+        ("Name two opened pages.", "Opened pages state cabinet painting at £80 to £100 on the Airtasker page."),
+        ("Label each part.", "Assumption: plan around £80 to £100 from the opened kitchen painting page, because a visit still has to see the units."),
+        ("three lines", "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope."),
+        ("Ask the customer to take a step", "Ask for a visit and a written scope before any booking."),
+        ("Name the owner's next action.", "Next, the owner confirms the towns to cover, then books the visit."),
+        ("Name one assumption.", "The plan assumes the UK painting service comes from the request and a visit still has to see the cabinets."),
+        ("Name one open fact.", "Still open: the towns and the cabinet condition are still open."),
+        ("Name the service.", "Alba Kitchen Refresh paints and resprays the kitchen cabinets a household already owns."),
+    )
 
     def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None):
-        if prefill.startswith("Customers are reached through"):
+        if "Name the channel." in user:
             if "was rejected" in user:
-                return "a conversation about painting their kitchen cabinets.", 8, {"backend": "test"}
+                return "Homeowners are reached through local search, in a conversation about painting their kitchen cabinets.", 8, {"backend": "test"}
             return "I see what you're saying. You've reached out to 200+ potential homeowners.", 8, {"backend": "test"}
-        if prefill in good:
-            return good[prefill], 12, {"backend": "test"}
+        for marker, answer in good:
+            if marker in user:
+                return answer, 12, {"backend": "test"}
         raise AssertionError(prefill or user[:180])
 
     monkeypatch.setattr("app.intelligence.execution._complete", fake)

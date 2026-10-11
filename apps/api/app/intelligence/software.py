@@ -289,20 +289,199 @@ def stored_files(findings: str) -> dict[str, str]:
     return saved
 
 
-def _prompt(objective: str, retry: bool = False) -> str:
+SPEC_FORMAT = {
+    "type": "object",
+    "properties": {
+        "function": {"type": "string"},
+        "parameters": {"type": "array", "items": {"type": "string"}},
+        "example_input": {"type": "array"},
+        "example_output": {},
+    },
+    "required": ["function", "parameters", "example_input", "example_output"],
+}
+
+TEST_FORMAT = {
+    "type": "object",
+    "properties": {"test_main.py": {"type": "string"}},
+    "required": ["test_main.py"],
+}
+
+IMPL_FORMAT = {
+    "type": "object",
+    "properties": {"main.py": {"type": "string"}},
+    "required": ["main.py"],
+}
+
+
+def _requested_sum(objective: str):
+    """The two numbers and their sum, when the request is that addition. Otherwise nothing."""
+    if not re.search(r"\b(?:add|adds|adding|sum|plus)\b", objective or "", re.I):
+        return None
+    match = re.search(r"\b(\d+)\s*(?:\+|and|plus)\s*(\d+)\b", objective or "", re.I)
+    if not match:
+        return None
+    left, right = int(match.group(1)), int(match.group(2))
+    return left, right, left + right
+
+
+def parse_spec(text: str) -> dict:
+    """A function name, its parameters, one input, and the output that input must produce."""
+    import json
+
+    raw = (text or "").strip()
+    start, end = raw.find("{"), raw.rfind("}")
+    data = {}
+    if start >= 0 and end > start:
+        try:
+            loaded = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            loaded = {}
+        if isinstance(loaded, dict):
+            data = loaded
+    function = str(data.get("function") or "").strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", function):
+        return {}
+    params = data.get("parameters") if isinstance(data.get("parameters"), list) else data.get("args")
+    if isinstance(params, str):
+        params = [part.strip() for part in params.split(",") if part.strip()]
+    if not isinstance(params, list):
+        return {}
+    names = [str(item).strip() for item in params if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(item).strip())]
+    example_input = data.get("example_input")
+    if not names or not isinstance(example_input, list) or not example_input or "example_output" not in data:
+        return {}
+    return {
+        "function": function,
+        "parameters": names,
+        "example_input": example_input,
+        "example_output": data.get("example_output"),
+    }
+
+
+def _spec_problem(spec: dict, objective: str) -> str:
+    wanted = _requested_sum(objective)
+    if not wanted:
+        return ""
+    left, right, total = wanted
+    try:
+        inputs = [int(item) for item in spec.get("example_input") or []]
+    except (TypeError, ValueError):
+        return "The example input does not use the numbers in the request."
+    if sorted(inputs) != sorted((left, right)):
+        return "The example input does not use the numbers in the request."
+    try:
+        output = int(spec.get("example_output"))
+    except (TypeError, ValueError):
+        return "The example output is not the result of the operation on the numbers in the request."
+    if output != total:
+        return "The example output is not the result of the operation on the numbers in the request."
+    return ""
+
+
+def _spec_prompt(objective: str, feedback: str) -> str:
     text = (
-        "Write the program for this request. Output only a JSON object with two string fields, main.py and test_main.py, and then stop.\n"
-        "FILE: main.py\n"
-        "FILE: test_main.py\n"
-        "LAUNCH: python test_main.py\n"
-        "test_main.py imports main and uses assert. The assert must compare the program's numeric result with the expected number. "
-        "Do not use pytest. Do not use the network. Do not write assert True. Do not assert __file__ or __dict__. "
-        "Do not describe more than one program.\n\n"
+        "Read the request. Reply with one JSON object and then stop.\n"
+        "Fields: function (a Python name), parameters (a list of names), "
+        "example_input (a list of the values from the request), "
+        "example_output (the value that function returns for that input).\n"
+        "Do not write the program. Do not write a test.\n"
+        "A different request would look like "
+        '{"function":"double","parameters":["value"],"example_input":[4],"example_output":8}. '
+        "Do not copy that example.\n\n"
         f"Request:\n{(objective or '')[:800]}\n"
     )
-    if retry:
-        text += "\nThe previous answer was not Python. Output only the JSON object or the FILE blocks.\n"
+    if feedback:
+        text += f"\nCheck: {feedback}\n"
     return text
+
+
+def _test_prompt(objective: str, spec: dict, feedback: str) -> str:
+    import json
+
+    shown = json.dumps({key: spec[key] for key in ("function", "parameters", "example_input", "example_output")})
+    text = (
+        "Write the test file only. Reply with one JSON object {\"test_main.py\": \"...\"} and then stop.\n"
+        "test_main.py imports main and uses assert. Compare the function's return value with the example output. "
+        "Do not use pytest. Do not use the network. Do not write assert True. Do not assert __file__ or __dict__.\n"
+        "A different request would look like:\nimport main\nassert main.double(4) == 8\n"
+        "Do not copy that example.\n\n"
+        f"Spec:\n{shown}\n\nRequest:\n{(objective or '')[:400]}\n"
+    )
+    if feedback:
+        text += f"\nCheck: {feedback}\n"
+    return text
+
+
+def _impl_prompt(objective: str, spec: dict, test_source: str, feedback: str) -> str:
+    signature = spec.get("function") or "main"
+    params = ", ".join(spec.get("parameters") or [])
+    text = (
+        "Write main.py only. Reply with one JSON object {\"main.py\": \"...\"} and then stop.\n"
+        f"Define {signature}({params}) so the test below passes. Do not write the test again.\n\n"
+        f"Test that will be run:\n{(test_source or '')[:1200]}\n\n"
+        f"Request:\n{(objective or '')[:400]}\n"
+    )
+    if feedback:
+        text += f"\nCheck: {feedback}\n"
+    return text
+
+
+def _json_field(text: str, field: str) -> str:
+    import json
+
+    raw = (text or "").strip()
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        return ""
+    try:
+        data = json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        return ""
+    value = data.get(field) if isinstance(data, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
+def _parse_one_file(text: str, name: str) -> str:
+    body = _json_field(text, name)
+    if not body:
+        blocks = _raw_blocks(text or "")
+        body = blocks.get(name) or ""
+    if not body and name == "test_main.py" and "assert " in (text or ""):
+        loose = _from_loose_code("def _placeholder():\n    return None\n" + (text or ""))
+        body = loose.get("test_main.py") or ""
+    if not body and name == "main.py" and (_code_line((text or "").strip()) or "def " in (text or "") or "print(" in (text or "")):
+        body = _code_only(text or "")
+    if not body:
+        return ""
+    return _code_only(body) or ""
+
+
+def _assert_problem(test_source: str, objective: str) -> str:
+    from .code_sandbox import _tests_are_meaningful
+
+    if not _tests_are_meaningful(test_source):
+        if re.search(r"__file__|__dict__", test_source or ""):
+            return "The test checked __file__ or __dict__ and cannot fail, so it was not saved. Assert the number the program produces."
+        return "The test cannot fail, so the program was not saved."
+    asserts = re.findall(r"^\s*assert\s+(.+)$", test_source or "", re.M)
+    if not any(re.search(r"==\s*-?\d+(?:\.\d+)?|==\s*['\"]", item) for item in asserts):
+        return "The test does not assert an input against an expected output."
+    wanted = _requested_sum(objective)
+    if wanted:
+        _left, _right, total = wanted
+        literals = []
+        for item in asserts:
+            literals.extend(
+                int(float(number))
+                for number in re.findall(r"==\s*['\"]?(-?\d+(?:\.\d+)?)['\"]?", item)
+            )
+        if total not in literals:
+            return "The assert does not expect the result of the numbers in the request."
+    return ""
+
+
+def _prompt(objective: str, retry: bool = False) -> str:
+    return _spec_prompt(objective, "State one function signature and one example." if retry else "")
 
 
 def _raw_blocks(text: str) -> dict[str, str]:
@@ -359,48 +538,113 @@ def classify_program(text: str) -> tuple[dict[str, str], str, str]:
     return {}, "python test_main.py", "The reply did not contain one main.py and one test_main.py, so nothing was saved."
 
 
-def _invoke(complete, system: str, user: str, limit: int, prefill: str):
+def _invoke(complete, system: str, user: str, limit: int, prefill: str = "", ollama_format=None):
     try:
-        return complete(system, user, limit, prefill)
+        return complete(system, user, limit, prefill, ollama_format=ollama_format)
     except TypeError:
-        return complete(system, user, limit)
+        try:
+            return complete(system, user, limit, prefill)
+        except TypeError:
+            return complete(system, user, limit)
+
+
+def _rejected(reason: str, meta: dict, tokens: int) -> tuple[str, dict]:
+    result = {
+        "passed": False,
+        "stderr": reason,
+        "stdout": "",
+        "sandbox": "not-run",
+        "exit_code": None,
+        "status": "error",
+    }
+    meta = dict(meta or {})
+    meta["completion_tokens"] = tokens
+    meta["tests_passed"] = False
+    meta["sandbox"] = "not-run"
+    return format_deliverable({}, "python test_main.py", result), meta
 
 
 def build_deliverable(objective: str, complete) -> tuple[str, dict]:
-    """Ask the model for files, run the test, and retry twice without pasting the note back."""
-    from .code_sandbox import run_files
+    """Spec, then a test that fails on a stub, then the program. Files are saved only when both hold."""
+    from .code_sandbox import run_files, tests_fail_against_stub
 
-    text, tokens, meta = "", 0, {}
-    files: dict[str, str] = {}
-    launch = "python test_main.py"
-    result: dict = {"passed": False, "stderr": "", "stdout": "", "sandbox": "not-run", "exit_code": None, "status": "error"}
-    for attempt in range(3):
-        user = _prompt(objective, retry=attempt > 0)
-        if attempt:
-            user += "\nCheck: " + _failure_line(result.get("stderr") or "the tests failed.") + "\n"
-        piece, piece_tokens, piece_meta = _invoke(complete, "Write the files only.", user, 640, "")
-        tokens = int(tokens or 0) + int(piece_tokens or 0)
-        text = piece or ""
-        meta = piece_meta
-        files, launch, rejection = classify_program(text)
-        if files.get("main.py") and files.get("test_main.py"):
-            result = run_files(files)
-            if result.get("passed"):
-                break
-            files = {}
-            result["stderr"] = result.get("stderr") or "The tests failed, so the files were not saved."
+    tokens, meta = 0, {}
+    feedback = ""
+    spec: dict = {}
+    ambiguous = ""
+    for _attempt in range(2):
+        piece, piece_tokens, piece_meta = _invoke(
+            complete, "Write the specification only.", _spec_prompt(objective, feedback), 320, "", SPEC_FORMAT,
+        )
+        tokens += int(piece_tokens or 0)
+        meta = piece_meta or {}
+        if _ambiguous_program(piece or "") and not parse_spec(piece or ""):
+            ambiguous = "The reply describes more than one program, so none was saved."
+            feedback = ambiguous
             continue
+        found = parse_spec(piece or "")
+        problem = _spec_problem(found, objective) if found else "The reply did not state one function signature and an example, so nothing was saved."
+        if found and not problem:
+            spec = found
+            break
+        feedback = problem
+        spec = {}
+    if not spec:
+        return _rejected(feedback or ambiguous or "The reply did not state one function signature and an example, so nothing was saved.", meta, tokens)
+
+    feedback = ""
+    test_source = ""
+    for _attempt in range(2):
+        piece, piece_tokens, piece_meta = _invoke(
+            complete, "Write the test only.", _test_prompt(objective, spec, feedback), 640, "", TEST_FORMAT,
+        )
+        tokens += int(piece_tokens or 0)
+        meta = piece_meta or {}
+        candidate = _parse_one_file(piece or "", "test_main.py")
+        problem = _assert_problem(candidate, objective) if candidate else "The reply did not contain one test_main.py, so nothing was saved."
+        if problem:
+            feedback = problem
+            test_source = ""
+            continue
+        mutated = tests_fail_against_stub(candidate, spec.get("function") or "")
+        if mutated.get("status") == "disabled":
+            feedback = "The tests could not be run."
+            test_source = ""
+            continue
+        if mutated.get("passed"):
+            feedback = "The test passed against a function that returns nothing. Assert the input against the expected output."
+            test_source = ""
+            continue
+        test_source = candidate
+        break
+    if not test_source:
+        return _rejected(feedback or "The test cannot fail, so the program was not saved.", meta, tokens)
+
+    feedback = ""
+    files: dict[str, str] = {}
+    result: dict = {"passed": False, "stderr": "", "stdout": "", "sandbox": "not-run", "exit_code": None, "status": "error"}
+    for _attempt in range(2):
+        piece, piece_tokens, piece_meta = _invoke(
+            complete, "Write main.py only.", _impl_prompt(objective, spec, test_source, feedback), 640, "", IMPL_FORMAT,
+        )
+        tokens += int(piece_tokens or 0)
+        meta = piece_meta or {}
+        main = _parse_one_file(piece or "", "main.py")
+        if not main:
+            feedback = "The reply did not contain one main.py, so nothing was saved."
+            files = {}
+            continue
+        files = {"main.py": main, "test_main.py": test_source}
+        result = run_files(files)
+        if result.get("passed"):
+            break
         files = {}
-        result = {
-            "passed": False,
-            "stderr": rejection or "The reply did not contain one main.py and one test_main.py, so nothing was saved.",
-            "stdout": "",
-            "sandbox": "not-run",
-            "exit_code": None,
-            "status": "error",
-        }
+        feedback = _failure_line(result.get("stderr") or "The tests failed, so the files were not saved.")
+        result["stderr"] = feedback
     meta = dict(meta or {})
     meta["completion_tokens"] = tokens
-    meta["tests_passed"] = bool(result.get("passed"))
+    meta["tests_passed"] = bool(result.get("passed")) and bool(files.get("main.py"))
     meta["sandbox"] = result.get("sandbox")
-    return format_deliverable(files, launch, result), meta
+    if not meta["tests_passed"]:
+        files = {}
+    return format_deliverable(files, "python test_main.py", result), meta

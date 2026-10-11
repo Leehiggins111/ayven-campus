@@ -22,8 +22,15 @@ def _same_objective(left: str, right: str) -> bool:
     return bool(norm(left)) and norm(left) == norm(right)
 
 
+_IN_FLIGHT = {"running", "waiting"}
+
+
 def find_duplicate(objective: str, idempotency_key: str = "") -> dict | None:
-    """The earlier job for this submission. A second insert would repeat the work."""
+    """An in-flight job, or the same idempotency key.
+
+    A finished project is not a duplicate. Rejecting a later submission of the
+    same words has to land on that later project, not on the earlier result.
+    """
     conn = connect()
     if idempotency_key:
         existing = conn.execute(
@@ -36,7 +43,7 @@ def find_duplicate(objective: str, idempotency_key: str = "") -> dict | None:
     rows = conn.execute("SELECT id, status, objective FROM projects ORDER BY created_at DESC").fetchall()
     conn.close()
     for row in rows:
-        if (row["status"] or "") == "failed":
+        if (row["status"] or "") not in _IN_FLIGHT:
             continue
         if _same_objective(row["objective"], objective):
             return {"project_id": row["id"], "duplicate": True, "status": row["status"]}

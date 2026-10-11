@@ -145,6 +145,28 @@ def _safe_filename(name: str) -> str:
     return cleaned
 
 
+def _stub_main(test_source: str, function: str = "") -> str:
+    """The same names the test calls, returning nothing so a real assert fails."""
+    names = re.findall(r"\bmain\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", test_source or "")
+    if function and function not in names:
+        names.insert(0, function)
+    lines = []
+    seen: list[str] = []
+    for name in names:
+        if name in seen:
+            continue
+        seen.append(name)
+        lines.append(f"def {name}(*args, **kwargs):\n    return None\n")
+    if not lines:
+        lines.append("def _unused(*args, **kwargs):\n    return None\n")
+    return "\n".join(lines)
+
+
+def tests_fail_against_stub(test_source: str, function: str = "") -> dict:
+    """True when the test fails on a function that returns nothing."""
+    return run_files({"main.py": _stub_main(test_source, function), "test_main.py": test_source or ""})
+
+
 def _tests_are_meaningful(source: str) -> bool:
     """A test that cannot fail is not a test."""
     text = source or ""

@@ -152,8 +152,14 @@ def test_software_files_are_saved_shown_and_downloadable(monkeypatch):
             return "SYNTHESISE\nRationale: the files are the deliverable", 3, {"backend": "generator", "finish_reason": "stop", "prompt_tokens": 4}
         if role == "SUPERVISOR":
             return "ACCEPT\nNothing was sent.", 2, {"backend": "generator", "finish_reason": "stop", "prompt_tokens": 4}
-        if "FILE: main.py" in user:
+        if "Write the test file only" in user:
             return _ESSAY, 40, {"backend": "generator", "finish_reason": "stop", "prompt_tokens": 11}
+        if "Write main.py only" in user:
+            return "print(2+3)\n", 4, {"backend": "generator", "finish_reason": "stop", "prompt_tokens": 4}
+        if "example_output" in user:
+            import json
+            spec = json.dumps({"function": "add", "parameters": ["left", "right"], "example_input": [2, 3], "example_output": 5})
+            return spec, 8, {"backend": "generator", "finish_reason": "stop", "prompt_tokens": 6}
         return "Nothing was sent.", 2, {"backend": "generator", "finish_reason": "stop", "prompt_tokens": 2}
 
     set_role_generator(gen)
@@ -205,30 +211,36 @@ def test_software_files_are_saved_shown_and_downloadable(monkeypatch):
 def _door_section(user: str) -> str:
     if "three lines" in user:
         return (
-            "Headline: Replacement kitchen doors and worktops\n"
-            "Body: The service replaces kitchen doors, worktops and handles.\n"
+            "Headline: Worn kitchen doors, same room.\n"
+            "Body: Households can replace the kitchen doors, worktops and handles they already have without a full kitchen replacement.\n"
             "Call to action: Ask for a visit and a written scope."
         )
-    if "who pays" in user:
+    if "Name the customer." in user:
         return "The customer is a household that wants the kitchen doors, worktops and handles replaced."
-    if "problem this request" in user:
+    if "Name the problem." in user:
         return "The problem is that a full kitchen replacement costs more than replacing the doors, worktops and handles."
-    if "what is sold" in user:
+    if "Name the offer." in user:
         return "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement."
-    if "two opened pages" in user:
+    if "Name two opened pages." in user:
         return "Opened pages state the worktops and handles at https://doors.example/replace and no second price was stated."
-    if "Start with Assumption" in user:
-        return "Assumption: the opened page did not state a durable price, so the doors, worktops and handles are counted on a visit."
-    if "how customers" in user:
-        return "Customers are reached through local search and a conversation about replacing kitchen doors, worktops and handles."
-    if "asks the customer" in user:
+    if "Label each part." in user:
+        return (
+            "Assumption: doors — not stated as a durable price, so the kitchen doors are counted on a visit.\n"
+            "Assumption: worktops — not stated on an opened page.\n"
+            "Assumption: handles — not stated on an opened page."
+        )
+    if "Name the channel." in user:
+        return "Customers are reached through local search, where the owner posts one note about replacing kitchen doors, worktops and handles."
+    if "Ask the customer to take a step" in user:
         return "Ask for a visit and a written scope before any booking is made."
-    if "first practical" in user:
-        return "Next, the owner confirms which kitchens to visit and counts the doors, worktops and handles."
-    if "still has to be confirmed" in user:
-        return "The plan assumes the request named replacement of kitchen doors, worktops and handles, and a visit still has to see them."
-    if "does not settle" in user:
+    if "Name the owner's next action." in user:
+        return "The owner opens two supplier pages and writes down the prices they publish for the doors, worktops and handles."
+    if "Name one assumption." in user:
+        return "The plan assumes a visit still has to see the kitchen doors, worktops and handles before any figure is used."
+    if "Name one open fact." in user:
         return "Still open: the towns to cover and the condition of the doors, worktops and handles."
+    if "one line only" in user:
+        return "Headline: Worn kitchen doors, same room."
     return "The service replaces kitchen doors, worktops and handles for households that want to avoid a full kitchen replacement."
 
 
@@ -405,14 +417,14 @@ def test_a_rejected_plan_keeps_the_repaired_sections_and_the_failed_check():
     from app.intelligence.deliverable import plan_sections_filled, retained_draft
 
     repaired = {
-        "pricing": "Assumption: plan around £10 to £40 per door for replacing kitchen doors, worktops and handles.",
-        "next steps": "The owner's first practical action is to replace kitchen doors, worktops and handles.",
+        "pricing": "Assumption: doors — plan around £10 to £40 per door.\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.",
+        "next steps": "The owner opens two supplier pages and writes down the prices they publish.",
     }
     one_shot = "Next steps\nReplace doors.\nPricing\nAbout £10.\n"
     reason = "The line claims 24/7 availability. That claim is not stored."
     kept = retained_draft(one_shot + "Advert\n" + _ADVERT_24, DOOR, "£10 to £40", {"advert": reason}, repaired)
     assert "[next steps] passed" in kept
-    assert "The owner's first practical action" in kept
+    assert "opens two supplier pages" in kept
     assert "[next steps] The section is too short" not in kept
     assert "[pricing] passed" in kept
     assert "Assumption:" in kept
@@ -428,12 +440,21 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
     from app.intelligence.deliverable import _REQUIRED
     from app.intelligence.execution import _fill_plan_sections
 
-    sentence = "The service replaces kitchen doors, worktops and handles without a full kitchen replacement."
-    sections = {key: sentence for key in _REQUIRED}
-    sections["pricing"] = "Assumption: plan around £10 to £40 for replacing kitchen doors, worktops and handles."
-    sections["advert"] = ""
-    sections["assumptions"] = sentence
-    sections["unresolved"] = "Still open: the towns to visit for kitchen door replacement are not settled."
+    sections = {key: "" for key in _REQUIRED}
+    sections.update({
+        "service": "The service replaces worn kitchen doors, worktops and handles for households that want to avoid a full kitchen replacement.",
+        "target customer": "The customer is a household that wants worn kitchen doors, worktops and handles replaced.",
+        "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
+        "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
+        "competitor and market research": "Opened pages state kitchen door prices at https://doors.example/replace and the worktop price was not stated.",
+        "pricing": "Assumption: doors — £10 to £40 on the opened page, a planning figure only.\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.",
+        "channels": "Households are reached through local search, where the owner posts one finished kitchen and asks for a reply.",
+        "advert": "",
+        "call to action": "Ask for a visit and a written scope before any booking is made.",
+        "next steps": "The owner opens two supplier pages and writes down the prices they publish for doors, worktops and handles.",
+        "assumptions": "The plan assumes a visit still has to see the doors, worktops and handles before any figure is used.",
+        "unresolved": "Still open: the towns to visit for kitchen door replacement are not settled.",
+    })
     bad = (
         "Headline: 24/7 Kitchen Service\n"
         "Body: We replace kitchen doors, worktops and handles without a full kitchen replacement.\n"
@@ -480,7 +501,7 @@ def test_json_files_run_and_an_essay_is_not_saved(monkeypatch):
     assert saved == {}
     assert rejection
 
-    def complete(system, user, limit, prefill=""):
+    def complete(system, user, limit, prefill="", ollama_format=None):
         return _AMBIGUOUS, 20, {"finish_reason": "length", "raw_response": _AMBIGUOUS, "completion_tokens": 20}
 
     text, meta = build_deliverable("Write a small Python program that adds 2 and 3 and prints the sum.", complete)
@@ -489,13 +510,20 @@ def test_json_files_run_and_an_essay_is_not_saved(monkeypatch):
     assert meta["tests_passed"] is False
     assert "## main.py" not in text
 
-    state = {"n": 0}
+    spec = json.dumps({"function": "add", "parameters": ["left", "right"], "example_input": [2, 3], "example_output": 5})
+    test_file = json.dumps({"test_main.py": "import main\nassert main.add(2, 3) == 5\n"})
+    main_file = json.dumps({"main.py": "def add(left, right):\n    return left + right\n"})
+    state = {"spec": 0}
 
-    def retry(system, user, limit, prefill=""):
-        state["n"] += 1
-        if state["n"] == 1:
+    def retry(system, user, limit, prefill="", ollama_format=None):
+        if "Write the test file only" in user:
+            return test_file, 20, {"finish_reason": "stop", "completion_tokens": 20}
+        if "Write main.py only" in user:
+            return main_file, 20, {"finish_reason": "stop", "completion_tokens": 20}
+        state["spec"] += 1
+        if state["spec"] == 1:
             return _AMBIGUOUS, 20, {"finish_reason": "length", "raw_response": _AMBIGUOUS, "completion_tokens": 20}
-        return payload, 30, {"finish_reason": "stop", "raw_response": payload, "completion_tokens": 30}
+        return spec, 20, {"finish_reason": "stop", "completion_tokens": 20}
 
     ran, ran_meta = build_deliverable("Write a small Python program that adds 2 and 3 and prints the sum.", retry)
     assert "tests: passed" in ran.lower()
@@ -619,6 +647,82 @@ def test_a_page_explains_why_it_is_relevant_and_a_service_area_is_not_invented()
     assert gap == ""
 
 
+def test_owner_review_rejects_meta_echo_and_a_single_part_price(monkeypatch):
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+    from app.intelligence.code_sandbox import tests_fail_against_stub
+    from app.intelligence.deliverable import covered_items, section_rejection
+
+    objective = (
+        "Create a business launch plan. Lee answered: The service replaces kitchen doors, worktops and handles, "
+        "and it avoids a full kitchen replacement. Painting and wrapping are other services, not this service."
+    )
+    assert covered_items(objective) == ["doors", "worktops", "handles"]
+    meta = section_rejection(
+        "advert",
+        "Headline: Let's think of a service name that does not imply hours or availability.\n"
+        "Body: Households can replace worn kitchen doors, worktops and handles without a full kitchen replacement.\n"
+        "Call to action: Ask for a visit and a written scope.",
+        "",
+        objective,
+    )
+    assert "self-talk" in meta.lower() or "instruction" in meta.lower()
+    customer = section_rejection(
+        "target customer",
+        "The customer is responsible for the cost of the service as per the request.",
+        "",
+        objective,
+    )
+    assert customer
+    problem = section_rejection(
+        "problem",
+        "The request is: Lee answered: The service replaces kitchen doors, worktops and handles, and it avoids a full kitchen replacement.",
+        "",
+        objective,
+    )
+    assert "objective" in problem.lower() or "request" in problem.lower()
+    cta = section_rejection(
+        "call to action",
+        "Could you confirm if this is the solution you're looking for?",
+        "",
+        objective,
+    )
+    assert cta
+    steps = section_rejection(
+        "next steps",
+        "The owner's first practical action is to replace kitchen doors, worktops and handles.",
+        "",
+        objective,
+    )
+    assert "action" in steps.lower()
+    price = section_rejection(
+        "pricing",
+        "Assumption: plan around £10-£40 per door, and no other figure is published.",
+        "£10-£40 per door",
+        objective,
+    )
+    assert "worktops" in price.lower() and "handles" in price.lower()
+    channel = section_rejection(
+        "channels",
+        "Advert (with three lines: Headline:, Body:, Call to action:).",
+        "",
+        objective,
+    )
+    assert "channel" in channel.lower()
+    usable = section_rejection(
+        "pricing",
+        "Assumption: doors — £10-£40 on the opened page, a planning figure only.\n"
+        "Assumption: worktops — not stated on an opened page.\n"
+        "Assumption: handles — not stated on an opened page.",
+        "£10-£40",
+        objective,
+    )
+    assert usable == ""
+    held = tests_fail_against_stub("import main\nassert main.add(2, 3) == 5\n", "add")
+    assert held["passed"] is False
+    tautology = tests_fail_against_stub("import main\nassert main.add(2, 3) == main.add(2, 3)\n", "add")
+    assert tautology["passed"] is True
+
+
 def test_an_unsupported_percentage_is_rejected():
     from app.intelligence.deliverable import section_rejection
     from app.intelligence.grounding import ground_text
@@ -655,23 +759,28 @@ def test_a_runtime_failure_keeps_the_exception_and_a_later_program_can_pass(monk
     })
     assert "KeyError: 'print'" in stored
     assert "Rejected: Traceback" not in stored
-    calls = {"n": 0}
-    good = json.dumps({
-        "main.py": "def add(a, b):\n    return a + b\nprint(add(2, 3))\n",
-        "test_main.py": "import main\nassert main.add(2, 3) == 5\n",
-    })
+    calls = {"n": 0, "checks": []}
+    spec = json.dumps({"function": "add", "parameters": ["a", "b"], "example_input": [2, 3], "example_output": 5})
+    good_test = json.dumps({"test_main.py": "import main\nassert main.add(2, 3) == 5\n"})
+    good_main = json.dumps({"main.py": "def add(a, b):\n    return a + b\nprint(add(2, 3))\n"})
 
     def complete(system, user, limit, prefill=""):
         calls["n"] += 1
-        if calls["n"] == 1:
-            return dodged, 10, {"finish_reason": "stop"}
-        assert "Check:" in user
-        return good, 10, {"finish_reason": "stop"}
+        if "Check:" in user:
+            calls["checks"].append(user)
+        if "Write the test file only" in user:
+            if "cannot fail" not in user:
+                return dodged, 10, {"finish_reason": "stop"}
+            return good_test, 10, {"finish_reason": "stop"}
+        if "Write main.py only" in user:
+            return good_main, 10, {"finish_reason": "stop"}
+        return spec, 8, {"finish_reason": "stop"}
 
     text, meta = build_deliverable("Write a small Python program that adds 2 and 3 and prints the sum.", complete)
     assert meta["tests_passed"] is True
     assert "def add" in text
-    assert calls["n"] == 2
+    assert any("cannot fail" in item for item in calls["checks"])
+    assert calls["n"] >= 3
 
 
 def test_an_empty_search_is_followed_by_a_shorter_query():
