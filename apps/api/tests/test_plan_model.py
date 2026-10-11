@@ -176,6 +176,15 @@ def test_engine_source_does_not_name_the_unseen_eval_trade():
         assert "groom" not in text
 
 
+def test_runner_rss_is_llama_server_not_the_ollama_client():
+    from scripts.model_eval.harness import runner_process
+
+    assert runner_process("llama-server", "/usr/bin/llama-server --model qwen")
+    assert runner_process("ollama", "ollama serve")
+    assert runner_process("ollama", "ollama") is False
+    assert runner_process("ollama", "ollama pull qwen3:8b") is False
+
+
 def test_generation_clocks_separate_prompt_eval_from_generation():
     from app.models import ollama_generation
 
@@ -288,7 +297,8 @@ def test_score_marks_an_invented_price_and_a_gate_failure():
     assert offload["minutes_at_5_tokens_per_second"] == 4.0
     fit = two_model_fit(2_500_000_000, 5_200_000_000)
     assert fit["sequential_fits"] is True
-    assert fit["resident_together_fits"] is True
+    # 2.50 GB + 5.23 GB of files measured 4.25 GB + 6.75 GB resident at num_ctx 8192.
+    assert fit["resident_together_fits"] is False
     too_big = two_model_fit(2_500_000_000, 9_300_000_000)
     assert too_big["resident_together_fits"] is False
     assert os.environ.get("AYVEN_PLAN_MODEL", "") != "plan-writer"

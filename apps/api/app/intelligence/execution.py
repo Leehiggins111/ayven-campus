@@ -450,7 +450,12 @@ class Programme:
         if role == "EMPLOYEE":
             prompts = []
             for child in self.children:
-                limit = 640 if self.task_class == "business_research" and child.get("focus") == "draft" else 320
+                if self.task_class == "business_research" and child.get("focus") == "draft":
+                    limit = 640
+                elif self.task_class == "business_research":
+                    limit = 160
+                else:
+                    limit = 320
                 prompts.append({"id": child["id"], "system": _employee_system(self), "user": _employee_user(self, child), "max_tokens": limit})
             return prompts
         if role == "SUPERVISOR":
@@ -1360,7 +1365,15 @@ def _employee_user(programme: Programme, child: dict) -> str:
     remembered = memory.format_for_prompt(programme.memory_rows)
     block = f"\n\n{remembered}" if remembered else ""
     plan = ""
-    shown = f"Published draft:\n{clip_at_boundary(child['report'], 6000)}\n"
+    if programme.task_class == "business_research" and child.get("focus") != "draft":
+        gaps = "; ".join((programme.research.get("gaps") or [])[:4])
+        shown = (
+            f"Opened pages:\n{_opened_index(programme) or 'None.'}\n"
+            f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+            f"Gaps: {gaps or 'none'}\n"
+        )
+    else:
+        shown = f"Published draft:\n{clip_at_boundary(child['report'], 6000)}\n"
     if programme.task_class == "business_research" and child.get("focus") == "draft":
         shown = "No owner plan has been written yet. Do not copy a blank form.\n"
         plan = (
@@ -1373,11 +1386,13 @@ def _employee_user(programme: Programme, child: dict) -> str:
             "Write each section once. Do not repeat a sentence. Do not narrate. Do not say I, let me, let's, I think, we need to, or the user.\n"
             "Do not quote a sentence from the objective. Do not name a person. Do not name a trade this request does not name.\n"
             "Use only the service in this request and the pages opened for this request.\n"
-            "A £ figure is copied from an opened page, and the same sentence names that page. "
+            "A £ figure is copied from an opened page in that page's own words, and the same sentence names that page. "
+            "Do not add a unit, a product, or an exclusion the page does not use. "
             "A £ figure that is not on an opened page is allowed only on a line that starts with Assumption.\n"
-            "Pricing starts with Assumption: and names each part. Copy a £ figure from the price list when that list prices the part, and name the page. "
-            "Write not stated only when the list has no £ figure for that part.\n"
-            "Competitor research names an opened page and the £ figure from that page in the same sentence.\n"
+            "Pricing starts with Assumption: and names each part. A £ figure on an opened page is a market reference, not a price for this service, unless that page states the size or the spec. "
+            "Use the page's own words. Write not stated only when no opened page states a £ figure for that part. "
+            "On its own Assumption line, name what still has to be measured.\n"
+            "Competitor research names an opened page and the £ figure in that page's own words, in the same sentence.\n"
             "Write the advert lines. Do not describe the format.\n"
             "End with: Nothing was sent.\n\n"
             f"Request:\n{programme.objective[:800]}\n\n"
@@ -1387,6 +1402,7 @@ def _employee_user(programme: Programme, child: dict) -> str:
                 else (
                     f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
                     f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+                    + (f"\n{_component_price_block(programme)}\n" if _component_price_block(programme) else "")
                 )
             )
         )
@@ -1423,25 +1439,50 @@ def _price_notes(programme: Programme) -> str:
     return "\n".join(notes)
 
 
+def _component_price_block(programme: Programme) -> str:
+    """Show the sentence the pricing check will count, once per part. Do not write the section."""
+    from .deliverable import component_price_snippets
+
+    rows = component_price_snippets(programme.research.get("evidence") or [], programme.objective)
+    if not rows:
+        return ""
+    lines = []
+    for item, snippet in rows:
+        if snippet:
+            lines.append(f"{item}: {snippet}")
+        else:
+            lines.append(f"{item}: no opened page states a £ figure.")
+    return (
+        "Market references found on opened pages. A figure is not a price for this service unless that page states the size or the spec.\n"
+        + "\n".join(lines)
+    )
+
+
 def _section_jobs(objective: str) -> tuple:
     """One focused prompt per section. The stem is the start of the sentence, not a second trade."""
-    from .deliverable import covered_items, service_brief
+    from .deliverable import covered_items, measurements_still_needed, service_brief
 
     brief = service_brief(objective)
     parts = covered_items(objective)
     labeled = ", ".join(parts) if parts else "the service"
+    measure = ", ".join(measurements_still_needed(objective))
+    measure_line = (
+        f" On a separate Assumption line, name what still has to be measured: {measure}."
+        if measure
+        else ""
+    )
     shared = (
         f"\nRequest: {brief}\n"
         "Finish the sentence for the owner. Do not quote the request. Do not describe this task.\n"
     )
     return (
-        ("service", "Service", "Write one sentence. Name the service." + shared, "The service "),
+        ("service", "Service", "Write one sentence. Name the service. Use the request's own words. Do not use a business name that appears only on an opened page." + shared, "The service "),
         ("target customer", "Target customer", "Write one sentence. Name the customer." + shared, "The customer is "),
-        ("problem", "Problem", "Write one sentence. Name the problem." + shared, "The problem is "),
+        ("problem", "Problem", "Write one or two sentences. Name the problem." + shared, "The problem is "),
         ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs." + shared, "The offer "),
-        ("competitor and market research", "Competitor and market research", "Write two sentences. In each sentence name one opened page by its site and state the £ figure that page gives. Do not use a £ figure that is not written on that page." + shared, "Opened pages state "),
-        ("pricing", "Pricing", "Write one line for each part. Start each line with Assumption. When an opened page states a £ figure for that part, copy the figure and name the page. When it does not, write not stated. Do not invent a £ figure. Parts: " + labeled + "." + shared, "Assumption: "),
-        ("channels", "Channels", "Write one sentence. Name the channel. Say what the owner does there." + shared, "Customers are reached through "),
+        ("competitor and market research", "Competitor and market research", "Write two sentences. In each sentence name one opened page by its site and state the £ figure in that page's own words. Do not add a unit or a product the page does not use. Do not use a £ figure that is not written on that page." + shared, "Opened pages state "),
+        ("pricing", "Pricing", "Write one line for each part. Start each line with Assumption. A £ figure on an opened page is a market reference. Use that page's own words for the product, the unit, and any exclusion. Do not add a unit or a product the page does not use. When no opened page states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, "Assumption: "),
+        ("channels", "Channels", "Write one sentence. Name the channel. Say what the owner does there. Do not mention hours." + shared, "Customers are reached through "),
         ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\n" + shared, ""),
         ("call to action", "Call to action", "Write one sentence. Ask the customer to take a step." + shared, "Ask "),
         ("next steps", "Next steps", "Write one sentence. Name the owner's next action. Do not name a service area." + shared, "The owner phones "),
@@ -1518,20 +1559,25 @@ def _check_for_model(reason: str) -> str:
     lowered = text.lower()
     if "24/7" in lowered or "always ready" in lowered or "availability" in lowered:
         return "The previous line was an availability claim. That claim is not stored."
+    if "comes from an opened page" in lowered:
+        return "The service name comes from an opened page, not from the request. Use the request's own words."
     return text
 
 
 def _section_prompt(instruction: str, attempt: int, reason: str, prices: str) -> str:
-    """A retry names the failed check. It does not paste the rejected lines back."""
+    """Evidence stays the prefix so a later section reuses it. The retry names the failed check."""
     if attempt <= 1:
-        return f"{instruction}{prices}"
-    lead = (
-        "The previous answer was rejected and was not stored.\n"
-        f"Check: {_check_for_model(reason)}\n"
-        "Write the finished lines only. Do not repeat a rejected claim.\n"
-        + instruction
-    )
-    return f"{lead}{prices}"
+        tail = instruction
+    else:
+        tail = (
+            "The previous answer was rejected and was not stored.\n"
+            f"Check: {_check_for_model(reason)}\n"
+            "Write the finished lines only. Do not repeat a rejected claim.\n"
+            + instruction
+        )
+    if prices:
+        return f"{prices}\n{tail}"
+    return tail
 
 
 def evidence_pack_mode() -> str:
@@ -1561,17 +1607,27 @@ def _compact_facts(programme: Programme) -> str:
     return "\n".join(lines)
 
 
-def _section_evidence(programme: Programme) -> str:
+def _section_evidence(programme: Programme, key: str = "") -> str:
     if evidence_pack_mode() == "compact":
-        return f"\nOpened pages and prices:\n{_compact_facts(programme) or 'None.'}\n"
-    return (
-        f"\nOpened pages:\n{_opened_index(programme) or 'None.'}\n"
-        f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
-    )
+        block = f"\nOpened pages and prices:\n{_compact_facts(programme) or 'None.'}\n"
+    else:
+        block = (
+            f"\nOpened pages:\n{_opened_index(programme) or 'None.'}\n"
+            f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+        )
+    if key == "pricing":
+        parts = _component_price_block(programme)
+        if parts:
+            block += (
+                f"\n{parts}\n"
+                "Use the page's own words for the product, the unit, and any exclusion. "
+                "Write not stated only for a part whose line says no opened page states a £ figure.\n"
+            )
+    return block
 
 
 def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1, reason: str = "") -> tuple[str, str, dict]:
-    prices = _section_evidence(programme)
+    prices = _section_evidence(programme, key)
     user = _section_prompt(instruction, attempt, reason, prices)
     limit, stop = _section_budget(key, attempt)
     text, _tokens, meta = _complete(
@@ -1661,6 +1717,8 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             if key == "advert" and attempt > 1 and advert_rest[0] and advert_rest[1]:
                 use_instruction = "Write one line only. Start with Headline:. Name the result for the customer."
                 use_prefill = "Headline: "
+            elif key == "channels" and attempt > 1 and "24/7" in (rejected.get(key) or "").lower():
+                use_prefill = "The owner uses "
             written, raw, meta = _write_one_section(
                 programme, key, title, use_instruction, prefill=use_prefill, attempt=attempt, reason=rejected.get(key, ""),
             )
@@ -1744,11 +1802,12 @@ def _supervisor_system() -> str:
 
 def _supervisor_user(programme: Programme, child: dict) -> str:
     claims = claim_ledger.list_claims(child["id"])
-    brief = "\n".join(f"- {c['status']} {c['claim_type']}: {c['claim_text'][:180]}" for c in claims[:12])
+    brief = "\n".join(f"- {c['status']} {c['claim_type']}: {c['claim_text'][:180]}" for c in claims[:8])
     gaps = "; ".join((programme.research.get("gaps") or [])[:4])
+    limit = 1200 if programme.task_class == "business_research" else 6000
     return (
         f"Objective:\n{programme.objective}\n\nPlan class: {programme.task_class}\n"
-        f"Gaps: {gaps}\n\nDraft:\n{clip_at_boundary(child['report'], 6000)}\n\nClaims:\n{brief}"
+        f"Gaps: {gaps}\n\nDraft:\n{clip_at_boundary(child['report'], limit)}\n\nClaims:\n{brief}"
     )
 
 

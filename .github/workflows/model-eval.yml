@@ -29,9 +29,6 @@ jobs:
           - slug: qwen3-8b
             model: qwen3:8b
             compare: "0"
-          - slug: qwen3-14b
-            model: qwen3:14b
-            compare: "0"
     env:
       AYVEN_ALLOW_ESCALATION: "0"
       AYVEN_LLM_STUB: "0"

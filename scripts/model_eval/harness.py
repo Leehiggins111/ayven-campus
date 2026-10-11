@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -100,6 +101,24 @@ def sample_loaded(base: str) -> dict:
     return {"vram_bytes": vram, "size_bytes": size}
 
 
+def runner_process(comm: str, cmdline: str) -> bool:
+    """The weights live in llama-server. The ollama client process is not that memory."""
+    blob = f"{comm or ''} {cmdline or ''}".lower()
+    if "llama-server" in blob or "llama_server" in blob:
+        return True
+    return "ollama" in blob and bool(re.search(r"\bserve\b", cmdline or "", re.I))
+
+
+def _rss_kb(entry: Path) -> int:
+    try:
+        for status in (entry / "status").read_text(encoding="utf-8", errors="replace").splitlines():
+            if status.startswith("VmRSS:"):
+                return int(status.split()[1])
+    except OSError:
+        return 0
+    return 0
+
+
 def sample_memory() -> dict:
     available = total = ollama = 0
     try:
@@ -117,17 +136,13 @@ def sample_memory() -> dict:
             if not entry.name.isdigit():
                 continue
             try:
-                comm = (entry / "comm").read_text(encoding="utf-8").strip()
+                comm = (entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
+                cmdline = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
             except OSError:
                 continue
-            if "ollama" not in comm:
+            if not runner_process(comm, cmdline):
                 continue
-            try:
-                for status in (entry / "status").read_text(encoding="utf-8").splitlines():
-                    if status.startswith("VmRSS:"):
-                        ollama += int(status.split()[1])
-            except OSError:
-                continue
+            ollama += _rss_kb(entry)
     vram = ""
     try:
         vram = subprocess.check_output(
@@ -200,7 +215,14 @@ def _timing_row(tag: str, job: dict, pull_s: float, probe_load_s: float, file_by
     if job.get("status") == "timeout":
         timeouts += 1
     ram_kb = int(memory.get("ollama_rss_kb") or 0)
+    # Peak RAM is llama-server RSS. Peak VRAM is /api/ps size_vram. They are separate:
+    # on CPU, size_vram can repeat part of the same allocation, so it is not added in.
+    ps_bytes = int(memory.get("size_bytes") or 0)
     vram = int(memory.get("vram_bytes") or 0)
+    if ram_kb:
+        ram = f"{ram_kb / 1024 / 1024:.2f} GB"
+    else:
+        ram = ""
     lee = projected.get("lee_gpu_job_minutes")
     return {
         "model": tag,
@@ -213,7 +235,8 @@ def _timing_row(tag: str, job: dict, pull_s: float, probe_load_s: float, file_by
         "calls": timing.get("model_calls"),
         "retries": timing.get("retries"),
         "timeouts": timeouts,
-        "ram": f"{ram_kb / 1024 / 1024:.1f} GB" if ram_kb else "",
+        "ram": ram,
+        "ps_bytes": ps_bytes,
         "vram": f"{vram / 1e9:.2f} GB" if vram else "none",
         "lee_job": f"{lee} min" if lee else "",
         "projection": projected,

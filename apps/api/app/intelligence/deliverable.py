@@ -350,20 +350,46 @@ def _normalise_heading(line: str) -> str:
     return _split_heading(line)[0]
 
 
+def _continues_sentence(previous: str, line: str) -> bool:
+    """A markdown hard break, or a line split before the sentence ends, is still one sentence."""
+    if not previous or not line.strip():
+        return False
+    if _split_heading(line)[0]:
+        return False
+    if re.match(r"^(?:headline|body|call to action|assumption)\s*:", line.strip(), re.I):
+        return False
+    if previous.endswith("  "):
+        return True
+    stripped = previous.rstrip()
+    return bool(stripped) and not re.search(r"[.!?]$", stripped) and line[:1].islower()
+
+
 def parse_sections(text: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current = ""
+    pending = ""
     for line in (text or "").splitlines():
         heading, inline = _split_heading(line)
         if heading:
+            if current and pending:
+                sections[current].append(pending)
+            pending = ""
             current = heading
             sections.setdefault(current, [])
             if inline:
-                sections[current].append(inline)
+                pending = inline
             continue
-        if current:
-            sections[current].append(line)
-    return {key: "\n".join(lines).strip() for key, lines in sections.items()}
+        if not current:
+            continue
+        if _continues_sentence(pending, line):
+            pending = pending.rstrip() + " " + line.strip()
+            continue
+        if pending:
+            sections[current].append(pending)
+        pending = line.strip()
+    if current and pending:
+        sections[current].append(pending)
+    return {key: "\n".join(part for part in lines if part.strip()).strip() for key, lines in sections.items()}
 
 
 def _strip_labels(text: str) -> str:
@@ -672,8 +698,8 @@ def owner_section(kind: str, text: str) -> str:
     if kind == "competitor and market research":
         picked = [sentence for sentence in sentences if "£" in sentence or "http" in sentence.lower()]
         return "\n".join((picked or sentences)[:6])
-    limit = 2 if kind == "assumptions" else 1
-    body = "\n".join(_prefer_request(kind, sentences)[:limit]).strip()
+    # The required fact is often in the second sentence. One sentence is not the section.
+    body = "\n".join(_prefer_request(kind, sentences)[:3]).strip()
     if body and not re.search(r"[.!?]$", body):
         body += "."
     return body
@@ -772,7 +798,7 @@ def plan_sections_filled(text: str, evidence_blob: str = "", objective: str = ""
 def _body_rejection(body: str) -> str:
     text = _strip_labels(_owner_prose(body or "")).strip()
     if len(text) < 40:
-        return f"The section is too short to use ({len(text)} characters)."
+        return "The section is too short to use."
     if len(text) > 900:
         return "The section is too long to be a finished answer."
     lines = [line for line in text.splitlines() if line.strip()]
@@ -792,6 +818,33 @@ def _body_rejection(body: str) -> str:
     if _narrated(text):
         return "The section is drafting narration."
     return ""
+
+
+_IDENTITY = re.compile(
+    r"\b[A-Z][a-z]+(?:['’]s)?(?:[ \t]+[A-Z][a-z]+(?:['’]s)?){1,5}\b"
+)
+
+
+def borrowed_service_name(body: str, objective: str, blob: str) -> str:
+    """A business name taken from an opened page is not this request's service."""
+    words = set(re.findall(r"[a-z0-9]+", (objective or "").lower()))
+    body_l = (body or "").lower()
+    found = []
+    for match in _IDENTITY.finditer(blob or ""):
+        phrase = re.sub(r"\s+", " ", match.group(0)).strip()
+        parts = [
+            part for part in re.findall(r"[a-z0-9]+", phrase.lower())
+            if part not in {"s", "the", "and", "for", "uk"} and len(part) > 1
+        ]
+        if len(parts) < 2 or all(part in words for part in parts):
+            continue
+        if phrase.lower() not in body_l:
+            continue
+        found.append(phrase)
+    if not found:
+        return ""
+    phrase = max(found, key=len)
+    return f"The service name '{phrase}' comes from an opened page, not from the request."
 
 
 def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -> str:
@@ -844,9 +897,20 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return "The section asks the reader to confirm the request."
     if _echoes_objective(cleaned, objective):
         return "The section repeats the objective instead of answering it."
+    if key == "service":
+        borrowed = borrowed_service_name(cleaned, objective, blob)
+        if borrowed:
+            return borrowed
+    mismatch = _claim_mismatches(cleaned, blob)
+    if mismatch:
+        return mismatch
     shape = _section_shape(key, cleaned, objective, blob)
     if shape:
         return shape
+    if key != "pricing" and _pound_amounts(cleaned):
+        unlinked = _unlinked_price(cleaned, blob, assumptions=False)
+        if unlinked:
+            return unlinked
     if not section_has_anchor(key, cleaned, objective):
         return "The section does not use the service words from this request."
     return ""
@@ -857,7 +921,7 @@ _BUYERS = (
     "office", "renter", "buyer", "cafe", "restaurant", "hotel", "school",
     "couple", "occupier", "developer", "shop", "clinic", "pub", "venue",
     "company", "firm", "studio", "resident", "people", "person", "client",
-    "business", "businesses",
+    "business", "businesses", "owner",
 )
 _PROBLEM_BURDEN = (
     "cost", "expensive", "longer", "disruption", "waste", "budget", "delay",
@@ -882,7 +946,7 @@ _CHANNELS = (
     "search", "leaflet", "facebook", "instagram", "google", "referral",
     "directory", "email", "flyer", "poster", "marketplace", "nextdoor",
     "press", "website", "seo", "social", "checkatrade", "gumtree",
-    "neighbour", "neighbor", "whatsapp", "radio", "linkedin", "youtube",
+    "neighbour", "neighbor", "whatsapp", "phone", "radio", "linkedin", "youtube",
     "mailshot", "mail",
 )
 _OWNER_ACTIONS = (
@@ -1020,9 +1084,22 @@ def _ungrounded_amount(body: str, blob: str, allow_assumption: bool = True) -> b
     return False
 
 
+def _host_words_match(sentence: str, token: str) -> bool:
+    """The site name is a run of whole words. 'rental service' is not 'rentals'."""
+    words = re.findall(r"[a-z0-9]+", (sentence or "").lower())
+    for start in range(len(words)):
+        joined = ""
+        for word in words[start:]:
+            joined += word
+            if len(joined) > len(token):
+                break
+            if joined == token:
+                return True
+    return False
+
+
 def _names_opened_page(sentence: str, blob: str) -> bool:
     """True when the sentence names a site from an opened page."""
-    compact = re.sub(r"[^a-z0-9]", "", (sentence or "").lower())
     lowered = (sentence or "").lower()
     for host in re.findall(r"https?://([^/\s]+)", blob or "", re.I):
         host = host.lower().split(":")[0]
@@ -1034,7 +1111,7 @@ def _names_opened_page(sentence: str, blob: str) -> bool:
             token = re.sub(r"[^a-z0-9]", "", label)
             if len(token) < 6:
                 continue
-            if token in compact:
+            if _host_words_match(sentence, token):
                 return True
     return False
 
@@ -1069,6 +1146,43 @@ def _example_leak(text: str, objective: str, blob: str) -> str:
     return ""
 
 
+def component_price_snippets(evidence: list[dict] | None, objective: str) -> list[tuple[str, str]]:
+    """The opened sentence the pricing check counts for each part of the service.
+
+    Empty when that part has no £ figure on an opened page. This is the snippet
+    to show the model. It is not a sentence to store.
+    """
+    rows: list[tuple[str, str]] = []
+    for item in covered_items(objective):
+        found: list[str] = []
+        for page in evidence or []:
+            if not isinstance(page, dict) or len(found) >= 2:
+                continue
+            url = str(page.get("source_url") or page.get("url") or "")
+            title = str(page.get("source_title") or page.get("title") or "page")
+            text = str(page.get("extracted_content") or page.get("text") or "")
+            blob = " ".join(part for part in (url, title, text) if part)
+            if not _item_priced(item, blob):
+                continue
+            sentence = ""
+            for part in re.split(r"(?<=[.!?])\s+|\n+", blob):
+                if not re.search(r"£\s*[\d,]+", part):
+                    continue
+                if _item_present(item, part) or _item_present(item, title):
+                    sentence = re.sub(r"\s+", " ", part).strip()
+                    break
+            if not sentence:
+                continue
+            if len(sentence) > 400:
+                at = sentence.find("£")
+                start = max(0, at - 180)
+                sentence = sentence[start : start + 400]
+            where = f"{title} ({url})" if url else title
+            found.append(f"{where}: {sentence}")
+        rows.append((item, " | ".join(found)))
+    return rows
+
+
 def _item_priced(item: str, blob: str) -> bool:
     stem = item[:-1] if item.endswith("s") and len(item) > 4 else item
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", blob or ""):
@@ -1096,6 +1210,287 @@ def _false_not_stated(body: str, blob: str, objective: str) -> str:
         if not named:
             return "Pricing says a figure is not stated, but an opened page states a £ figure."
     return ""
+
+
+def measurements_still_needed(objective: str) -> list[str]:
+    """What a quote still needs, taken from the parts this request names.
+
+    A £ figure on a page is a market reference until those measurements are known.
+    The words come from the request. Nothing here is a stored sentence.
+    """
+    items = covered_items(objective)
+    if len(items) < 2:
+        return []
+    needed: list[str] = []
+    if re.search(r"\bkitchen\b", service_brief(objective), re.I):
+        needed.append("kitchen size")
+    for item in items:
+        stem = item[:-1] if item.endswith("s") and len(item) > 4 else item
+        if stem == "door":
+            needed.extend(["door count", "door size"])
+        elif "worktop" in item:
+            needed.extend(["worktop length", "worktop material"])
+        elif stem == "handle":
+            needed.append("handle count")
+        else:
+            needed.extend([f"{item} count", f"{stem} size"])
+    unique: list[str] = []
+    for item in needed:
+        if item not in unique:
+            unique.append(item)
+    return unique
+
+
+_CLAIM_STOP = {
+    "assumption", "priced", "pricing", "charging", "charge", "charges", "charged",
+    "offer", "offers", "offered", "offering", "service", "services", "page", "pages",
+    "stated", "states", "state", "similar", "like", "competitor", "competitors",
+    "starts", "starting", "start", "from", "with", "that", "this", "they", "their",
+    "only", "also", "such", "than", "into", "about", "around", "based", "company",
+    "opened", "figure", "amount", "price", "prices", "market", "reference",
+    "plan", "planning", "your", "them", "then", "have", "been", "will", "would",
+    "could", "should", "which", "where", "when", "what", "each",
+}
+_EXCLUSION_PHRASES = (
+    "pay on completion",
+    "excluding vat",
+    "plus vat",
+    "week (minimum)",
+    "fitting not included",
+    "fitting included",
+    "not included",
+    "supply only",
+    "excluding",
+)
+
+
+def _units_in(text: str) -> set[str]:
+    """Units a price sentence actually states. A page that says nothing of the kind has none."""
+    raw = text or ""
+    found: set[str] = set()
+    if re.search(
+        r"per\s+square\s+(?:metre|meter)s?\b|per\s+sq\.?\s*m\b|per\s+m(?:2|²)\b|/\s*m(?:2|²)\b|/\s*sqm\b",
+        raw,
+        re.I,
+    ):
+        found.add("per square metre")
+    elif re.search(r"per\s+linear\s+(?:metre|meter)s?\b", raw, re.I):
+        found.add("per linear metre")
+    elif re.search(r"per\s+(?:metre|meter)s?\b", raw, re.I):
+        found.add("per metre")
+    if re.search(r"per\s+(?:standard\s+|kitchen\s+)?doors?\b", raw, re.I):
+        found.add("per door")
+    if re.search(r"per\s+weeks?\b|/\s*weeks?\b|\ba\s+weeks?\b", raw, re.I):
+        found.add("per week")
+    if re.search(r"per\s+months?\b", raw, re.I):
+        found.add("per month")
+    if re.search(r"per\s+hours?\b", raw, re.I):
+        found.add("per hour")
+    if re.search(r"per\s+days?\b", raw, re.I):
+        found.add("per day")
+    if re.search(r"£\s*\d[\d,]*(?:\.\d+)?\s+each\b", raw, re.I):
+        found.add("each")
+    return found
+
+
+def _word_on_page(word: str, source: str) -> bool:
+    """Whole word, plus a trailing s. transform does not support transformation."""
+    if re.search(rf"\b{re.escape(word)}\b", source or "", re.I):
+        return True
+    if word.endswith("s"):
+        return bool(re.search(rf"\b{re.escape(word[:-1])}\b", source or "", re.I))
+    return bool(re.search(rf"\b{re.escape(word)}s\b", source or "", re.I))
+
+
+def _content_words(phrase: str) -> list[str]:
+    words = []
+    for word in re.findall(r"[a-z]{4,}", (phrase or "").lower()):
+        if word in _CLAIM_STOP or word in words:
+            continue
+        words.append(word)
+    return words
+
+
+def _object_phrases(sentence: str) -> list[str]:
+    phrases = []
+    after = re.compile(
+        r"£\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:-|–|to)\s*£?\s*\d[\d,]*(?:\.\d+)?)?"
+        r"(?:\s+per\s+(?:square\s+|linear\s+|standard\s+|kitchen\s+)?[\w²]+)?"
+        r"(?:\s+each)?\s+(?:for|of)\s+([^.;,\n]+)",
+        re.I,
+    )
+    before = re.compile(
+        r"([A-Za-z0-9'][^.£\n]{0,80}?)\s+(?:starts?\s+at|priced\s+at|charg(?:e|es|ing)|costs?)\s+£",
+        re.I,
+    )
+    price_of = re.compile(r"((?:[A-Za-z]{3,}\s+){1,3})prices?\s+of\s+£", re.I)
+    for match in after.finditer(sentence or ""):
+        phrases.append(match.group(1))
+    for match in before.finditer(sentence or ""):
+        phrases.append(" ".join(_content_words(match.group(1))[-4:]))
+    for match in price_of.finditer(sentence or ""):
+        phrases.append(match.group(1))
+    return phrases
+
+
+def _pages_in_blob(blob: str) -> list[tuple[str, str]]:
+    matches = list(re.finditer(r"https?://[^\s)>\"]+", blob or "", re.I))
+    if not matches:
+        return [("", blob or "")]
+    pages = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(blob)
+        url = match.group(0).rstrip(".,)")
+        pages.append((url, f"{url} {blob[match.end():end]}".strip()))
+    return pages
+
+
+def _cited_source(sentence: str, blob: str) -> str:
+    """The opened page this sentence names, or the one page that states the same £ figure."""
+    pages = _pages_in_blob(blob)
+    named = [text for url, text in pages if url and _names_opened_page(sentence, url)]
+    amounts = _pound_amounts(sentence)
+    if len(named) == 1:
+        return named[0]
+    if len(named) > 1:
+        holders = [text for text in named if any(_pound_supported(amount, text) for amount in amounts)]
+        return holders[0] if len(holders) == 1 else ("\n".join(holders or named))
+    holders = [text for _url, text in pages if any(_pound_supported(amount, text) for amount in amounts)]
+    if not holders and not any(url for url, _text in pages):
+        if any(_pound_supported(amount, blob) for amount in amounts):
+            return blob or ""
+        return ""
+    if len(holders) == 1:
+        return holders[0]
+    return "\n".join(holders)
+
+
+def _claimed_numbers(sentence: str) -> list[str]:
+    numbers = [re.sub(r"[£\s,]", "", amount) for amount in _pound_amounts(sentence)]
+    for extra in re.findall(
+        r"£\s*\d[\d,]*(?:\.\d+)?\s*(?:-|–|to)\s*£?\s*(\d[\d,]*(?:\.\d+)?)",
+        sentence or "",
+    ):
+        numbers.append(re.sub(r",", "", extra))
+    return numbers
+
+
+def _number_on_page(number: str, source: str) -> bool:
+    """£10 is not £10.60, and it is not the '.10' in £19.10."""
+    compact = re.sub(r",", "", source or "")
+    if "." in (number or ""):
+        return bool(re.search(rf"(?<!\d){re.escape(number)}(?!\d)", compact))
+    return bool(re.search(rf"(?<![\d.]){re.escape(number)}(?!\d)(?!\.\d)", compact))
+
+
+def _price_span(source: str, sentence: str) -> str:
+    amounts = _pound_amounts(sentence)
+    spans = []
+    for chunk in re.split(r"(?<=[.!?])\s+|\n+", source or ""):
+        if any(_pound_supported(amount, chunk) for amount in amounts):
+            spans.append(chunk)
+    text = " ".join(spans) if spans else (source or "")
+    if len(text) > 500:
+        at = text.find("£")
+        start = max(0, at - 220)
+        text = text[start : start + 500]
+    return text
+
+
+def _mismatch_against(sentence: str, source: str) -> str:
+    """Compare one claim with one opened page."""
+    for number in _claimed_numbers(sentence):
+        if not _number_on_page(number, source):
+            return f"The claim states {number}, and the opened page does not."
+    missing_units = _units_in(sentence) - _units_in(source)
+    if missing_units:
+        unit = sorted(missing_units)[0]
+        return f"The claim gives the unit '{unit}', and the opened page does not."
+    for word in ("vinyl", "sample", "wrap"):
+        if re.search(rf"\b{word}\b", sentence or "", re.I) and not _word_on_page(word, source):
+            return f"The claim gives the product '{word}', and the opened page does not."
+    missing_words = []
+    for phrase in _object_phrases(sentence):
+        for word in _content_words(phrase):
+            if word in missing_words or _word_on_page(word, source):
+                continue
+            missing_words.append(word)
+    if missing_words:
+        shown = ", ".join(f"'{word}'" for word in missing_words[:4])
+        return f"The claim uses {shown}, and the opened page does not."
+    span = _price_span(source, sentence).lower()
+    claim = (sentence or "").lower()
+    for phrase in _EXCLUSION_PHRASES:
+        if phrase in span and phrase not in claim:
+            return f"The opened page states '{phrase}' with the £ figure. The claim does not."
+    return ""
+
+
+def _page_text(blob: str, url: str) -> str:
+    for page_url, text in _pages_in_blob(blob):
+        if page_url == url:
+            return text
+    return ""
+
+
+def claim_mismatch(sentence: str, blob: str) -> str:
+    """The quantity, the unit, or the product is not what the opened page says.
+
+    An Assumption line that does not name a page may state a planning figure.
+    A line that names a page has to use that page's quantity, unit, and words.
+    A line that names two pages is checked clause by clause, so a figure cannot
+    borrow the other page.
+    """
+    if not _pound_amounts(sentence or ""):
+        return ""
+    named = [url for url, _text in _pages_in_blob(blob) if url and _names_opened_page(sentence, url)]
+    if not named:
+        return ""
+    if len(named) > 1:
+        clauses = re.split(r"\b(?:and|while|whereas)\b", sentence or "", flags=re.I)
+        saw_price = False
+        for clause in clauses:
+            if not _pound_amounts(clause):
+                continue
+            saw_price = True
+            pages = [url for url in named if _names_opened_page(clause, url)]
+            if len(pages) != 1:
+                number = _claimed_numbers(clause)[0]
+                return f"The claim states {number}, and it does not say which opened page that figure is on."
+            reason = _mismatch_against(clause, _page_text(blob, pages[0]))
+            if reason:
+                return reason
+        if saw_price:
+            return ""
+    source = _cited_source(sentence, blob)
+    if not source:
+        return ""
+    return _mismatch_against(sentence, source)
+
+
+def _claim_mismatches(body: str, blob: str) -> str:
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
+        reason = claim_mismatch(sentence, blob)
+        if reason:
+            return reason
+    return ""
+
+
+def _missing_measurements(body: str, objective: str) -> str:
+    """A found £ figure is a market reference until the request's measurements are named."""
+    if "£" not in (body or "") or not _pound_amounts(body):
+        return ""
+    needed = measurements_still_needed(objective)
+    if not needed:
+        return ""
+    lowered = (body or "").lower()
+    missing = [item for item in needed if item not in lowered]
+    if not missing:
+        return ""
+    return (
+        "A £ figure on an opened page is a market reference, not a price for this service, until the size or the spec is known. "
+        "Name what still has to be measured: " + ", ".join(missing) + "."
+    )
 
 
 def _competitor_prices(body: str, blob: str) -> str:
@@ -1157,7 +1552,10 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         unlinked = _unlinked_price(body, blob)
         if unlinked:
             return unlinked
-        return _false_not_stated(body, blob, objective)
+        absent = _false_not_stated(body, blob, objective)
+        if absent:
+            return absent
+        return _missing_measurements(body, objective)
     elif key == "competitor and market research":
         return _competitor_prices(body, blob)
     elif key == "call to action":

@@ -333,8 +333,8 @@ def format_timing_table(rows: list[dict]) -> str:
 def two_model_fit(chat_bytes: int, plan_bytes: int) -> dict:
     """Whether 4B chat plus a plan model fits the 16 GB machine.
 
-    Sequential loading uses Ollama's one-model cap. Simultaneous loading adds the files.
-    A single Q4 file of 9-10 GB is the practical cap already set for this machine.
+    The file size is not the resident size. At num_ctx 8192, qwen3:4b (2.50 GB file)
+    used 4.25 GB and qwen3:8b (5.23 GB file) used 6.75 GB, 11.0 GB together.
     """
     chat_gb = round((chat_bytes or 0) / 1_000_000_000, 2)
     plan_gb = round((plan_bytes or 0) / 1_000_000_000, 2)
@@ -343,12 +343,14 @@ def two_model_fit(chat_bytes: int, plan_bytes: int) -> dict:
         "chat_gb": chat_gb,
         "plan_gb": plan_gb,
         "sequential_fits": plan_gb <= 10 and chat_gb <= 10,
-        "resident_together_fits": together <= 8,
+        "resident_together_fits": together <= 6,
         "files_together_gb": together,
         "note": (
-            "Ollama can keep a single model loaded (OLLAMA_MAX_LOADED_MODELS=1) and drops it after the keep-alive, "
-            "which defaults to 5 minutes. Sequential use fits when the larger file is within the 9-10 GB cap. "
-            "Both resident at once also needs KV cache and Windows, Electron and Campus, so a combined file size "
-            "over 8 GB is treated as not fitting with headroom."
+            "Ollama can keep a single model loaded (OLLAMA_MAX_LOADED_MODELS=1). "
+            "A keep-alive of about 2 minutes releases the plan model after the job. "
+            "Sequential use fits when the larger file is within the 9-10 GB cap. "
+            "Both resident at num_ctx 8192 was 11.0 GB for qwen3:4b plus qwen3:8b, "
+            "which does not leave room for Windows, Electron and Campus on a 16 GB laptop. "
+            "A combined file size over 6 GB is treated as not fitting together."
         ),
     }
