@@ -458,7 +458,9 @@ def _impl_prompt(objective: str, spec: dict, test_source: str, feedback: str) ->
     params = ", ".join(spec.get("parameters") or [])
     text = (
         "Write main.py only. Reply with one JSON object {\"main.py\": \"...\"} and then stop.\n"
-        f"Define {signature}({params}) so the test below passes. Do not write the test again.\n\n"
+        f"Define {signature}({params}) so the separate test file below passes. "
+        "Return only the implementation in main.py. Do not copy assertions or test calls into main.py. "
+        "The name main refers to this module from the separate test file; it is not defined inside main.py.\n\n"
         f"Test that will be run:\n{(test_source or '')[:1200]}\n\n"
         f"Request:\n{(objective or '')[:400]}\n"
     )
