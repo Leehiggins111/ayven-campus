@@ -577,6 +577,23 @@ def test_a_failed_fetch_url_is_not_treated_as_a_cited_source():
     assert invented["prohibited"]
 
 
+def test_a_split_call_to_action_stays_with_the_advert():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.execution import _join_advert, _section_missing
+
+    draft = {
+        "advert": "Headline: Replace kitchen doors, worktops and handles without full replacement\nBody: Fix kitchen doors, worktops and handles in your existing kitchen at £10-£40 per door",
+        "call to action": "Get a free quote for your kitchen components.",
+    }
+    joined = _join_advert(draft)
+    blob = "Kitchen door replacement costs £10-£40 per standard door."
+    assert "Call to action:" in joined["advert"]
+    assert _section_missing("advert", joined["advert"], blob, DOOR) is False
+    assert section_rejection("advert", joined["advert"], blob, DOOR) == ""
+    percent = section_rejection("advert", "Headline: 100% Kitchen Door Repair\nBody: The service replaces kitchen doors, worktops and handles.\nCall to action: Ask for a visit.", blob, DOOR)
+    assert "percentage" in percent.lower()
+
+
 def test_an_unsupported_percentage_is_rejected():
     from app.intelligence.deliverable import section_rejection
     from app.intelligence.grounding import ground_text

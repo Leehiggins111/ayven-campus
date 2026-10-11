@@ -1019,7 +1019,7 @@ def _publish_plan(self: Programme, model_text: str) -> str:
         return ""
     from .deliverable import finished_lines, parse_sections
 
-    sections = parse_sections(finished_lines(model_text or ""))
+    sections = _join_advert(parse_sections(finished_lines(model_text or "")))
     reasons = _fill_plan_sections(self, sections, blob)
     assembled = _assemble_plan(sections, self.objective)
     published = publish_business_plan(self.objective, self.research, assembled)
@@ -1398,6 +1398,16 @@ def _section_budget(key: str, attempt: int) -> tuple[int, list[str]]:
     if key in {"advert", "pricing", "competitor and market research"}:
         return (480 if attempt > 1 else 640), []
     return 480, []
+
+
+def _join_advert(sections: dict) -> dict:
+    """The call to action is part of the advert when the parser stored it under its own heading."""
+    joined = dict(sections or {})
+    advert = (joined.get("advert") or "").strip()
+    cta = (joined.get("call to action") or "").strip()
+    if advert and cta and "call to action" not in advert.lower():
+        joined["advert"] = advert + "\nCall to action: " + cta
+    return joined
 
 
 def _section_missing(key: str, body: str, blob: str, objective: str = "") -> bool:
