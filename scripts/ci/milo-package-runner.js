@@ -173,11 +173,18 @@ function reasonFrom(output) {
   const lines = String(output || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = redact(lines[index]);
-    if (!line) continue;
+    if (!line || /^Node\.js v/i.test(line)) continue;
+    if (line.includes("$") || /^\d+\s*\|/.test(line) || /^\s*at /.test(line)) continue;
     if (/^(PASS|FAIL)\b/i.test(line)) return line;
     if (line.length < 160 && !/function |const |import |^def /.test(line)) return line;
   }
   return "exit";
+}
+
+function reportFailure(scope, output) {
+  const lines = diagnosticLines(output);
+  if (!lines.length) fail(scope, reasonFrom(output));
+  for (const line of lines) fail(scope, line);
 }
 
 function chooseWorkflow(milo) {
@@ -225,9 +232,7 @@ function runPrelude(milo, vars) {
     fs.rmSync(file, { force: true });
     const output = forwardOutput(result);
     if (result.status !== 0) {
-      const lines = diagnosticLines(output);
-      if (!lines.length) fail(step.name || "prelude", reasonFrom(output) || `exit ${result.status}`);
-      for (const line of lines) fail(step.name || "prelude", line);
+      reportFailure(step.name || "prelude", output);
       return false;
     }
     say(`PASS ${step.name || "prelude"}`);
@@ -455,7 +460,7 @@ async function main() {
   ], milo);
   const assembleOut = forwardOutput(assembled);
   if (assembled.status !== 0) {
-    fail("assemble", reasonFrom(assembleOut));
+    reportFailure("assemble", assembleOut);
     process.exit(1);
   }
   const seeded = runNode([
@@ -465,7 +470,7 @@ async function main() {
   ], milo);
   forwardOutput(seeded);
   if (seeded.status !== 0) {
-    fail("seed", reasonFrom(`${seeded.stdout || ""}\n${seeded.stderr || ""}`));
+    reportFailure("seed", `${seeded.stdout || ""}\n${seeded.stderr || ""}`);
     process.exit(1);
   }
   say("PASS seed");
@@ -477,7 +482,7 @@ async function main() {
   const verified = runNode([path.join(milo, "scripts", "windows", verify), "--milo", milo, "--campus", campus], milo);
   forwardOutput(verified);
   if (verified.status !== 0) {
-    fail("verify", reasonFrom(`${verified.stdout || ""}\n${verified.stderr || ""}`));
+    reportFailure("verify", `${verified.stdout || ""}\n${verified.stderr || ""}`);
     process.exit(1);
   }
   say("PASS verify");
