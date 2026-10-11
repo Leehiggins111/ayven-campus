@@ -465,7 +465,7 @@ async function main() {
   }
   const seeded = runNode([
     path.join(milo, "scripts", "windows", "seed-sample-databases.js"),
-    "--milo", milo,
+    "--milo", packageDir,
     "--campus", campus,
   ], milo);
   forwardOutput(seeded);
@@ -479,7 +479,7 @@ async function main() {
     fail("verify", `scripts ${scriptNames(milo).join(",") || "none"}`);
     process.exit(1);
   }
-  const verified = runNode([path.join(milo, "scripts", "windows", verify), "--milo", milo, "--campus", campus], milo);
+  const verified = runNode([path.join(milo, "scripts", "windows", verify), "--milo", packageDir, "--campus", campus], milo);
   forwardOutput(verified);
   if (verified.status !== 0) {
     reportFailure("verify", `${verified.stdout || ""}\n${verified.stderr || ""}`);
