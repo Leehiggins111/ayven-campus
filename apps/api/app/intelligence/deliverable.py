@@ -690,11 +690,11 @@ def owner_section(kind: str, text: str) -> str:
         for sentence in sentences:
             if "$" in sentence or re.fullmatch(r"assumption:\s*\d+\.?", sentence, re.I):
                 continue
-            if "£" in sentence or "assumption" in sentence.lower():
+            if "£" in sentence or "assumption" in sentence.lower() or re.search(r"\bmeasur", sentence, re.I):
                 picked.append(sentence)
         if not picked:
             return ""
-        return "\n".join(picked[:6])
+        return "\n".join(picked[:8])
     if kind == "competitor and market research":
         picked = [sentence for sentence in sentences if "£" in sentence or "http" in sentence.lower()]
         return "\n".join((picked or sentences)[:6])
@@ -942,7 +942,7 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return "The section asks the reader to confirm the request."
     if _echoes_objective(cleaned, objective):
         return "The section repeats the objective instead of answering it."
-    if key in {"service", "offer and positioning", "advert", "call to action"}:
+    if key in {"service", "offer and positioning", "advert", "call to action", "channels"}:
         borrowed = borrowed_service_name(cleaned, objective, blob)
         if borrowed:
             return borrowed
@@ -1232,12 +1232,32 @@ def component_price_snippets(evidence: list[dict] | None, objective: str) -> lis
 
 
 def _item_priced(item: str, blob: str) -> bool:
+    """True when a £ figure is for this part.
+
+    A door price that says 'including handles' does not price the handles.
+    """
     stem = item[:-1] if item.endswith("s") and len(item) > 4 else item
+    item_re = re.compile(rf"\b{re.escape(stem)}s?\b", re.I)
+    aside = re.compile(
+        r"\b(?:including|include|includes|included|such as|whether|depending|depends|along with|as well as)\b",
+        re.I,
+    )
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", blob or ""):
-        if not _item_present(item, sentence) and not re.search(rf"\b{re.escape(stem)}\b", sentence, re.I):
+        if not item_re.search(sentence) or not re.search(r"£\s*[\d,]+", sentence):
             continue
-        if re.search(r"£\s*[\d,]+", sentence):
+        if re.search(
+            rf"£\s*[\d,]+(?:\.\d+)?(?:\s*(?:-|–|to)\s*£?\s*[\d,]+(?:\.\d+)?)?(?:\s+\w+){{0,4}}\s+(?:per|for|a|an)\s+(?:\w+\s+){{0,3}}{re.escape(stem)}s?\b",
+            sentence,
+            re.I,
+        ):
             return True
+        for match in item_re.finditer(sentence):
+            before = sentence[max(0, match.start() - 48) : match.start()]
+            if aside.search(before):
+                continue
+            after = aside.split(sentence[match.end() :], maxsplit=1)[0]
+            if re.search(r"£\s*[\d,]+", after):
+                return True
     return False
 
 
@@ -1341,13 +1361,34 @@ def _units_in(text: str) -> set[str]:
     return found
 
 
+def _word_in_site_name(word: str, source: str) -> bool:
+    """'builders' is the site bestbuilders.co.uk, even though the body never splits it."""
+    if len(word or "") < 4:
+        return False
+    for host in re.findall(r"https?://([^/\s]+)", source or "", re.I):
+        parts = [re.sub(r"[^a-z0-9]", "", part) for part in host.lower().split(".")]
+        labels = [part for part in parts if part and part not in {"www", "co", "uk", "com", "org", "net"}]
+        if not labels:
+            continue
+        label = labels[0]
+        if len(label) < len(word) + 3:
+            continue
+        if label.startswith(word) or label.endswith(word):
+            return True
+        if word.endswith("s") and len(word) > 4 and (label.startswith(word[:-1]) or label.endswith(word[:-1])):
+            return True
+    return False
+
+
 def _word_on_page(word: str, source: str) -> bool:
-    """Whole word, plus a trailing s. transform does not support transformation."""
+    """Whole word, plus a trailing s. The page title and the site name count."""
     if re.search(rf"\b{re.escape(word)}\b", source or "", re.I):
         return True
-    if word.endswith("s"):
-        return bool(re.search(rf"\b{re.escape(word[:-1])}\b", source or "", re.I))
-    return bool(re.search(rf"\b{re.escape(word)}s\b", source or "", re.I))
+    if word.endswith("s") and re.search(rf"\b{re.escape(word[:-1])}\b", source or "", re.I):
+        return True
+    if not word.endswith("s") and re.search(rf"\b{re.escape(word)}s\b", source or "", re.I):
+        return True
+    return _word_in_site_name(word, source)
 
 
 def _content_words(phrase: str) -> list[str]:
@@ -1381,6 +1422,17 @@ def _object_phrases(sentence: str) -> list[str]:
     return phrases
 
 
+def _title_before_url(text: str) -> str:
+    """A single short line in front of a URL is that page's title. A price paragraph is not."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return ""
+    line = lines[0]
+    if "£" in line or len(line) > 140 or line.lower().startswith("http"):
+        return ""
+    return line
+
+
 def _pages_in_blob(blob: str) -> list[tuple[str, str]]:
     matches = list(re.finditer(r"https?://[^\s)>\"]+", blob or "", re.I))
     if not matches:
@@ -1389,7 +1441,9 @@ def _pages_in_blob(blob: str) -> list[tuple[str, str]]:
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(blob)
         url = match.group(0).rstrip(".,)")
-        pages.append((url, f"{url} {blob[match.end():end]}".strip()))
+        previous = matches[index - 1].end() if index else 0
+        title = _title_before_url(blob[previous : match.start()])
+        pages.append((url, f"{url} {title} {blob[match.end():end]}".strip()))
     return pages
 
 

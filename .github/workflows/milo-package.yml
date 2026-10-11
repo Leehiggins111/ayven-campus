@@ -26,6 +26,11 @@ jobs:
       CAMPUS_DIR: ${{ github.workspace }}/campus
       WORK_DIR: ${{ github.workspace }}/work
       MILO_BUILD_TOKEN: ${{ secrets.MILO_BUILD_TOKEN }}
+      AYVEN_EMPLOYEE_MODEL: qwen3:4b
+      AYVEN_SUPERVISOR_MODEL: qwen3:4b
+      AYVEN_MANAGER_MODEL: qwen3:4b
+      AYVEN_PLAN_MODEL: qwen3:8b
+      OLLAMA_MAX_LOADED_MODELS: "1"
     steps:
       - name: Mask build token
         shell: pwsh
@@ -56,7 +61,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.ollama/models
-          key: ollama-qwen3-4b-${{ runner.os }}-v1
+          key: ollama-qwen3-4b-8b-${{ runner.os }}-v1
+          restore-keys: |
+            ollama-qwen3-4b-${{ runner.os }}-v1
 
       - name: Restore Ollama app cache
         id: ollama-app
@@ -65,9 +72,9 @@ jobs:
           path: ~/.ollama-app
           key: ollama-windows-app-v0.40.2
 
-      - name: Serve qwen3:4b
+      - name: Serve qwen3:4b and qwen3:8b
         id: serve-model
-        timeout-minutes: 40
+        timeout-minutes: 80
         shell: pwsh
         run: pwsh -NoProfile -File "$env:CAMPUS_DIR\scripts\ci\serve-qwen.ps1"
 
@@ -77,7 +84,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.ollama/models
-          key: ollama-qwen3-4b-${{ runner.os }}-v1
+          key: ollama-qwen3-4b-8b-${{ runner.os }}-v1
 
       - name: Save Ollama app cache
         if: always() && steps.ollama-app.outputs.cache-hit != 'true' && steps.serve-model.outcome == 'success'

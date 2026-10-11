@@ -1250,6 +1250,27 @@ def test_a_competitor_price_has_to_use_the_pages_own_words():
         + _MEASURED
     )
     assert "does not use" in reject_section("pricing", swatches, titled, DOOR)
+    builders = (
+        "https://www.bestbuilders.co.uk/guides/costs/kitchen-door-replacement-cost\n"
+        "Kitchen Door Replacement Cost UK 2026 | £10-£40 a Door\n"
+        "In 2026, kitchen door replacement in the UK costs £10-£40 per standard door.\n"
+        "https://www.nickarchibold.com/replacement-kitchen-doors-cost\n"
+        "Cost To Replace Kitchen Doors\n"
+        "Replacement kitchen doors and drawer fronts from £6,000 to £10,000, including new hinges and handles.\n"
+    )
+    named = "Best Builders states kitchen door replacement in the UK costs £10-£40 per standard door."
+    assert claim_mismatch(named, builders) == ""
+    wrong_unit = "Best Builders states kitchen door replacement costs £10-£40 per square metre."
+    assert "per square metre" in claim_mismatch(wrong_unit, builders)
+    handles = (
+        "Assumption: doors cost £10-£40 per standard door.\n"
+        "Assumption: worktops — not stated.\n"
+        "Assumption: handles cost is not stated.\n"
+        + _MEASURED
+    )
+    assert section_rejection("pricing", handles, builders, DOOR) == ""
+    priced_handles = builders + "Handles from £12 each.\n"
+    assert "handles" in section_rejection("pricing", handles, priced_handles, DOOR)
     promise = "Contact us today to schedule a free consultation and refresh the kitchen in one day."
     assert "free consultation" in unsupported_promise(promise, DOOR, titled)
     assert unsupported_promise(quoted, DOOR, titled) == ""

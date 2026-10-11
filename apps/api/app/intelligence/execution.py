@@ -1482,7 +1482,7 @@ def _section_jobs(objective: str) -> tuple:
         ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs. Do not use a business name that appears only on an opened page." + shared, "The offer "),
         ("competitor and market research", "Competitor and market research", "Write two sentences. In each sentence name one opened page by its site and state the £ figure in that page's own words. Do not add a unit or a product the page does not use. Do not use a £ figure that is not written on that page." + shared, "Opened pages state "),
         ("pricing", "Pricing", "Write one line for each part. Start each line with Assumption. A £ figure on an opened page is a market reference. Use that page's own words for the product, the unit, and any exclusion. Do not add a unit or a product the page does not use. When no opened page states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, "Assumption: "),
-        ("channels", "Channels", "Write one sentence. Name the channel. Say what the owner does there. Do not mention hours." + shared, "Customers are reached through "),
+        ("channels", "Channels", "Write one sentence. Name the channel. Use a website, search, or a directory, and say what the owner does there. Do not name a competitor's business as the channel. Do not mention hours." + shared, "Customers are reached through "),
         ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\nDo not use a business name that appears only on an opened page.\n" + shared, ""),
         ("call to action", "Call to action", "Write one sentence. Ask the reader to get in touch. Do not name the person who wrote the request. Do not use a business name that appears only on an opened page." + shared, "Ask "),
         ("next steps", "Next steps", "Write one sentence. Name the owner's next action. Do not name a service area." + shared, "The owner phones "),
@@ -1565,6 +1565,8 @@ def _check_for_model(reason: str) -> str:
         return "The previous line promised something the request does not say. Do not repeat that promise."
     if "does not ask the customer" in lowered or "names the person who wrote" in lowered:
         return "Ask the reader to get in touch. Do not name the person who wrote the request."
+    if "does not name a channel" in lowered:
+        return "Name a website, search, or a directory, and the action the owner takes there. Do not name a competitor's business as the channel."
     return text
 
 
@@ -1733,6 +1735,9 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             ):
                 use_prefill = "The owner uses "
                 use_instruction = instruction + " Do not claim that the service is available at all hours."
+            elif key == "channels" and attempt > 1 and "does not name a channel" in (rejected.get(key) or "").lower():
+                use_prefill = "The owner posts on "
+                use_instruction = instruction + " Name a website, search, or a directory."
             written, raw, meta = _write_one_section(
                 programme, key, title, use_instruction, prefill=use_prefill, attempt=attempt, reason=rejected.get(key, ""),
             )

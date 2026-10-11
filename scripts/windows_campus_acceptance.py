@@ -95,6 +95,9 @@ def base_env(db: Path, research_mode: str, *, stub: bool = False) -> dict:
         "AYVEN_MAX_ATTEMPTS": os.environ.get("AYVEN_MAX_ATTEMPTS", "1"),
         "AYVEN_OLLAMA_THINK": "0",
     })
+    plan_model = os.environ.get("AYVEN_PLAN_MODEL", "").strip()
+    if plan_model:
+        env["AYVEN_PLAN_MODEL"] = plan_model
     if stub:
         # Approval fixtures do not need qwen3. The live server is the proof.
         env.pop("AYVEN_LOCAL_LLM_BASE_URL", None)
@@ -184,9 +187,18 @@ def ollama_ready() -> tuple[bool, str]:
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
     names = [item.get("name") or "" for item in payload.get("models") or []]
-    if any(name == MODEL or name.startswith(MODEL + ":") or MODEL.startswith(name) for name in names):
+
+    def present(wanted: str) -> bool:
+        return any(name == wanted or name.startswith(wanted + ":") or wanted.startswith(name) for name in names)
+
+    wanted = [MODEL]
+    plan = os.environ.get("AYVEN_PLAN_MODEL", "").strip()
+    if plan and plan not in wanted:
+        wanted.append(plan)
+    missing = [item for item in wanted if not present(item)]
+    if not missing:
         return True, ", ".join(names)
-    return False, "models present: " + (", ".join(names) or "none")
+    return False, "missing " + ", ".join(missing) + "; models present: " + (", ".join(names) or "none")
 
 
 def write_pdf(path: Path, text: str) -> None:
