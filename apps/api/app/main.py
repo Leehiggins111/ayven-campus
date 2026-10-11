@@ -226,6 +226,11 @@ def _traces(package_id: str) -> list[dict]:
 
 @app.post("/projects")
 def create_project(body: ObjectiveIn):
+    from .milo_handoff import find_duplicate
+
+    existing = find_duplicate(body.objective)
+    if existing:
+        return existing
     pid = str(uuid.uuid4())
     title = body.title or body.objective[:80]
     conn = connect()

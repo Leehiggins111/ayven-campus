@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -15,16 +16,38 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def submit_job(objective: str, idempotency_key: str = "") -> dict:
+def _same_objective(left: str, right: str) -> bool:
+    def norm(text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").strip()).casefold()
+    return bool(norm(left)) and norm(left) == norm(right)
+
+
+def find_duplicate(objective: str, idempotency_key: str = "") -> dict | None:
+    """The earlier job for this submission. A second insert would repeat the work."""
     conn = connect()
     if idempotency_key:
         existing = conn.execute(
             "SELECT id, status FROM projects WHERE title=?",
             (f"milo:{idempotency_key}",),
         ).fetchone()
-        if existing:
+        if existing and (existing["status"] or "") != "failed":
             conn.close()
             return {"project_id": existing["id"], "duplicate": True, "status": existing["status"]}
+    rows = conn.execute("SELECT id, status, objective FROM projects ORDER BY created_at DESC").fetchall()
+    conn.close()
+    for row in rows:
+        if (row["status"] or "") == "failed":
+            continue
+        if _same_objective(row["objective"], objective):
+            return {"project_id": row["id"], "duplicate": True, "status": row["status"]}
+    return None
+
+
+def submit_job(objective: str, idempotency_key: str = "") -> dict:
+    existing = find_duplicate(objective, idempotency_key)
+    if existing:
+        return existing
+    conn = connect()
     project_id = str(uuid.uuid4())
     title = f"milo:{idempotency_key}" if idempotency_key else objective[:80]
     conn.execute(

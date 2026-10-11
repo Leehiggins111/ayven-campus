@@ -594,6 +594,31 @@ def test_a_split_call_to_action_stays_with_the_advert():
     assert "percentage" in percent.lower()
 
 
+def test_a_page_explains_why_it_is_relevant_and_a_service_area_is_not_invented():
+    from app.intelligence.deliverable import relevance_reason, section_rejection
+
+    page = "Replacement kitchen doors and worktops, fitted without a full kitchen replacement."
+    reason = relevance_reason(DOOR, "Kitchen doors", page, "https://doors.example/replace")
+    assert "doors" in reason
+    assert "worktops" in reason
+    assert relevance_reason(DOOR, "Paint prices", "Cabinet respray only.", "https://paint.example") == ""
+    forbidden = DOOR + " Do not invent a service area or a home base."
+    invented = section_rejection(
+        "next steps",
+        "Identify 3 local UK service areas for owner travel and then replace the kitchen doors, worktops and handles.",
+        "",
+        forbidden,
+    )
+    assert "service area" in invented.lower()
+    gap = section_rejection(
+        "unresolved",
+        "The service area boundary is unknown because the owner is willing to travel to replace kitchen doors, worktops and handles.",
+        "",
+        forbidden,
+    )
+    assert gap == ""
+
+
 def test_an_unsupported_percentage_is_rejected():
     from app.intelligence.deliverable import section_rejection
     from app.intelligence.grounding import ground_text

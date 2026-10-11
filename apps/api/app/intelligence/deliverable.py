@@ -288,13 +288,28 @@ def page_is_relevant(objective: str, title: str = "", text: str = "", url: str =
     terms = [term for term in distinctive_terms(objective) if len(term) >= 5]
     if not terms:
         return True
-    blob = f"{title}\n{text}\n{url}".lower()
-    hits = [term for term in terms if _blob_has_term(term, blob)]
+    hits = _relevance_hits(objective, title, text, url)
     if len(hits) >= 2:
         return True
     if len(hits) == 1 and len(hits[0]) >= 8:
         return True
     return False
+
+
+def relevance_reason(objective: str, title: str = "", text: str = "", url: str = "") -> str:
+    """Why this opened page counts. Empty when it does not."""
+    if not page_is_relevant(objective, title, text, url):
+        return ""
+    hits = _relevance_hits(objective, title, text, url)
+    if not hits:
+        return "The page was opened for this request."
+    return "Relevant because the page uses: " + ", ".join(hits[:5]) + "."
+
+
+def _relevance_hits(objective: str, title: str = "", text: str = "", url: str = "") -> list[str]:
+    terms = [term for term in distinctive_terms(objective) if len(term) >= 5]
+    blob = f"{title}\n{text}\n{url}".lower()
+    return [term for term in terms if _blob_has_term(term, blob)]
 
 
 def _heading_label(text: str) -> str:
@@ -805,7 +820,20 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return "The section does not use the service words from this request."
     if _unsupported_percent(cleaned, blob):
         return "The section states a percentage that is not on an opened page."
+    if _invented_service_area(cleaned, objective):
+        return "The section invents a service area. The request says not to."
     return ""
+
+
+def _invented_service_area(text: str, objective: str) -> bool:
+    """A named or chosen service area is invented when the request forbids one."""
+    if not re.search(r"do not invent a service area", objective or "", re.I):
+        return False
+    if not re.search(r"\bservice areas?\b", text or "", re.I):
+        return False
+    if re.search(r"\b(unknown|unresolved|not stated|not known|do not invent|no service area|limitation|boundar)\b", text or "", re.I):
+        return False
+    return True
 
 
 def _unsupported_percent(text: str, blob: str) -> bool:

@@ -348,6 +348,8 @@ def classify_program(text: str) -> tuple[dict[str, str], str, str]:
         from .code_sandbox import _tests_are_meaningful
 
         if not _tests_are_meaningful(files["test_main.py"]):
+            if re.search(r"__file__|__dict__", files["test_main.py"]):
+                return {}, launch, "The test checked __file__ or __dict__ and cannot fail, so it was not saved. Assert the number the program produces."
             return {}, launch, "The test cannot fail, so the program was not saved."
         return files, launch, ""
     if not named and _ambiguous_program(text or ""):

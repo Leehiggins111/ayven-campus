@@ -27,6 +27,17 @@ def test_state_seeded():
     assert any(a["id"] == "milo" for a in s["agents"])
 
 
+def test_a_repeated_submission_returns_the_same_project():
+    c = TestClient(app)
+    objective = "Prepare a UK business briefing for a coffee machine rental company. Cover the service. duplicate-check."
+    first = c.post("/projects", json={"objective": objective}).json()
+    second = c.post("/projects", json={"objective": "  " + objective + "  "}).json()
+    assert second["project_id"] == first["project_id"]
+    assert second["duplicate"] is True
+    rows = c.get(f"/projects/{first['project_id']}").json()
+    assert rows["objective"] == objective
+
+
 def test_create_project_and_tasks():
     c = TestClient(app)
     r = c.post(

@@ -777,9 +777,10 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
         final_url = page.get("url") or u
         page_title = page.get("title") or h.get("title") or ""
         if task_class == "business_research":
-            from .deliverable import page_is_relevant
+            from .deliverable import relevance_reason
 
-            if not page_is_relevant(objective, page_title, text, final_url):
+            reason = relevance_reason(objective, page_title, text, final_url)
+            if not reason:
                 return ToolResult(
                     tool="fetch_page",
                     status="error",
@@ -813,6 +814,7 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 "conflict_key": page.get("conflict_key") or "",
                 "conflict_value": page.get("conflict_value") or "",
                 "relevant": relevant,
+                "relevance_reason": relevance_reason(objective, page_title, text, final_url) if task_class == "business_research" else "",
                 "round": depth,
                 "unsupported_reseller": unsupported_reseller_claim(final_url, text, query=query, title=page_title),
                 "authority_class": _authority(final_url, text, page_title),

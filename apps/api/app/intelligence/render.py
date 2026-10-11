@@ -235,6 +235,9 @@ def _general_evidence(facts: dict) -> str:
         lines.append("No page was opened. No fact is asserted from memory.")
     for item in evidence:
         lines.append(f"- {item.get('source_title') or 'page'}: {item.get('source_url')}")
+        reason = str((item.get("metadata") or {}).get("relevance_reason") or "").strip()
+        if reason:
+            lines.append(reason)
         excerpt = clip_at_boundary(item.get("extracted_content") or "", 2000)
         if excerpt:
             lines.append(excerpt)
