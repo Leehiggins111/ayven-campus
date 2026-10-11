@@ -611,7 +611,7 @@ def test_a_split_call_to_action_stays_with_the_advert():
 
     draft = {
         "advert": "Headline: Replace kitchen doors, worktops and handles without full replacement\nBody: Doors.example lists kitchen doors, worktops and handles in an existing kitchen at £10-£40 per door",
-        "call to action": "Get a free quote for your kitchen components.",
+        "call to action": "Ask for a visit to see the kitchen doors, worktops and handles.",
     }
     joined = _join_advert(draft)
     blob = "https://doors.example/replace\nKitchen door replacement costs £10-£40 per standard door."
@@ -1227,6 +1227,32 @@ def test_a_competitor_price_has_to_use_the_pages_own_words():
     )
     assert claim_mismatch(fair, both) == ""
     assert claim_mismatch(swapped, both) != ""
+    titled = (
+        "https://refreshkitchen.co.uk/\n"
+        "Refresh Kitchen | Replacement kitchen doors and worktops\n"
+        "PAY ON COMPLETION transform your kitchen in one day for only £950.\n"
+        "https://doorsandworktops.com/\n"
+        "Replacement kitchen doors and worktops.\n"
+    )
+    quoted = (
+        'Refresh Kitchen | Replacement kitchen doors and worktops states '
+        '"transform your kitchen in one day for only £950".'
+    )
+    linked = claim_mismatch(quoted, titled)
+    assert "which opened page" not in linked
+    assert "pay on completion" in linked
+    from app.intelligence.deliverable import section_rejection as reject_section, unsupported_promise
+
+    swatches = (
+        "Assumption: doors are ordered as colour swatches before you buy.\n"
+        "Assumption: worktops are described in a guide.\n"
+        "Assumption: handles are not stated.\n"
+        + _MEASURED
+    )
+    assert "does not use" in reject_section("pricing", swatches, titled, DOOR)
+    promise = "Contact us today to schedule a free consultation and refresh the kitchen in one day."
+    assert "free consultation" in unsupported_promise(promise, DOOR, titled)
+    assert unsupported_promise(quoted, DOOR, titled) == ""
 
 
 def test_a_page_price_without_a_spec_is_a_market_reference():

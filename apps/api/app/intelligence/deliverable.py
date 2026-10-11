@@ -844,7 +844,33 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
     if not found:
         return ""
     phrase = max(found, key=len)
-    return f"The service name '{phrase}' comes from an opened page, not from the request."
+    return f"The name '{phrase}' comes from an opened page, not from the request."
+
+
+_UNSUPPORTED_PROMISES = ("free consultation", "free quote", "in one day", "same day")
+
+
+def unsupported_promise(body: str, objective: str, blob: str) -> str:
+    """A competitor's offer is not a promise of the business being created."""
+    objective_l = (objective or "").lower()
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
+        lowered = sentence.lower()
+        if blob and _names_opened_page(sentence, blob):
+            continue
+        for phrase in _UNSUPPORTED_PROMISES:
+            if phrase in lowered and phrase not in objective_l:
+                return f"The section promises '{phrase}'. The request does not."
+    return ""
+
+
+def _pricing_omits_page_figure(body: str, blob: str) -> str:
+    """A pricing section that never uses an opened £ figure is not a market reference."""
+    amounts = _pound_amounts(blob)
+    if not amounts:
+        return ""
+    if any(_number_on_page(re.sub(r"[£\s,]", "", amount), body or "") for amount in amounts):
+        return ""
+    return "An opened page states a £ figure. The pricing section does not use it."
 
 
 def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -> str:
@@ -897,10 +923,13 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return "The section asks the reader to confirm the request."
     if _echoes_objective(cleaned, objective):
         return "The section repeats the objective instead of answering it."
-    if key == "service":
+    if key in {"service", "offer and positioning", "advert", "call to action"}:
         borrowed = borrowed_service_name(cleaned, objective, blob)
         if borrowed:
             return borrowed
+        promised = unsupported_promise(cleaned, objective, blob)
+        if promised:
+            return promised
     mismatch = _claim_mismatches(cleaned, blob)
     if mismatch:
         return mismatch
@@ -1085,8 +1114,8 @@ def _ungrounded_amount(body: str, blob: str, allow_assumption: bool = True) -> b
 
 
 def _host_words_match(sentence: str, token: str) -> bool:
-    """The site name is a run of whole words. 'rental service' is not 'rentals'."""
-    words = re.findall(r"[a-z0-9]+", (sentence or "").lower())
+    """The site name is a run of whole words. 'doors and worktops' is not a site."""
+    words = [word for word in re.findall(r"[a-z0-9]+", (sentence or "").lower()) if word not in {"and", "or"}]
     for start in range(len(words)):
         joined = ""
         for word in words[start:]:
@@ -1447,7 +1476,14 @@ def claim_mismatch(sentence: str, blob: str) -> str:
     if not named:
         return ""
     if len(named) > 1:
-        clauses = re.split(r"\b(?:and|while|whereas)\b", sentence or "", flags=re.I)
+        pieces = re.split(r"\b(?:and|while|whereas)\b", sentence or "", flags=re.I)
+        clauses: list[str] = []
+        for piece in pieces:
+            # "doors and worktops" is one title. A price with no site stays with the previous clause.
+            if clauses and _pound_amounts(piece) and not any(_names_opened_page(piece, url) for url in named):
+                clauses[-1] = clauses[-1] + " and " + piece
+            else:
+                clauses.append(piece)
         saw_price = False
         for clause in clauses:
             if not _pound_amounts(clause):
@@ -1555,6 +1591,9 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         absent = _false_not_stated(body, blob, objective)
         if absent:
             return absent
+        omitted = _pricing_omits_page_figure(body, blob)
+        if omitted:
+            return omitted
         return _missing_measurements(body, objective)
     elif key == "competitor and market research":
         return _competitor_prices(body, blob)

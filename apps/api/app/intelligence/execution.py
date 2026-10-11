@@ -1560,7 +1560,9 @@ def _check_for_model(reason: str) -> str:
     if "24/7" in lowered or "always ready" in lowered or "availability" in lowered:
         return "The previous line was an availability claim. That claim is not stored."
     if "comes from an opened page" in lowered:
-        return "The service name comes from an opened page, not from the request. Use the request's own words."
+        return "The name comes from an opened page, not from the request. Use the request's own words."
+    if "promises '" in lowered:
+        return "The previous line promised something the request does not say. Do not repeat that promise."
     return text
 
 
