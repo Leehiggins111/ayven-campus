@@ -2,7 +2,7 @@
 
 Status: **not accepted; no installer delivered**.
 
-Integrated Campus source: `ca4d93aa44f1d1bb2bff783ba7daaeb4797f607f`, tree `9aa49e53ee55fe8796b88f85729d04d53877a99e` (draft PR5). Matching private Milo source: `cfd478681731dea0fbea1c7526656728ead98ea5` (draft PR22). Subsequent changes on this candidate branch tighten the implementation prompt and record this acceptance ledger. No PR was merged and no Render service was changed.
+Windows candidate Campus source: `844f4b7147bb9ebcecb44ba7b082b824ce0cdae5`, tree `7c466787d97e5967f5378fe48b5aab22fdcfa465` (draft PR5). Matching private Milo source: `d83c82b0f7d7cd4260fe61f3541b824ffe8316ca` (draft PR22). Both CI runs for that Campus candidate succeeded. Later source repairs are recorded on this branch without interrupting the active Windows candidate. No PR was merged and no Render service was changed.
 
 ## Evidence boundaries
 
@@ -16,7 +16,7 @@ Integrated Campus source: `ca4d93aa44f1d1bb2bff783ba7daaeb4797f607f`, tree `9aa4
 | Practical persistent application | Distinct offline HTML/CSS/JS builder, browser create/edit/reload/validation checks, exact-source evidence, separate-origin preview and ZIP download | Framework checks passed using fixture source. Real model and installed application acceptance remain outstanding. |
 | Interactive website | Distinct website route, browser navigation/interaction checks at desktop and mobile widths | Framework implemented; real generated website and installed acceptance remain outstanding. |
 | Trustworthy completion | Software evidence binds successful execution to exact files; approval cannot manufacture evidence; generic prose cannot pass research | Focused completion/approval tests passed. Full assembled product unverified. |
-| Private Windows delivery | Public Campus workflow pins private Milo source; installer upload requires explicit full-product evidence | BLOCKED by environment branch protection before any build steps. |
+| Private Windows delivery | Public Campus workflow pins private Milo source; installer upload requires explicit full-product evidence | Environment restriction cleared by the owner; attempt 2 of run 38176898114 has started the real local model and is assembling/testing the Windows package. No acceptance result yet. |
 | Full installed acceptance | Existing Windows 12-check runner explicitly declares existing-package-regressions and full_product_accepted=false | Six required acceptance jobs and clean-install/upgrade acceptance remain outstanding. No package checksum exists. |
 
 Focused integrated suites passed (126 checks before the final admission regressions; 78 focused checks after the mutation correction). Packaging runner: 6 tests passed. Milo renderer build passed. These overlapping suites are not additive acceptance totals.
@@ -43,6 +43,16 @@ Private Milo candidate: `d83c82b0f7d7cd4260fe61f3541b824ffe8316ca`. This Campus 
 
 Automatic approval review blocked the broad Milo test run because it detected a possible external Ayven request. That run is not recorded as passing; verification used local focused checks. Python remains disabled in the Windows launcher pending adequate execution isolation. Browser scope is offline localStorage applications only, without accounts, network services or payments.
 
-The first real browser-model probe timed out after 600 seconds; the second produced an invalid acceptance plan. The bounded planner repair probe also failed after 582.122 seconds, before writing any source, on the short requirement-label constraint. That constraint has since been corrected; no generated application has yet been browser-qualified. Neither was promoted to a delivered application. Windows environment protection still prevents packaging and installed acceptance. No installer or full-product acceptance is claimed.
+The first real browser-model probe timed out after 600 seconds; the second produced an invalid acceptance plan. The bounded planner repair probe also failed after 582.122 seconds, before writing any source, on the short requirement-label constraint. That constraint has since been corrected; no generated application has yet been browser-qualified. Neither was promoted to a delivered application. The environment restriction has since been cleared; Windows build and installed acceptance remain unverified. No installer or full-product acceptance is claimed.
 
 A real-model plan was also rejected solely because its requirement label was "edit". Requirement labels now need only be nonempty; executable actions, observable assertions, category coverage and persistence checks remain mandatory. The stored real-model plan passes structural validation after that correction, and two focused planner tests passed. This is not browser execution or generated-application acceptance.
+
+## Follow-up acceptance repairs
+
+The owner allowed the isolated candidate branch in milo-package. The rerun is [38176898114, attempt 2](https://github.com/Leehiggins111/ayven-campus/actions/runs/38176898114), pinned to Campus 844f4b7 and Milo d83c82b. Both checkouts, Node setup and real qwen3:4b startup succeeded. Package assembly/acceptance is still running at this checkpoint. The old branch-rejection annotation above is historical.
+
+The prior qwen3:8b business evaluation run 38172082126 completed, but its unseen mobile-dog-grooming result explicitly has gate_pass=false; it must not be counted as business acceptance. Recorded opened-page evidence and generations identify missing inline pricing attribution and a plural generic description falsely classified as a borrowed business name. Pricing prompts now require the URL in the same sentence; compact price evidence retains its URL; generic plural request words do not make a borrowed name, while distinctive competitor names still fail. 62 focused business checks passed.
+
+Browser edit journeys now create their prerequisite record through the plan's actual create journey in the fresh profile, then perform the edit. No fixture state is injected. Six real-browser framework tests passed. A persistence plan that reloads before making any interaction is rejected; its focused regression passed. The Milo binary-download/preview checks passed (14 overlapping checks), preserving authentication and exact bytes and rejecting unverified evidence. These are source checks, not installed or model-generated application acceptance.
+
+Automatic review stopped a separate local Ollama probe because it detected a possible connection to ollama.com with business prompts. The stopped probe is not accepted evidence. A materially safer alternative uses the bundled llama-server directly with --offline, a cached GGUF, loopback binding, no UI/MCP proxy and no GPU. Its help explicitly states offline prevents network access. It is a diagnostic CPU probe against recorded opened-page evidence, not installed Milo qualification, and is running at this checkpoint.

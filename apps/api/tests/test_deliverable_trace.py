@@ -1344,6 +1344,10 @@ def test_a_service_name_from_an_opened_page_is_rejected():
     named = "Create a plan for Northwind Home Visits. The owner is willing to travel."
     page = "https://northwind.example/\nNorthwind Home Visits\nA home visit."
     assert borrowed_service_name("The service is Northwind Home Visits.", named, page) == ""
+    generic = "Create a plan for a mobile dog-grooming service in the UK."
+    page = "Mobile Dog Grooming Services\nCoco's Mobile Studio"
+    assert borrowed_service_name("Mobile Dog Grooming Services visit customers at home.", generic, page) == ""
+    assert "Coco's Mobile Studio" in borrowed_service_name("Book Coco's Mobile Studio.", generic, page)
 
 
 def test_later_sentences_keep_the_customer_the_problem_and_the_offer():

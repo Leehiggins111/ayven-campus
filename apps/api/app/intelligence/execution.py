@@ -1714,7 +1714,7 @@ def _compact_facts(programme: Programme) -> str:
                 figure = clip_at_boundary(sentence.strip(), 160)
                 break
         if figure:
-            lines.append(f"- {title}: {figure}")
+            lines.append(f"- {title} ({url}): {figure}")
         elif url:
             lines.append(f"- {title}: {url}")
     return "\n".join(lines)
@@ -1729,6 +1729,7 @@ def _section_evidence(programme: Programme, key: str = "") -> str:
             f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
         )
     if key == "pricing":
+        block += "For every market figure, include the opened page URL in that same pricing sentence. State that it is a competitor reference, not this service's confirmed price.\n"
         parts = _component_price_block(programme)
         if parts:
             block += (

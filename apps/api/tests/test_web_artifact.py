@@ -20,7 +20,7 @@ def step(action, selector='', value=''):
 
 PLAN = dict(title='Local job tracker', scope='offline-browser', limitations=['Single browser profile; no shared accounts'], journeys=[
     dict(requirement='Create a job with the supplied customer name', category='create', steps=[step('fill','#customer','Ada'),step('click','#save'),step('text','#jobs','Ada')]),
-    dict(requirement='Edit an existing customer and show the revised value', category='edit', steps=[step('fill','#customer','Ada'),step('click','#save'),step('click','.edit'),step('fill','#customer','Grace'),step('click','#save'),step('text','#jobs','Grace')]),
+    dict(requirement='Edit an existing customer and show the revised value', category='edit', steps=[step('click','.edit'),step('fill','#customer','Grace'),step('click','#save'),step('text','#jobs','Grace')]),
     dict(requirement='Reopen the application and retain the saved customer', category='persistence', steps=[step('fill','#customer','Lin'),step('click','#save'),step('reload'),step('text','#jobs','Lin')]),
     dict(requirement='Reject an empty customer instead of creating a job', category='validation', steps=[step('fill','#customer',''),step('click','#save'),step('invalid','#customer')]),
 ])
@@ -41,6 +41,10 @@ def test_plan_rejects_missing_persistence_edit_and_assertions():
     missing = copy.deepcopy(PLAN)
     missing['journeys'][2]['steps'] = [step('fill','#customer','Lin'),step('click','#save'),step('text','#jobs','Lin')]
     with pytest.raises(ValueError,match='reopening'):
+        validate_plan(missing,'application_build')
+    missing = copy.deepcopy(PLAN)
+    missing['journeys'][2]['steps'] = [step('reload'),step('fill','#customer','Lin'),step('value','#customer','Lin')]
+    with pytest.raises(ValueError,match='before reopening'):
         validate_plan(missing,'application_build')
 
 

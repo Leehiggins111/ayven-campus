@@ -96,6 +96,8 @@ def validate_plan(raw: dict, kind: str) -> dict:
             reloads = [i for i, s in enumerate(steps) if s["action"] == "reload"]
             if not reloads or not any(s["action"] in {"text", "value"} for s in steps[reloads[-1] + 1:]):
                 raise ValueError("Persistence must check saved values after reopening")
+            if not any(s["action"] in {"click", "fill", "select", "check"} for s in steps[:reloads[-1]]):
+                raise ValueError("Persistence must save an interaction before reopening")
         if journey["category"] == "validation" and not any(s["action"] == "invalid" or (s["action"] == "text" and s["value"]) for s in steps):
             raise ValueError("Validation must assert an invalid input or an error message")
         for step in steps:
@@ -233,7 +235,8 @@ def build_web_artifact(objective: str, kind: str, complete) -> tuple[str, dict]:
             "Keep the JSON compact. Steps are arrays [action, CSS selector, value], not objects. For reload use [reload, empty string]. "
             "Use the fewest steps that genuinely verify each requirement. "
             "Every journey MUST include a result assertion (text, value, visible or invalid). "
-            "Edit must create and save its own job before editing it, then assert both revised values. "
+            "For edit, the runner first executes the create journey in its fresh browser profile. "
+            "Use that created record: select its edit control, revise it, save, then assert both revised values. Do not create another record in the edit journey. "
             "Persistence must create and save its own job BEFORE reload, then assert both saved values. "
             "Create must assert the saved values. Validation must test both required fields. "
             "Step actions: click, fill, select, check, reload, text (contains), value (exact), visible, invalid (HTML checkValidity=false). "

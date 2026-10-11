@@ -61,7 +61,14 @@ def main(payload):
                         result = {"requirement": journey["requirement"], "category": journey["category"], "width": width, "passed": False}
                         try:
                             page.goto(origin + "/index.html", wait_until="networkidle", timeout=5000)
-                            for step in journey["steps"]:
+                            steps = journey["steps"]
+                            if journey["category"] == "edit":
+                                # Establish the existing record through real UI actions,
+                                # using the plan's verified creation journey in this
+                                # fresh profile. Never inject fixture storage or source.
+                                create = next(j for j in payload["plan"]["journeys"] if j["category"] == "create")
+                                steps = create["steps"] + steps
+                            for step in steps:
                                 action = step["action"]
                                 target = page.locator(step["selector"]) if action != "reload" else None
                                 value = step.get("value", "")

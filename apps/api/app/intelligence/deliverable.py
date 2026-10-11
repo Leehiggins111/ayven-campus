@@ -836,7 +836,9 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
             part for part in re.findall(r"[a-z0-9]+", phrase.lower())
             if part not in {"s", "the", "and", "for", "uk"} and len(part) > 1
         ]
-        if len(parts) < 2 or all(part in words for part in parts):
+        # A plural generic service description is still the requested service.
+        # Distinctive words in an actual borrowed business name remain rejected.
+        if len(parts) < 2 or all(part in words or (part.endswith("s") and part[:-1] in words) for part in parts):
             continue
         if phrase.lower() not in body_l:
             continue
