@@ -414,6 +414,24 @@ def _link_relevant(url: str, anchor: str) -> bool:
     return any(word in blob for word in ("facilit", "ticket", "leisure", "vending", "pool", "gym", "hospital", "station", "billet", "kaart"))
 
 
+def _shorter_query(query: str, objective: str) -> str:
+    """A shorter search when the first query returns no links. Same subject, fewer words."""
+    from .deliverable import distinctive_terms, region_token, reject_search_query
+
+    terms = distinctive_terms(objective)[:4]
+    region = region_token(objective)
+    short = " ".join(terms + ([region] if region else [])).strip()
+    if not short or short.lower() == (query or "").strip().lower():
+        words = [word for word in re.findall(r"[A-Za-z0-9]{4,}", query or "")][:4]
+        short = " ".join(words)
+    short = re.sub(r"\s+", " ", short).strip()[:180]
+    if not short or short.lower() == (query or "").strip().lower():
+        return ""
+    if reject_search_query(short, objective):
+        return ""
+    return short
+
+
 def research(
     task_class: str,
     objective: str,
@@ -499,33 +517,45 @@ def research(
             if job["kind"] == "search":
                 if query in searched:
                     continue
+
+                def _run_search(q, d):
+                    box: dict = {}
+
+                    def _search(qq=q, dd=d):
+                        try:
+                            found = search_impl(qq, limit=8)
+                        except Exception as exc:
+                            box["hits"] = []
+                            return ToolResult(tool="web_search", status="error", query=qq, error=str(exc)[:300], timestamp=now(), metadata={"mode": mode, "round": dd})
+                        box["hits"] = found or []
+                        if not found or (len(found) == 1 and (found[0].get("title") in ("search_error", "no_results"))):
+                            return ToolResult(tool="web_search", status="empty", query=qq, error=(found[0].get("snippet") if found else "no_results") or "no_results", timestamp=now(), metadata={"mode": mode, "evidence_level": "none"})
+                        return ToolResult(
+                            tool="web_search",
+                            status="ok",
+                            query=qq,
+                            timestamp=now(),
+                            extracted_content="\n".join(f"{h.get('title')} {h.get('url')}" for h in found)[:1500],
+                            metadata={"mode": mode, "evidence_level": "snippet", "hit_count": len(found), "round": dd},
+                        )
+
+                    outcome = invoke(agent_id, "web_search", package_id, _search)
+                    _emit_tool(project_id, agent_id, "web_search", f"Searching: {q[:120]}")
+                    return outcome, box.get("hits") or []
+
                 searched.append(query)
-                captured: dict = {}
-
-                def _search(q=query, d=depth):
-                    try:
-                        hits = search_impl(q, limit=8)
-                    except Exception as exc:
-                        captured["hits"] = []
-                        return ToolResult(tool="web_search", status="error", query=q, error=str(exc)[:300], timestamp=now(), metadata={"mode": mode, "round": d})
-                    captured["hits"] = hits or []
-                    if not hits or (len(hits) == 1 and (hits[0].get("title") in ("search_error", "no_results"))):
-                        return ToolResult(tool="web_search", status="empty", query=q, error=(hits[0].get("snippet") if hits else "no_results") or "no_results", timestamp=now(), metadata={"mode": mode, "evidence_level": "none"})
-                    return ToolResult(
-                        tool="web_search",
-                        status="ok",
-                        query=q,
-                        timestamp=now(),
-                        extracted_content="\n".join(f"{h.get('title')} {h.get('url')}" for h in hits)[:1500],
-                        metadata={"mode": mode, "evidence_level": "snippet", "hit_count": len(hits), "round": d},
-                    )
-
-                search_result = invoke(agent_id, "web_search", package_id, _search)
-                _emit_tool(project_id, agent_id, "web_search", f"Searching: {query[:120]}")
+                search_result, raw_hits = _run_search(query, depth)
+                if search_result.status == "empty":
+                    shorter = _shorter_query(query, objective)
+                    if shorter and shorter not in searched and len(searched) < max_searches:
+                        failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
+                        query = shorter
+                        searched.append(query)
+                        search_result, raw_hits = _run_search(query, depth)
                 if search_result.status != "ok":
                     failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
                     continue
-                hits = rerank(query, captured.get("hits") or [], objective)
+                hits = rerank(query, raw_hits, objective)
                 opened_any = False
                 for hit in hits:
                     if is_noise_hit(hit.get("url") or "", hit.get("title") or "", hit.get("snippet") or ""):

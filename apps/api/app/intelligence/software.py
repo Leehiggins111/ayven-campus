@@ -231,6 +231,16 @@ def _from_json(text: str) -> dict[str, str]:
     return {"main.py": main, "test_main.py": test}
 
 
+def _failure_line(detail: str) -> str:
+    """The exception, not the traceback header. The header is not the reason."""
+    lines = [line.strip() for line in (detail or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith("Traceback") or line.startswith("File ") or line.startswith("^"):
+            continue
+        return line[:300]
+    return (lines[-1] if lines else "the program was not saved.")[:300]
+
+
 def format_deliverable(files: dict[str, str], launch: str, result: dict) -> str:
     passed = bool(result.get("passed")) and bool(files.get("main.py")) and bool(files.get("test_main.py"))
     lines = [
@@ -248,7 +258,7 @@ def format_deliverable(files: dict[str, str], launch: str, result: dict) -> str:
         lines += ["Test output:", "passed", ""]
     else:
         detail = (result.get("stderr") or result.get("stdout") or "The tests did not pass.").strip()
-        lines += ["Rejected: " + (detail.splitlines()[0] if detail else "the program was not saved."), "No file was saved.", ""]
+        lines += ["Rejected: " + _failure_line(detail), "No file was saved.", ""]
     lines.append("Nothing was sent.")
     return "\n".join(lines).strip() + "\n"
 
@@ -285,8 +295,9 @@ def _prompt(objective: str, retry: bool = False) -> str:
         "FILE: main.py\n"
         "FILE: test_main.py\n"
         "LAUNCH: python test_main.py\n"
-        "test_main.py imports main and uses assert. The assert must fail if the program is wrong. "
-        "Do not use pytest. Do not use the network. Do not write assert True. Do not describe more than one program.\n\n"
+        "test_main.py imports main and uses assert. The assert must compare the program's numeric result with the expected number. "
+        "Do not use pytest. Do not use the network. Do not write assert True. Do not assert __file__ or __dict__. "
+        "Do not describe more than one program.\n\n"
         f"Request:\n{(objective or '')[:800]}\n"
     )
     if retry:
@@ -354,48 +365,38 @@ def _invoke(complete, system: str, user: str, limit: int, prefill: str):
 
 
 def build_deliverable(objective: str, complete) -> tuple[str, dict]:
-    """Ask the model for files, run the test, and retry once without pasting the note back."""
+    """Ask the model for files, run the test, and retry twice without pasting the note back."""
     from .code_sandbox import run_files
 
-    text, tokens, meta = _invoke(complete, "Write the files only.", _prompt(objective), 640, "")
-    files, launch, rejection = classify_program(text or "")
-    result = run_files(files) if files.get("main.py") and files.get("test_main.py") else {
-        "passed": False,
-        "stderr": rejection or "The reply did not contain one main.py and one test_main.py, so nothing was saved.",
-        "stdout": "",
-        "sandbox": "not-run",
-        "exit_code": None,
-        "status": "error",
-    }
-    if not result.get("passed"):
-        text2, tokens2, meta2 = _invoke(
-            complete,
-            "Write the files only.",
-            _prompt(objective, retry=True) + "\nCheck: " + (rejection or result.get("stderr") or "the tests failed.")[:300] + "\n",
-            640,
-            "",
-        )
-        files2, launch2, rejection2 = classify_program(text2 or "")
-        if files2:
-            result = run_files(files2)
+    text, tokens, meta = "", 0, {}
+    files: dict[str, str] = {}
+    launch = "python test_main.py"
+    result: dict = {"passed": False, "stderr": "", "stdout": "", "sandbox": "not-run", "exit_code": None, "status": "error"}
+    for attempt in range(3):
+        user = _prompt(objective, retry=attempt > 0)
+        if attempt:
+            user += "\nCheck: " + _failure_line(result.get("stderr") or "the tests failed.") + "\n"
+        piece, piece_tokens, piece_meta = _invoke(complete, "Write the files only.", user, 640, "")
+        tokens = int(tokens or 0) + int(piece_tokens or 0)
+        text = piece or ""
+        meta = piece_meta
+        files, launch, rejection = classify_program(text)
+        if files.get("main.py") and files.get("test_main.py"):
+            result = run_files(files)
             if result.get("passed"):
-                text, files, launch, meta = text2, files2, launch2, meta2
-            else:
-                files = {}
-                result["stderr"] = result.get("stderr") or "The tests failed, so the files were not saved."
-                meta = meta2
-        else:
+                break
             files = {}
-            result = {
-                "passed": False,
-                "stderr": rejection2,
-                "stdout": "",
-                "sandbox": "not-run",
-                "exit_code": None,
-                "status": "error",
-            }
-            meta = meta2
-        tokens = int(tokens or 0) + int(tokens2 or 0)
+            result["stderr"] = result.get("stderr") or "The tests failed, so the files were not saved."
+            continue
+        files = {}
+        result = {
+            "passed": False,
+            "stderr": rejection or "The reply did not contain one main.py and one test_main.py, so nothing was saved.",
+            "stdout": "",
+            "sandbox": "not-run",
+            "exit_code": None,
+            "status": "error",
+        }
     meta = dict(meta or {})
     meta["completion_tokens"] = tokens
     meta["tests_passed"] = bool(result.get("passed"))

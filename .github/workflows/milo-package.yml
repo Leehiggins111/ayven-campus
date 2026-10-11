@@ -50,6 +50,42 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Restore Ollama model cache
+        id: ollama-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen3-4b-${{ runner.os }}-v1
+
+      - name: Restore Ollama app cache
+        id: ollama-app
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ollama-app
+          key: ollama-windows-app-v0.40.2
+
+      - name: Serve qwen3:4b
+        id: serve-model
+        timeout-minutes: 40
+        shell: pwsh
+        run: pwsh -NoProfile -File "$env:CAMPUS_DIR\scripts\ci\serve-qwen.ps1"
+
+      - name: Save Ollama model cache
+        if: always() && steps.ollama-cache.outputs.cache-hit != 'true' && steps.serve-model.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen3-4b-${{ runner.os }}-v1
+
+      - name: Save Ollama app cache
+        if: always() && steps.ollama-app.outputs.cache-hit != 'true' && steps.serve-model.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ollama-app
+          key: ollama-windows-app-v0.40.2
+
       - name: Assemble and accept the Windows package
         shell: pwsh
         run: node "$env:CAMPUS_DIR\scripts\ci\milo-package-runner.js"

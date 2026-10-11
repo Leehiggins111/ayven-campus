@@ -547,3 +547,156 @@ def test_a_software_essay_is_not_given_a_larger_budget(monkeypatch):
     assert "response_format" not in calls[0]
     assert "We are to write a program" in text
     assert info["finish_reason"] == "length"
+
+
+def test_a_failed_fetch_url_is_not_treated_as_a_cited_source():
+    from app.intelligence.contracts import contract_for, evaluate_contract
+
+    contract = contract_for("business_research", {"stages": ["research"], "deliverable": "plan"})
+    report = (
+        "Joe's Doors replaces kitchen doors and worktops. https://www.joesdoors.co.uk/\n"
+        "Nothing was sent.\n"
+        "- Retrieval failure (fetch): Server error for url 'https://almamoyo.com/doors/'\n"
+        "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500\n"
+    )
+    verdict = evaluate_contract(
+        contract,
+        report=report,
+        research={"evidence": [{"source_url": "https://www.joesdoors.co.uk/"}]},
+        claims=[],
+    )
+    assert verdict["passed"] is True
+    assert verdict["prohibited"] == []
+    invented = evaluate_contract(
+        contract,
+        report="See https://invented.example/price\nNothing was sent.",
+        research={"evidence": [{"source_url": "https://www.joesdoors.co.uk/"}]},
+        claims=[],
+    )
+    assert invented["passed"] is False
+    assert invented["prohibited"]
+
+
+def test_an_unsupported_percentage_is_rejected():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.grounding import ground_text
+
+    blob = "Kitchen door replacement costs £10-£40 per standard door."
+    reason = section_rejection(
+        "offer and positioning",
+        "The service replaces kitchen doors, worktops and handles at 10-40% of a full kitchen.",
+        blob,
+        DOOR,
+    )
+    assert "percentage" in reason.lower()
+    grounded = ground_text("The service replaces kitchen doors, worktops and handles at 10-40% of a full kitchen.", blob, "")
+    assert "10-40%" not in grounded["text"]
+
+
+def test_a_runtime_failure_keeps_the_exception_and_a_later_program_can_pass(monkeypatch):
+    import json
+
+    monkeypatch.setenv("AYVEN_ALLOW_CODE", "1")
+    from app.intelligence.software import build_deliverable, classify_program, format_deliverable
+
+    dodged = json.dumps({
+        "main.py": "print(2 + 3)\n",
+        "test_main.py": "import main\nassert main.__dict__['print'](2 + 3) == 5\n",
+    })
+    files, _launch, reason = classify_program(dodged)
+    assert files == {}
+    assert "cannot fail" in reason.lower()
+    stored = format_deliverable({}, "python test_main.py", {
+        "passed": False,
+        "stderr": "Traceback (most recent call last):\n  File \"test_main.py\", line 2, in <module>\nKeyError: 'print'\n",
+        "sandbox": "timeout-subprocess-tempdir",
+    })
+    assert "KeyError: 'print'" in stored
+    assert "Rejected: Traceback" not in stored
+    calls = {"n": 0}
+    good = json.dumps({
+        "main.py": "def add(a, b):\n    return a + b\nprint(add(2, 3))\n",
+        "test_main.py": "import main\nassert main.add(2, 3) == 5\n",
+    })
+
+    def complete(system, user, limit, prefill=""):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return dodged, 10, {"finish_reason": "stop"}
+        assert "Check:" in user
+        return good, 10, {"finish_reason": "stop"}
+
+    text, meta = build_deliverable("Write a small Python program that adds 2 and 3 and prints the sum.", complete)
+    assert meta["tests_passed"] is True
+    assert "def add" in text
+    assert calls["n"] == 2
+
+
+def test_an_empty_search_is_followed_by_a_shorter_query():
+    from app.intelligence.research import research
+
+    coffee = "Prepare a UK business briefing for a coffee machine rental company. Cover the service, the customers, the competitors, and pricing."
+    seen = []
+
+    def search(query, limit=8):
+        seen.append(query)
+        if "prices" in query:
+            return [{"title": "no_results", "url": "", "snippet": query}]
+        return [{"title": "Coffee machine rental", "url": "https://rental.example/coffee", "snippet": "coffee machine rental for businesses"}]
+
+    def fetch(url):
+        return {
+            "url": url,
+            "title": "Coffee machine rental",
+            "text": "A coffee machine rental company supplies coffee machines to UK customers. Rental prices are listed on this page.",
+            "links": [],
+        }
+
+    result = research(
+        "business_research",
+        coffee,
+        "pkg-coffee",
+        "research-e3",
+        max_rounds=1,
+        queries=["coffee machine rental company customers UK prices"],
+        search_fn=search,
+        fetch_fn=fetch,
+        reviewer=lambda *_args, **_kwargs: "SUFFICIENT",
+        browse_fn=lambda *_args, **_kwargs: None,
+    )
+    assert len(seen) >= 2
+    assert any("prices" not in query for query in seen)
+    assert result["evidence"]
+
+
+def test_lite_search_html_is_parsed_when_the_main_page_has_no_links():
+    from app.tools import parse_lite_html, parse_search_html, web_search
+
+    html = '<a class="result__a" href="https://doors.example/replace">Door replacement</a><span class="result__snippet">worktops</span>'
+    parsed = parse_search_html(html)
+    assert parsed[0]["url"] == "https://doors.example/replace"
+    lite = '<a class="result-link" href="https://rental.example/coffee">Coffee rental</a><td class="result-snippet">coffee machine rental</td>'
+    assert parse_lite_html(lite)[0]["url"] == "https://rental.example/coffee"
+    assert parse_search_html("<html>no results</html>") == []
+
+    class Response:
+        def __init__(self, text):
+            self.text = text
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+    pages = {"https://html.duckduckgo.com/html/": "<html>anomaly</html>", "https://lite.duckduckgo.com/lite/": lite}
+
+    def fake_post(url, data=None, headers=None, timeout=None, follow_redirects=None):
+        return Response(pages[url])
+
+    import app.tools as tools
+    original = tools.httpx.post
+    tools.httpx.post = fake_post
+    try:
+        hits = web_search("coffee machine rental")
+    finally:
+        tools.httpx.post = original
+    assert hits[0]["url"] == "https://rental.example/coffee"

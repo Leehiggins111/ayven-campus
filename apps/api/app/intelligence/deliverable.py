@@ -803,7 +803,18 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return _body_rejection(cleaned) or "The section did not pass the sentence check."
     if not section_has_anchor(key, cleaned, objective):
         return "The section does not use the service words from this request."
+    if _unsupported_percent(cleaned, blob):
+        return "The section states a percentage that is not on an opened page."
     return ""
+
+
+def _unsupported_percent(text: str, blob: str) -> bool:
+    compact = re.sub(r"\s+", "", blob or "")
+    for percent in re.findall(r"\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?\s*%", text or ""):
+        token = re.sub(r"\s+", "", percent)
+        if token not in compact and percent not in (blob or ""):
+            return True
+    return False
 
 
 def quote_draft(text: str) -> str:

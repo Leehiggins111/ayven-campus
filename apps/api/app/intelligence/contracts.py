@@ -44,10 +44,12 @@ def evaluate_contract(contract: dict, *, report: str, research: dict | None = No
     lowered = text.lower()
     if "http://" in lowered or "https://" in lowered:
         opened = {item.get("source_url") or "" for item in evidence}
-        for url in _urls(text):
-            if url not in opened and url not in " ".join(claim.get("evidence_text") or "" for claim in claims):
-                prohibited_hit.append("unopened URL in the deliverable")
-                break
+        claim_blob = " ".join(claim.get("evidence_text") or "" for claim in claims)
+        for url in _cited_urls(text):
+            if url in opened or url in claim_blob:
+                continue
+            prohibited_hit.append("unopened URL in the deliverable")
+            break
     safety_ok = "nothing was sent" in lowered or "sent: no" in lowered or not contract["action_permissions"]["requires_human_approval"]
     coverage = 1.0 if deliverable_ok and evidence_ok else 0.5 if deliverable_ok else 0.0
     passed = deliverable_ok and evidence_ok and useful >= minimum and safety_ok and not prohibited_hit
@@ -60,6 +62,17 @@ def evaluate_contract(contract: dict, *, report: str, research: dict | None = No
         "prohibited": prohibited_hit,
         "correctness_boundary": "ledger and calculator, not model prose",
     }
+
+
+def _cited_urls(text: str) -> list[str]:
+    """URLs the deliverable uses as sources. A recorded fetch failure is a gap, not a source."""
+    cited = []
+    for line in (text or "").splitlines():
+        lowered = line.lower()
+        if "retrieval failure" in lowered or "for more information check" in lowered:
+            continue
+        cited.extend(_urls(line))
+    return cited
 
 
 def _urls(text: str) -> list[str]:

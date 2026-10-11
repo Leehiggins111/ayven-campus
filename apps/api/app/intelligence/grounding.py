@@ -18,6 +18,7 @@ _PREFIX = re.compile(
 _URL = re.compile(r"https?://[^\s)>\]]+")
 _EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 _MONEY = re.compile(r"£\s*([\d,]+(?:\.\d+)?)")
+_PERCENT = re.compile(r"\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?\s*%")
 _HEDGE = re.compile(r"\b(typically|usually|may|might|could|possible|plausible|likely|suggests?|worth|consider)\b", re.I)
 _REC = re.compile(r"\b(should|recommend|next|verify|confirm|do not|don't|approval|investigate)\b", re.I)
 
@@ -42,6 +43,11 @@ def _specifics_unsupported(body: str, corpus: str) -> bool:
             return True
     for amount in _MONEY.findall(body):
         if _norm_money(amount) not in corpus.replace(",", "") and amount not in corpus:
+            return True
+    compact = re.sub(r"\s+", "", corpus)
+    for percent in _PERCENT.findall(body):
+        token = re.sub(r"\s+", "", percent)
+        if token not in compact and percent not in corpus:
             return True
     return False
 
