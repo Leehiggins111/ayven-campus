@@ -273,6 +273,20 @@ function discover(roots) {
   return { unpacked, python };
 }
 
+function seedArguments(scriptText, packageDir) {
+  const names = [...new Set(
+    [...String(scriptText || "").matchAll(/["']([A-Za-z0-9_./\\-]+\.db)["']/g)].map((match) => path.basename(match[1].replace(/\\/g, "/"))),
+  )];
+  const miloName = names.find((name) => /milo/i.test(name)) || "sample-milo.db";
+  const campusName = names.find((name) => /campus|ayven/i.test(name) && name !== miloName) || "sample-campus.db";
+  const files = [path.join(packageDir, miloName), path.join(packageDir, campusName)];
+  fs.mkdirSync(packageDir, { recursive: true });
+  for (const file of files) {
+    if (!fs.existsSync(file)) fs.writeFileSync(file, "");
+  }
+  return files;
+}
+
 function verifyName(milo) {
   const dir = path.join(milo, "scripts", "windows");
   if (!fs.existsSync(dir)) return "";
@@ -463,10 +477,12 @@ async function main() {
     reportFailure("assemble", assembleOut);
     process.exit(1);
   }
+  const seedScript = path.join(milo, "scripts", "windows", "seed-sample-databases.js");
+  const [miloDb, campusDb] = seedArguments(fs.existsSync(seedScript) ? fs.readFileSync(seedScript, "utf8") : "", packageDir);
   const seeded = runNode([
-    path.join(milo, "scripts", "windows", "seed-sample-databases.js"),
-    "--milo", packageDir,
-    "--campus", campus,
+    seedScript,
+    "--milo", miloDb,
+    "--campus", campusDb,
   ], milo);
   forwardOutput(seeded);
   if (seeded.status !== 0) {
@@ -479,7 +495,7 @@ async function main() {
     fail("verify", `scripts ${scriptNames(milo).join(",") || "none"}`);
     process.exit(1);
   }
-  const verified = runNode([path.join(milo, "scripts", "windows", verify), "--milo", packageDir, "--campus", campus], milo);
+  const verified = runNode([path.join(milo, "scripts", "windows", verify), "--milo", miloDb, "--campus", campusDb], milo);
   forwardOutput(verified);
   if (verified.status !== 0) {
     reportFailure("verify", `${verified.stdout || ""}\n${verified.stderr || ""}`);
@@ -549,4 +565,5 @@ module.exports = {
   redact,
   checksumHex,
   diagnosticLines,
+  seedArguments,
 };

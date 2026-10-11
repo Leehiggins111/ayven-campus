@@ -2,6 +2,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const runner = require("./milo-package-runner");
 
 const WORKFLOW = `
@@ -63,4 +66,16 @@ test("expressions are substituted and logs stay narrow", () => {
     "Campus requirements failed",
   ]);
   assert.equal(lines.some((line) => line.includes("$")), false);
+});
+
+test("sample database arguments are files the seed script can replace", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "seed-args-"));
+  const [miloDb, campusDb] = runner.seedArguments(
+    "fs.unlinkSync(miloArg);\nfs.copyFileSync('templates/milo-sample.db', miloArg);\nfs.copyFileSync('templates/campus-sample.db', campusArg);\n",
+    dir,
+  );
+  assert.equal(path.basename(miloDb), "milo-sample.db");
+  assert.equal(path.basename(campusDb), "campus-sample.db");
+  assert.equal(fs.statSync(miloDb).isFile(), true);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
