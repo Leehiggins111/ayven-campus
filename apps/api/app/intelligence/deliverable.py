@@ -575,6 +575,8 @@ def _usable_sentences(text: str) -> list[str]:
 _ADVERT_BAD = (
     "format", "starting with", "catchy", "[text]", "[some",
     "placeholder", "a line about", "one sentence", "write exactly", "then stop",
+    "should be", "must be", "should mention", "from the pages", "three lines",
+    "benefit-focused", "actionable", "the example", "for this context", "need three",
 )
 
 
@@ -790,6 +792,9 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
     """A readable reason this check failed. Empty when the section passes."""
     if not (raw or "").strip():
         return "The model returned nothing."
+    leaked = _example_leak(raw, objective, blob)
+    if leaked:
+        return leaked
     cleaned = owner_section(key, raw)
     if not cleaned:
         for line in _visible_answer(raw).splitlines():
@@ -802,6 +807,8 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
             return "The advert needs a headline, one body sentence, and a call to action."
         return "The sentence filter removed every line."
     if key == "pricing":
+        if _ungrounded_amount(cleaned, blob):
+            return "Pricing cites a £ figure that is not on an opened page."
         if not _pricing_ok(cleaned, blob):
             return "Pricing has no assumption, and the £ amount is not on an opened page."
     elif key == "advert":
@@ -824,7 +831,7 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return "The section asks the reader to confirm the request."
     if _echoes_objective(cleaned, objective):
         return "The section repeats the objective instead of answering it."
-    shape = _section_shape(key, cleaned, objective)
+    shape = _section_shape(key, cleaned, objective, blob)
     if shape:
         return shape
     if not section_has_anchor(key, cleaned, objective):
@@ -837,13 +844,20 @@ _BUYERS = (
     "office", "renter", "buyer", "cafe", "restaurant", "hotel", "school",
     "couple", "occupier", "developer", "shop", "clinic", "pub", "venue",
     "company", "firm", "studio", "resident", "people", "person", "client",
-    "rider", "cyclist",
 )
-_PROBLEM_CUES = (
-    "cost", "costs", "expensive", "longer", "disruption", "waste", "worn",
-    "dated", "outdated", "budget", "delay", "buying", "outright", "sound",
-    "price", "time", "cheaper", "afford", "damage", "broken", "old", "tired",
-    "slow", "inconvenient", "difficult",
+_PROBLEM_BURDEN = (
+    "cost", "expensive", "longer", "disruption", "waste", "budget", "delay",
+    "price", "time", "cheaper", "afford", "slow", "inconvenient", "difficult",
+    "buying", "outright",
+)
+_EXAMPLE_WORDS = ("bicycle", "bicycles", "rider", "riders", "cyclist", "cyclists", "chains", "alex")
+_EXAMPLE_PHRASES = (
+    "the example shows", "example of the shape", "not this request",
+    "need three lines", "should be like", "for this context",
+)
+_ASK = re.compile(
+    r"\b(ask|reply|call|phone|email|write|contact|book|request|quote|schedule)\b",
+    re.I,
 )
 _CONTRAST = (
     "differ", "rather", "instead", "without", "against", "compared", "unlike",
@@ -962,32 +976,112 @@ def _pricing_parts(body: str, objective: str) -> str:
     return ""
 
 
-def _section_shape(key: str, body: str, objective: str) -> str:
+def _pound_supported(amount: str, blob: str) -> bool:
+    number = re.sub(r"[£\s,]", "", amount or "")
+    if not number:
+        return False
+    compact = re.sub(r",", "", blob or "")
+    return bool(re.search(rf"£\s*{re.escape(number)}(?!\d)", compact))
+
+
+def _ungrounded_amount(body: str, blob: str) -> bool:
+    amounts = re.findall(r"£\s*[\d,]+(?:\.\d+)?", body or "")
+    return any(not _pound_supported(amount, blob) for amount in amounts)
+
+
+def _example_leak(text: str, objective: str, blob: str) -> str:
+    """A copied example, or a trade this request and the opened pages do not name."""
+    lowered = (text or "").lower()
+    if any(phrase in lowered for phrase in _EXAMPLE_PHRASES):
+        return "The section uses an example that is not this request."
+    haystack = f"{objective}\n{blob}".lower()
+    for word in _EXAMPLE_WORDS:
+        if re.search(rf"\b{word}\b", lowered) and not re.search(rf"\b{word}\b", haystack):
+            return "The section uses an example that is not this request."
+    return ""
+
+
+def _item_priced(item: str, blob: str) -> bool:
+    stem = item[:-1] if item.endswith("s") and len(item) > 4 else item
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", blob or ""):
+        if not _item_present(item, sentence) and not re.search(rf"\b{re.escape(stem)}\b", sentence, re.I):
+            continue
+        if re.search(r"£\s*[\d,]+", sentence):
+            return True
+    return False
+
+
+def _false_not_stated(body: str, blob: str, objective: str) -> str:
+    """'Not stated' is false when an opened sentence already prices that part."""
+    if not re.search(r"£\s*[\d,]+", blob or ""):
+        return ""
+    items = covered_items(objective)
+    for line in (body or "").splitlines():
+        if not re.search(r"\bnot stated\b|\bno opened page\b|\bno price\b|\bno figure\b", line, re.I):
+            continue
+        if re.search(r"£\s*[\d,]+", line):
+            continue
+        named = [item for item in items if _item_present(item, line)]
+        priced = [item for item in named if _item_priced(item, blob)]
+        if priced:
+            return "Pricing says " + ", ".join(priced) + " is not stated, but an opened page states a £ figure for it."
+        if not named:
+            return "Pricing says a figure is not stated, but an opened page states a £ figure."
+    return ""
+
+
+def _competitor_prices(body: str, blob: str) -> str:
+    if not re.search(r"£\s*[\d,]+", blob or ""):
+        return ""
+    if _ungrounded_amount(body, blob) or not re.search(r"£\s*[\d,]+", body or ""):
+        if not re.search(r"£\s*[\d,]+", body or ""):
+            return "The competitor section does not cite a £ figure from an opened page."
+        return "The competitor section cites a £ figure that is not on an opened page."
+    return ""
+
+
+def _offer_differs(body: str, objective: str) -> bool:
+    """A contrast word counts only when the request did not already use it."""
+    for marker in _CONTRAST:
+        if not re.search(rf"\b{re.escape(marker)}", body or "", re.I):
+            continue
+        if re.search(rf"\b{re.escape(marker)}", objective or "", re.I):
+            continue
+        return True
+    return False
+
+
+def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
     """Missing elements. Empty when this section has the element it needs."""
     lowered = (body or "").lower()
     if key == "target customer":
         if "responsible for the cost" in lowered or not any(_has_word(lowered, word) for word in _BUYERS):
             return "The section does not name a customer segment."
     elif key == "problem":
-        if not any(cue in lowered for cue in _PROBLEM_CUES):
+        if not any(_has_word(lowered, cue) for cue in _PROBLEM_BURDEN):
             return "The section does not state a concrete problem."
     elif key == "offer and positioning":
-        if not any(marker in lowered for marker in _CONTRAST):
+        if not _offer_differs(body, objective):
             return "The section does not state what is sold and how it differs."
     elif key == "channels":
         if re.search(r"three lines|headline\s*:|call to action\s*:", lowered):
             return "The section describes the advert format instead of a channel."
-        named = any(_has_word(lowered, word) for word in _CHANNELS)
-        action = any(_has_word(lowered, word) for word in _OWNER_ACTIONS) or "through" in lowered
-        if not named or not action:
+        named = [word for word in _CHANNELS if _has_word(lowered, word)]
+        actions = [word for word in _OWNER_ACTIONS if _has_word(lowered, word) and word not in named]
+        if not named or not (actions or "through" in lowered):
             return "The section does not name a channel and an action."
     elif key == "next steps":
         if "first practical action" in lowered or not any(_has_word(lowered, word) for word in _OWNER_ACTIONS):
             return "The next step repeats the service instead of an action the owner takes."
     elif key == "pricing":
-        return _pricing_parts(body, objective)
+        missing = _pricing_parts(body, objective)
+        if missing:
+            return missing
+        return _false_not_stated(body, blob, objective)
+    elif key == "competitor and market research":
+        return _competitor_prices(body, blob)
     elif key == "call to action":
-        if not re.search(r"\b(ask|reply|call|visit|phone|email|write|contact|book|request|quote)\b", lowered):
+        if not _ASK.search(lowered):
             return "The call to action does not ask the customer to take a step."
         if len(lowered.strip()) < 20:
             return "The call to action is too short to use."
@@ -996,7 +1090,7 @@ def _section_shape(key: str, body: str, objective: str) -> str:
         cta = match.group(1) if match else ""
         if cta and _confirm_request(cta):
             return "The call to action asks the reader to confirm the request."
-        if cta and not re.search(r"\b(ask|reply|call|visit|phone|email|write|contact|book|request|quote)\b", cta, re.I):
+        if cta and not _ASK.search(cta):
             return "The call to action does not ask the customer to take a step."
     return ""
 

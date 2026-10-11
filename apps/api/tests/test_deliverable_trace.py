@@ -446,7 +446,7 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
         "target customer": "The customer is a household that wants worn kitchen doors, worktops and handles replaced.",
         "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
         "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
-        "competitor and market research": "Opened pages state kitchen door prices at https://doors.example/replace and the worktop price was not stated.",
+        "competitor and market research": "Opened pages state kitchen door prices of £10 to £40 at https://doors.example/replace.",
         "pricing": "Assumption: doors — £10 to £40 on the opened page, a planning figure only.\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.",
         "channels": "Households are reached through local search, where the owner posts one finished kitchen and asks for a reply.",
         "advert": "",
@@ -721,6 +721,90 @@ def test_owner_review_rejects_meta_echo_and_a_single_part_price(monkeypatch):
     assert held["passed"] is False
     tautology = tests_fail_against_stub("import main\nassert main.add(2, 3) == main.add(2, 3)\n", "add")
     assert tautology["passed"] is True
+    page = "In 2026, kitchen door replacement in the UK costs £10-£40 per standard door."
+    copied = section_rejection(
+        "service",
+        "The bicycle repair service replaces kitchen doors and worktops while avoiding full replacement of handles.",
+        page,
+        objective,
+    )
+    assert "example" in copied.lower()
+    weak_problem = section_rejection(
+        "problem",
+        "Replacing kitchen door handles avoids full replacement of damaged worktops.",
+        page,
+        objective,
+    )
+    assert "problem" in weak_problem.lower()
+    restated = section_rejection(
+        "offer and positioning",
+        "This kitchen service replaces doors, worktops, and handles to avoid full replacement.",
+        page,
+        objective,
+    )
+    assert "differs" in restated.lower()
+    essay = section_rejection(
+        "competitor and market research",
+        "Joe's Doors does custom work but the service is simpler. Best Builders gives price benchmarks but no service details.",
+        page,
+        objective,
+    )
+    assert "£" in essay
+    denied = section_rejection(
+        "pricing",
+        "Assumption: doors — replaces — not stated on an opened page.\n"
+        "Assumption: worktops — not stated on an opened page.\n"
+        "Assumption: handles — not stated on an opened page.",
+        page,
+        objective,
+    )
+    assert "doors" in denied.lower() and "not stated" in denied.lower()
+    mail = section_rejection(
+        "channels",
+        "Email notifications replace kitchen doors with full replacement handles to avoid structural damage.",
+        page,
+        objective,
+    )
+    assert "channel" in mail.lower()
+    instructions = section_rejection(
+        "advert",
+        'Need three lines starting with Headline:, Body:, Call to action:. From the pages, the headline should be benefit-focused like "Fix kitchen doors without full replacement".',
+        page,
+        objective,
+    )
+    assert instructions
+    coffee = (
+        "Prepare a UK business briefing for a coffee machine rental company. "
+        "Cover the service, the customers, the competitors, and pricing."
+    )
+    person = section_rejection(
+        "target customer",
+        "The coffee machine rental company's customers include Alex, who needs bicycle repairs.",
+        "Rental coffee machines from £10 a week.",
+        coffee,
+    )
+    assert "example" in person.lower()
+    copied_price = section_rejection(
+        "pricing",
+        'The example shows it should be like "Assumption: chains — not stated on an opened page".\n'
+        "Assumption: coffee — not stated on an opened page.",
+        "Most businesses pay between £19 and £96 per week.",
+        coffee,
+    )
+    assert "example" in copied_price.lower()
+    vague = section_rejection(
+        "call to action",
+        "Your coffee machine rental company customers can take a visit or written scope.",
+        "Rental coffee machines from £10 a week.",
+        coffee,
+    )
+    assert "step" in vague.lower()
+    from app.intelligence.execution import _section_jobs
+
+    prompts = " ".join(job[2].lower() for job in _section_jobs(objective))
+    assert "bicycle" not in prompts
+    assert "chains" not in prompts
+    assert "alex" not in prompts
 
 
 def test_an_unsupported_percentage_is_rejected():

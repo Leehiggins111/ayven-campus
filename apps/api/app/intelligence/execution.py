@@ -1330,11 +1330,13 @@ def _employee_user(programme: Programme, child: dict) -> str:
             "Competitor and market research\nPricing\nChannels\nAdvert\nCall to action\nNext steps\nAssumptions\nUnresolved\n"
             "Under Advert write three lines that start Headline:, Body:, and Call to action:.\n"
             "The name in the request may not appear on the opened pages. Still write the offer, the channels, the advert, and the next steps as recommendations.\n"
-            "The offer says what is sold and how that differs from the alternatives named in the request.\n"
+            "The offer says what is sold and how that differs from the alternatives named in the request. Use differs, instead, or without.\n"
             "Write each section once. Do not repeat a sentence. Do not narrate. Do not say I, let me, let's, I think, we need to, or the user.\n"
-            "Do not quote a sentence from the objective.\n"
+            "Do not quote a sentence from the objective. Do not name a person. Do not name a trade this request does not name.\n"
             "Use only the service in this request and the pages opened for this request.\n"
-            "Pricing must cite an opened page or start with ASSUMPTION: and the reason. A price that no page stated is not a fact.\n"
+            "Pricing starts with ASSUMPTION: and uses a £ figure from the price list when that list prices the part. Write not stated only when the list has no £ figure for that part.\n"
+            "Competitor research names an opened page and a £ figure from the price list.\n"
+            "Write the advert lines. Do not describe the format.\n"
             "End with: Nothing was sent.\n\n"
             f"Request:\n{programme.objective[:800]}\n\n"
             f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
@@ -1375,31 +1377,29 @@ def _price_notes(programme: Programme) -> str:
 
 
 def _section_jobs(objective: str) -> tuple:
-    """One focused prompt per section. The example is a different trade, not this request."""
+    """One focused prompt per section. The shape is described, not copied from another trade."""
     from .deliverable import covered_items, distinctive_terms
 
     words = ", ".join(distinctive_terms(objective)[:8]) or "the service in the objective"
     parts = covered_items(objective)
     labeled = ", ".join(parts) if parts else "the service"
-    shape = (
-        "Example of the shape, for a bicycle repair service, not this request: "
-    )
     shared = (
         f"\nService words: {words}.\n"
-        "Use those words. Do not quote a sentence from the objective. "
+        "Use those words in the finished sentence. Do not quote a sentence from the objective. "
+        "Do not name a person. Do not name a trade this request does not name. "
         "Do not say let's, I think, we need to, or the user.\n"
     )
     return (
-        ("service", "Service", "Write one sentence. Name the service. " + shape + "The service repairs bicycles at the rider's home so the rider does not buy a new bicycle." + shared, ""),
-        ("target customer", "Target customer", "Write one sentence. Name the customer. " + shape + "A household that wants a worn bicycle repaired rather than replaced." + shared, ""),
-        ("problem", "Problem", "Write one sentence. Name the problem. " + shape + "Buying a new bicycle costs more than repairing one that still has a sound frame." + shared, ""),
-        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. " + shape + "The offer is a home repair, which differs from selling a new bicycle." + shared, ""),
-        ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages. State a price each page gives. Use only prices from the list below." + shared, ""),
-        ("pricing", "Pricing", "Write one assumption line for each part. Label each part. " + shape + "Assumption: frames — £40 on the opened page, a planning figure only.\nAssumption: chains — not stated on an opened page.\nParts: " + labeled + "." + shared, ""),
-        ("channels", "Channels", "Write one sentence. Name the channel. Name the action on it. " + shape + "Riders are reached through a local Facebook group, where the owner posts one finished repair and asks for a reply." + shared, ""),
-        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline: a short promise.\nBody: one sentence about the result.\nCall to action: one sentence that asks the customer to take a step.\n" + shape + "Headline: Your bicycle, working again\nBody: A home visit repairs the bicycle the rider already owns.\nCall to action: Ask for a visit and a written scope." + shared, ""),
-        ("call to action", "Call to action", "Write one sentence. Ask the customer to take a step, such as a visit or a written scope. Do not ask them to confirm the request." + shared, ""),
-        ("next steps", "Next steps", "Write one sentence. Name the owner's next action. It is not the service itself. " + shape + "The owner phones two repair shops and writes down the prices they publish." + shared, ""),
+        ("service", "Service", "Write one sentence. Name the service. Say what the customer gets." + shared, ""),
+        ("target customer", "Target customer", "Write one sentence. Name the customer. Name the kind of buyer this request is for." + shared, ""),
+        ("problem", "Problem", "Write one sentence. Name the problem. Name the cost, the delay, or the waste the buyer faces." + shared, ""),
+        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs, using differs, instead, or without." + shared, ""),
+        ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages. State a £ figure each page gives. Use only figures from the list below." + shared, ""),
+        ("pricing", "Pricing", "Write one assumption line for each part. Label each part. Start each line with Assumption:. If the price list gives a £ figure for that part, copy that figure. If it does not, write not stated on an opened page. Do not write not stated for a part the list already prices. Parts: " + labeled + "." + shared, ""),
+        ("channels", "Channels", "Write one sentence. Name the channel. Name a different action the owner takes there, such as post, phone, or send." + shared, ""),
+        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline: a short promise using the service words.\nBody: one sentence about the result for the customer.\nCall to action: one sentence that asks the customer to phone, email, or ask for a quote.\nDo not describe these lines. Write them." + shared, ""),
+        ("call to action", "Call to action", "Write one sentence. Ask the customer to take a step: phone, email, or ask for a quote. Do not ask them to confirm the request." + shared, ""),
+        ("next steps", "Next steps", "Write one sentence. Name the owner's next action. Use phone, measure, or write. It is not the service itself." + shared, ""),
         ("assumptions", "Assumptions", "Write one sentence. Name one assumption. Say what still has to be checked on a visit." + shared, ""),
         ("unresolved", "Unresolved", "Write one sentence. Name one open fact. The objective does not settle it." + shared, ""),
     )
@@ -1613,7 +1613,7 @@ def _business_repair_user(programme: Programme, previous: str) -> str:
         "Offer and positioning: what the request sells, and how that differs from the alternatives the request names.\n"
         "Pricing: cite the £ figures below and start with ASSUMPTION: and which figure to plan around, and why.\n"
         "Advert: exactly three lines, Headline:, Body:, and Call to action:.\n"
-        "Channels and next steps: full sentences about how a local UK service reaches homeowners.\n"
+        "Channels and next steps: full sentences about how the owner reaches the customer for this request.\n"
         "End with: Nothing was sent.\n\n"
         f"Objective:\n{programme.objective}\n\n"
         f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
