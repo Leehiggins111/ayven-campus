@@ -30,7 +30,7 @@ class Step(BaseModel):
 
 
 class Journey(BaseModel):
-    requirement: str = Field(min_length=5, max_length=500)
+    requirement: str = Field(min_length=1, max_length=500)
     category: Literal["navigation", "interaction", "create", "edit", "persistence", "validation"]
     steps: list[Step] = Field(min_length=2, max_length=18)
 
