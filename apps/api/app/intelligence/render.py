@@ -65,7 +65,7 @@ def render_parent(facts: dict, audits: list[dict], manager_decision: str, comple
         parts.append(f"Resolution method: {resolution.get('resolution_method')}. {resolution.get('reason')}")
     parts.append("")
     synthesis = (facts.get("synthesis") or "").strip()
-    if synthesis and facts.get("task_class") not in ("business_research", "software_build"):
+    if synthesis and facts.get("task_class") not in ("business_research", "software_build", "website_build", "application_build"):
         parts += ["## Reasoning within the evidence", synthesis, ""]
     if completion:
         parts.append(

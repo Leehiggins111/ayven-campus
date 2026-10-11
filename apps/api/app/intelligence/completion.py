@@ -131,6 +131,13 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
         unresolved = 0.0 if filled and relevant else 1.0
         correctness = 1.0 if filled and relevant else 0.0
         outcome = "PASS" if safety_outcome == "PASS" and filled and relevant else "FAIL"
+    elif task_class in {"website_build", "application_build"}:
+        from .web_artifact import verified_web
+
+        passed = verified_web(text, research)
+        useful = requested = coverage = evidence_coverage = correctness = 1.0 if passed else 0.0
+        unresolved = 0.0 if passed else 1.0
+        outcome = "PASS" if safety_outcome == "PASS" and passed else "FAIL"
     elif task_class == "software_build":
         from .software import verified_software
 

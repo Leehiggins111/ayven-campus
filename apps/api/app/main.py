@@ -60,6 +60,8 @@ async def startup() -> None:
 async def shutdown() -> None:
     from .durable import shutdown as stop_worker
     await run_in_threadpool(stop_worker)
+    from .intelligence.web_preview import close_previews
+    await run_in_threadpool(close_previews)
 
 class ObjectiveIn(BaseModel):
     objective: str
@@ -193,7 +195,8 @@ def download_program_file(package_id: str, name: str):
     """A program file whose tests passed. A rejected reply has no file to download."""
     from .intelligence.software import stored_files
 
-    if name not in {"main.py", "test_main.py"}:
+    import re
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", name):
         raise HTTPException(404)
     packages = _rows("SELECT id, findings FROM work_packages WHERE id=?", (package_id,))
     if not packages:
@@ -206,6 +209,55 @@ def download_program_file(package_id: str, name: str):
         media_type="text/x-python; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
+
+
+def _verified_web_package(package_id: str):
+    from .intelligence.web_artifact import artifact_files, verified_web
+    rows = _rows("SELECT findings,observability_json FROM work_packages WHERE id=?", (package_id,))
+    if not rows:
+        raise HTTPException(404, "Package not found")
+    row = rows[0]
+    try:
+        research = json.loads(row.get("research_json") or "{}")
+        obs = json.loads(row.get("observability_json") or "{}")
+        research["web_execution"] = research.get("web_execution") or obs.get("web_execution") or {}
+        research["web_plan"] = research.get("web_plan") or research["web_execution"].get("plan") or {}
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(409, "Browser verification evidence is unavailable")
+    if not verified_web(row.get("findings") or "", research):
+        raise HTTPException(409, "This browser artifact has not passed verification")
+    return artifact_files(row["findings"]), research
+
+
+@app.get("/work-packages/{package_id}/artifact.zip")
+def download_web_artifact(package_id: str):
+    import base64
+    import io
+    import zipfile
+    files, research = _verified_web_package(package_id)
+    evidence = research["web_execution"]
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+        archive.writestr("README.txt", "Offline browser application. No dependencies or external services.\nOpen the preview from Milo to use stable browser storage, or serve this folder on a local HTTP server.\nData belongs to this browser profile and origin. Clearing browser storage deletes it.\nNothing was sent.\n")
+        archive.writestr("acceptance-plan.json", json.dumps(research.get("web_plan") or {}, indent=2))
+        archive.writestr("execution.json", json.dumps({k: v for k, v in evidence.items() if k != "screenshots"}, indent=2))
+        for shot in evidence.get("screenshots") or []:
+            archive.writestr(f"browser-{shot['width']}px.png", base64.b64decode(shot.get("png_base64") or "", validate=True))
+    return Response(buffer.getvalue(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{package_id[:8]}-source.zip"'})
+
+
+@app.get("/work-packages/{package_id}/preview")
+def preview_web_artifact(package_id: str, request: Request):
+    if request.client and request.client.host not in {"127.0.0.1", "::1", "testclient"}:
+        raise HTTPException(403, "Previews are available only on this computer")
+    from .intelligence.web_preview import preview
+    files, _research = _verified_web_package(package_id)
+    try:
+        return {"url": preview(package_id, files), "storage": "browser profile on this computer", "package_id": package_id}
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, "Preview could not start. Its local port may be occupied: " + str(exc))
 
 
 @app.get("/work-packages/{package_id}/intelligence")

@@ -1,0 +1,2 @@
+# Generated-site verification uses a fresh Chromium profile, never a user session.
+playwright==1.63.0

@@ -193,6 +193,31 @@ def test_a_broken_test_import_is_not_proof_of_a_meaningful_assertion(monkeypatch
     assert "behavioural assertion" in findings
 
 
+def test_requested_filenames_and_unittest_are_executed_after_renaming(monkeypatch):
+    import json
+    from app.intelligence.software import build_deliverable, stored_files, verified_software
+    monkeypatch.setenv('AYVEN_ALLOW_CODE','1')
+    test = 'import unittest\nimport main\nclass AdditionTest(unittest.TestCase):\n    def test_sum(self):\n        self.assertEqual(main.add(2, 3), 5)\n        self.assertEqual(main.add(-3, 3), 0)\n'
+    def complete(system,user,limit,*args,**kwargs):
+        if 'specification' in system:
+            value={'function':'add','parameters':['a','b'],'example_input':[2,3],'example_output':5}
+        elif 'test only' in system:
+            value={'test_main.py':test}
+        else:
+            value={'main.py':'def add(a, b):\n    return a + b\n'}
+        return json.dumps(value),3,{}
+    report,meta=build_deliverable('Write a Python program. Create add.py with function add(a,b). Create test_add.py using unittest to check add(2,3) equals 5.',complete)
+    assert meta['tests_passed'] is True,report
+    assert set(stored_files(report))=={'add.py','test_add.py'}
+    assert 'python -m unittest test_add' in report
+    assert 'Ran 1 test' in meta['software_execution']['stderr']
+    assert verified_software(report,meta)
+    wrong=stored_files(report)
+    wrong['add.py']='def add(a,b):\n    return a\n'
+    result=run_files(wrong,test_name='test_add.py',main_name='add.py')
+    assert result['passed'] is False and result['exit_code']==1
+
+
 def _run(monkeypatch, program: str, objective: str) -> str:
     monkeypatch.setenv("AYVEN_LLM_STUB", "0")
     monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")

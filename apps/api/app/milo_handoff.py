@@ -69,6 +69,16 @@ def job_status(project_id: str) -> dict:
     ).fetchone()
     conn.close()
     package = dict(package) if package else {}
+    from .intelligence.web_artifact import verified_web, artifact_files
+    research = {}
+    try:
+        research = json.loads(package.get("research_json") or "{}")
+        obs = json.loads(package.get("observability_json") or "{}")
+        research["web_execution"] = research.get("web_execution") or obs.get("web_execution") or {}
+        research["mode"] = research.get("mode") or obs.get("research_mode") or "unknown"
+        web_ready = verified_web(package.get("findings") or "", research)
+    except (ValueError, TypeError, AttributeError):
+        web_ready = False
     return {
         "project_id": project_id,
         "status": project["status"],
@@ -78,6 +88,8 @@ def job_status(project_id: str) -> dict:
         "waiting_for_lee": package.get("workflow_state") in {"AWAITING_CLARIFICATION", "AWAITING_APPROVAL"},
         "approval": dict(approval) if approval else None,
         "result": package.get("findings") or project["result"],
-        "engine": "not_connected",
-        "research_mode": "fixtures_unless_AYVEN_RESEARCH_MODE=live",
+        "engine": "ayven-local",
+        "research_mode": research.get("mode") if isinstance(research, dict) else "unknown",
+        "web_artifact_verified": web_ready,
+        "artifacts": [{"name": name, "content": source} for name, source in artifact_files(package.get("findings") or "").items()] if web_ready else [],
     }

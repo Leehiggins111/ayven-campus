@@ -253,7 +253,7 @@ def _failure_line(detail: str) -> str:
 
 
 def format_deliverable(files: dict[str, str], launch: str, result: dict) -> str:
-    passed = bool(result.get("passed")) and bool(files.get("main.py")) and bool(files.get("test_main.py"))
+    passed = bool(result.get("passed")) and len(files) == 2 and any(name.startswith("test_") for name in files)
     lines = [
         "# Software deliverable",
         f"Tests: {'PASSED' if passed else 'FAILED'}",
@@ -281,7 +281,7 @@ def stored_files(findings: str) -> dict[str, str]:
     files: dict[str, list[str]] = {}
     current = ""
     for line in (findings or "").splitlines():
-        if line.startswith("## ") and line[3:].strip() in {"main.py", "test_main.py"}:
+        if line.startswith("## ") and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", line[3:].strip()):
             current = line[3:].strip()
             files[current] = []
             continue
@@ -295,7 +295,7 @@ def stored_files(findings: str) -> dict[str, str]:
         source = "\n".join(body).strip()
         if source:
             saved[name] = source + "\n"
-    if "main.py" not in saved or "test_main.py" not in saved:
+    if len(saved) != 2 or not any(name.startswith("test_") for name in saved):
         return {}
     return saved
 
@@ -450,6 +450,8 @@ def _test_prompt(objective: str, spec: dict, feedback: str) -> str:
     )
     if feedback:
         text += f"\nCheck: {feedback}\n"
+    if re.search(r"\bunittest\b", objective or "", re.I):
+        text += "\nUse unittest.TestCase with test_ methods and self.assertEqual(main.function(...), expected). Import unittest and main. The runner will load and run the suite. For generation use main as the module; the verified files will be renamed to the requested module names.\n"
     return text
 
 
@@ -507,6 +509,14 @@ def _assert_problem(test_source: str, objective: str) -> str:
             return "The test checked __file__ or __dict__ and cannot fail, so it was not saved. Assert the number the program produces."
         return "The test cannot fail, so the program was not saved."
     asserts = re.findall(r"^\s*assert\s+(.+)$", test_source or "", re.M)
+    import ast
+    try:
+        tree = ast.parse(test_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "assertEqual" and len(node.args) >= 2:
+                asserts.append(f"{ast.unparse(node.args[0])} == {ast.unparse(node.args[1])}")
+    except SyntaxError:
+        return "The test has invalid Python syntax."
     if not any(re.search(r"==\s*-?\d+(?:\.\d+)?|==\s*['\"]", item) for item in asserts):
         return "The test does not assert an input against an expected output."
     wanted = _requested_sum(objective)
@@ -696,5 +706,27 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
     meta["sandbox"] = result.get("sandbox")
     if not meta["tests_passed"]:
         files = {}
+    launch = "python test_main.py"
+    if files:
+        requested = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*\.py)\b", objective or "")
+        main_name = next((name for name in requested if not name.startswith("test_")), "main.py")
+        test_name = next((name for name in requested if name.startswith("test_")), "test_main.py")
+        if main_name != "main.py" or test_name != "test_main.py":
+            import ast
+            tree = ast.parse(files["test_main.py"])
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == "main":
+                            alias.name = main_name[:-3]
+                            alias.asname = alias.asname or "main"
+                elif isinstance(node, ast.ImportFrom) and node.module == "main":
+                    node.module = main_name[:-3]
+            files = {main_name: files["main.py"], test_name: ast.unparse(tree) + "\n"}
+            result = run_files(files, test_name=test_name, main_name=main_name)
+            meta["tests_passed"] = result.get("passed") is True
+            if not meta["tests_passed"]:
+                files = {}
+        launch = f"python -m unittest {test_name[:-3]}" if re.search(r"\bunittest\b", objective or "", re.I) else f"python {test_name}"
     meta["software_execution"] = execution_evidence(files, result)
-    return format_deliverable(files, "python test_main.py", result), meta
+    return format_deliverable(files, launch, result), meta

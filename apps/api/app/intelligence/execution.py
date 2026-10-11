@@ -517,7 +517,7 @@ class Programme:
             self.errors.append(str(meta.get("error")))
         save_model_call(package_id, "EMPLOYEE", self.task_class, meta, text)
         self.tokens += int(meta.get("completion_tokens") or 0)
-        if self.task_class == "software_build" and child.get("focus") == "build":
+        if self.task_class in {"software_build", "website_build", "application_build"} and child.get("focus") == "build":
             report = text if "nothing was sent" in (text or "").lower() else (text or "").rstrip() + "\nNothing was sent.\n"
             child["report"] = report
             update_package(package_id, findings=report, selected_model=meta.get("model") or route_for(self.task_class, "coding")["model_id"])
@@ -862,6 +862,7 @@ class Programme:
             "calculation": self.calculation or {},
             "research_mode": self.research.get("mode"),
             "software_execution": self.research.get("software_execution") or {},
+            "web_execution": self.research.get("web_execution") or {},
             "frontier_called": False,
             "quality": quality,
         }
@@ -1016,6 +1017,10 @@ def run_objective(project_id: str, objective: str, task_id: str | None = None) -
 def _finish_roles(programme: Programme) -> None:
     for role in ("EMPLOYEE", "SUPERVISOR", "MANAGER"):
         for prompt in programme.prompts(role):
+            if role == "EMPLOYEE" and programme.task_class in {"website_build", "application_build"}:
+                text, meta = _web_turn(programme, prompt["id"])
+                programme.bind(role, prompt["id"], text, meta)
+                continue
             if role == "EMPLOYEE" and programme.task_class == "software_build":
                 text, meta = _software_turn(programme, prompt["id"])
                 programme.bind(role, prompt["id"], text, meta)
@@ -1029,6 +1034,22 @@ def _finish_roles(programme: Programme) -> None:
                 plan_write = bool(child and child.get("focus") == "draft")
             text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=limit, programme=programme, package_id=prompt["id"], plan=plan_write)
             programme.bind(role, prompt["id"], text, meta)
+
+
+def _web_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
+    from .web_artifact import build_web_artifact
+
+    def complete(system, user, max_tokens, ollama_format=None):
+        text, tokens, meta = _complete("EMPLOYEE", system, user, max_tokens=max_tokens,
+            programme=programme, package_id=package_id, plain=True,
+            expand_unfinished=False, ollama_format=ollama_format)
+        _record_generation(programme, package_id, "web", meta.get("raw_response") or text, meta, kept="generated")
+        return text, tokens, meta
+
+    report, meta = build_web_artifact(programme.objective, programme.task_class, complete)
+    programme.research.update(tests_passed=meta.get("tests_passed") is True,
+        web_execution=meta.get("web_execution") or {}, web_plan=meta.get("web_plan") or {}, mode="browser-build")
+    return report, meta
 
 
 def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
@@ -1075,7 +1096,7 @@ def _model_sections(text: str) -> bool:
 
 def _keep_model_draft(programme: Programme, child: dict) -> bool:
     report = child.get("report") or ""
-    if programme.task_class == "software_build" and child.get("focus") == "build":
+    if programme.task_class in {"software_build", "website_build", "application_build"} and child.get("focus") == "build":
         return "tests:" in report.lower()
     if programme.task_class != "business_research" or child.get("focus") != "draft":
         return False
@@ -1228,6 +1249,15 @@ def _approved_research_is_unresolved(row: dict, findings: str) -> bool:
     task = (row.get("task_class") or "").lower()
     if task in {"calculation", "trivial"}:
         return False
+    if task in {"website_build", "application_build"}:
+        from .web_artifact import verified_web
+        try:
+            research = json.loads(row.get("research_json") or "{}")
+            obs = json.loads(row.get("observability_json") or "{}")
+            evidence = research.get("web_execution") or obs.get("web_execution") or {}
+        except (ValueError, TypeError, AttributeError):
+            return True
+        return not verified_web(findings, {"web_execution": evidence})
     if task == "software_build":
         from .software import verified_software
 
