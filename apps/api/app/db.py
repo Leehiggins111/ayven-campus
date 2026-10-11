@@ -44,6 +44,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     seed(conn)
     migrate_v04(conn)
     migrate_v10(conn)
+    migrate_v20(conn)
+    migrate_v21(conn)
+    migrate_v22(conn)
+    migrate_v23(conn)
 
 
 SEED_AGENTS = [
@@ -233,4 +237,60 @@ def migrate_v10(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    conn.commit()
+
+
+def migrate_v20(conn: sqlite3.Connection) -> None:
+    """v2 ledger, workflow, and memory columns. Additive only."""
+    _add_columns(conn, "work_packages", {"workflow_state": "TEXT"})
+    _add_columns(conn, "claims", {
+        "origin": "TEXT",
+        "contradicting_evidence": "TEXT",
+        "authority": "TEXT",
+        "repair_history": "TEXT",
+        "verification_history": "TEXT",
+    })
+    _add_columns(conn, "memories", {
+        "confidence": "REAL",
+        "last_used": "TEXT",
+        "supersedes": "TEXT",
+    })
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS traces (
+            id TEXT PRIMARY KEY,
+            package_id TEXT NOT NULL,
+            event TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.commit()
+
+
+def migrate_v21(conn: sqlite3.Connection) -> None:
+    """Trace links, document locators, and file hashes. Additive only."""
+    _add_columns(conn, "claims", {"locator": "TEXT", "file_hash": "TEXT", "trace_id": "TEXT"})
+    _add_columns(conn, "model_calls", {"trace_id": "TEXT"})
+    _add_columns(conn, "tool_calls", {"trace_id": "TEXT"})
+    _add_columns(conn, "sources", {"trace_id": "TEXT"})
+    _add_columns(conn, "traces", {"trace_id": "TEXT"})
+    conn.commit()
+
+
+def migrate_v23(conn: sqlite3.Connection) -> None:
+    """Keep the model reply that was parsed. Additive only."""
+    _add_columns(conn, "model_calls", {"response_text": "TEXT", "finish_reason": "TEXT"})
+    conn.commit()
+
+
+def migrate_v22(conn: sqlite3.Connection) -> None:
+    """Campus visual state, clarification, and approval context. Additive only."""
+    _add_columns(conn, "agents", {"visual_state": "TEXT"})
+    _add_columns(conn, "work_packages", {
+        "campus_stage": "TEXT",
+        "clarification_question": "TEXT",
+        "clarification_answer": "TEXT",
+    })
+    _add_columns(conn, "approvals", {"context_json": "TEXT"})
+    conn.execute("UPDATE agents SET visual_state='IDLE' WHERE visual_state IS NULL OR visual_state=''")
     conn.commit()

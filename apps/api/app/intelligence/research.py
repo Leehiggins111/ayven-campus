@@ -83,12 +83,11 @@ def rank_source(url: str, text: str = "", query: str = "", title: str = "") -> s
         return "PRIMARY_OFFICIAL"
     tokens = [tok for tok in re.findall(r"[a-z0-9]{4,}", (query or "").lower()) if tok not in _QUERY_STOP]
     label = _registrable_label(host)
-    if any(tok in label for tok in tokens):
+    if any(len(tok) >= 4 and tok in label for tok in tokens):
         return "PRIMARY_OFFICIAL"
     blob = f"{title}\n{text}".lower()
-    if any(stem in blob for stem in SELF_ID_STEMS):
-        return "PRIMARY_OFFICIAL"
-    if any(len(tok) >= 5 and tok in blob for tok in tokens):
+    # "official" on its own is not authority. The site's own name has to appear with that wording.
+    if label and len(label) >= 3 and label in blob and any(stem in blob for stem in SELF_ID_STEMS):
         return "PRIMARY_OFFICIAL"
     return "OTHER_SECONDARY"
 
@@ -101,25 +100,63 @@ def load_fixtures() -> list[dict]:
     return pages
 
 
+def _drop_low_score(hit: dict, objective: str, *, strict: bool) -> bool:
+    """A weak snippet score still opens a hit that names this objective."""
+    if not strict or float(hit.get("rerank_score") or 0) >= 0.2:
+        return False
+    from .deliverable import _blob_has_term, distinctive_terms
+
+    terms = [term for term in distinctive_terms(objective) if len(term) >= 5]
+    if not terms:
+        return True
+    blob = " ".join([
+        str(hit.get("url") or ""),
+        str(hit.get("title") or ""),
+        str(hit.get("snippet") or ""),
+    ]).lower()
+    return not any(_blob_has_term(term, blob) for term in terms)
+
+
+def _queries_cover_anchor(queries: list[str], objective: str) -> bool:
+    from .deliverable import _blob_has_term, anchor_terms
+
+    anchors = anchor_terms(objective)
+    if not anchors:
+        return True
+    blob = " ".join(queries).lower()
+    return any(_blob_has_term(term, blob) for term in anchors)
+
+
 def generic_from_objective(objective: str) -> list[str]:
-    """Queries from the brief only. No task-class table and no exam seed list."""
+    """Queries from the brief only. No task-class table and no exam seed list.
+
+    Requester names, pronouns, and instruction words such as cover or website
+    are not searches.
+    """
+    from .deliverable import reject_search_query, targeted_queries
+
     entities: list[str] = []
     for match in re.finditer(r"\b([A-Z][A-Za-z0-9'’\-]+(?:\s+[A-Z][A-Za-z0-9'’\-]+){0,3})\b", objective or ""):
         name = match.group(1).strip(" -")
         if len(name) < 3 or name.lower() in _QUERY_STOP:
             continue
+        if reject_search_query(name, objective):
+            continue
         if name not in entities:
             entities.append(name)
-    queries = [f"{name} official site" for name in entities[:6]]
-    words: list[str] = []
-    for word in re.findall(r"[A-Za-z]{4,}", (objective or "").lower()):
-        if word in _QUERY_STOP or word in words:
+    queries = []
+    for name in entities[:6]:
+        query = f"{name} official site"
+        if reject_search_query(query, objective):
             continue
-        words.append(word)
-    if words:
-        queries.append(" ".join(words[:10]))
+        queries.append(query)
+    for query in targeted_queries(objective):
+        if query not in queries:
+            queries.append(query)
     if not queries and (objective or "").strip():
-        queries.append(objective.strip()[:160])
+        fallback = objective.strip()[:160]
+        if not reject_search_query(fallback, objective):
+            queries.append(fallback)
     return queries[:8]
 
 
@@ -136,6 +173,10 @@ def _normalise_queries(raw) -> list[str]:
     for line in lines:
         text = line.strip().lstrip("-*0123456789.) ").strip()
         if not text or text.lower().startswith(("query", "objective", "skill")):
+            continue
+        from .boundary import reject_reasoning_query
+
+        if reject_reasoning_query(text):
             continue
         if text not in cleaned:
             cleaned.append(text[:180])
@@ -154,28 +195,58 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
     stub = os.environ.get("AYVEN_LLM_STUB", "1") != "0"
     if not stub and _PLANNER is not None:
         try:
-            planned = _normalise_queries(_PLANNER(objective, guidance))
+            from .boundary import queries_from_plan_text
+
+            raw = _PLANNER(objective, guidance)
+            from .deliverable import targeted_queries, usable_search_queries
+
+            planned = usable_search_queries(
+                queries_from_plan_text(raw if isinstance(raw, str) else "\n".join(str(item) for item in raw)),
+                objective,
+            )
+            if planned and not _queries_cover_anchor(planned, objective):
+                for extra in targeted_queries(objective):
+                    if extra not in planned:
+                        planned.append(extra)
             if planned:
-                return planned, "model"
+                return planned[:8], "model"
+            return generic_from_objective(objective), "objective-fallback"
         except Exception:
-            pass
+            return generic_from_objective(objective), "objective-fallback"
     if not stub:
         from .. import models as model_mod
         from ..models import complete_role, local_base
 
         if local_base() or model_mod._GENERATOR is not None:
             user = (
-                "Plan the first web searches for this objective. "
-                "Use the objective and the skill guidance. "
-                "One query per line, each starting with '- '. "
-                "Do not invent entities that are not in the objective.\n\n"
+                "Write 4 to 6 web search queries for this objective. "
+                "Use the service words from the objective. "
+                "Each query names the service, the place, or a price. "
+                "Do not name a trade the objective does not name. "
+                "Do not search the requester's name. Do not search pronouns. "
+                "Do not search instruction words such as cover, website, create, or plan on their own. "
+                "One query per line, each starting with '- '.\n\n"
                 f"Objective:\n{(objective or '')[:1200]}\n\nSkill guidance:\n{guidance}"
             )
             try:
-                text, _tokens, _meta = complete_role("EMPLOYEE", "You plan searches. You do not answer the task.", user, max_tokens=180)
-                planned = _normalise_queries(text)
+                from .boundary import queries_from_plan_text
+                from .deliverable import targeted_queries, usable_search_queries
+                from .schemas import ResearchPlan
+
+                text, _tokens, _meta = complete_role(
+                    "EMPLOYEE",
+                    "You plan searches. Return one search per line, or a JSON object with a queries array. Do not answer the task.",
+                    user,
+                    max_tokens=220,
+                    schema=ResearchPlan,
+                )
+                planned = usable_search_queries(queries_from_plan_text(text), objective)
+                if planned and not _queries_cover_anchor(planned, objective):
+                    for extra in targeted_queries(objective):
+                        if extra not in planned:
+                            planned.append(extra)
                 if planned:
-                    return planned, "model"
+                    return planned[:8], "model"
             except Exception:
                 pass
     return generic_from_objective(objective), "objective-fallback"
@@ -363,12 +434,13 @@ def research(
     max_searches = int(os.environ.get("AYVEN_MAX_SEARCHES", "12"))
     max_pages = int(os.environ.get("AYVEN_MAX_PAGES", "16"))
     max_browser = int(os.environ.get("AYVEN_MAX_BROWSER_ACTIONS", "2"))
-    deadline = time.monotonic() + int(os.environ.get("AYVEN_MAX_RESEARCH_SECONDS", "120"))
     browser_left = [max_browser]
     if queries is not None:
         planned, query_source = list(queries), "provided"
     else:
         planned, query_source = plan_queries(task_class, objective, skills)
+    # Query planning can consume minutes on CPU. The fetch budget starts after it.
+    deadline = time.monotonic() + int(os.environ.get("AYVEN_MAX_RESEARCH_SECONDS", "300"))
     evidence: list[dict] = []
     failures: list[dict] = []
     duplicates: list[str] = []
@@ -389,7 +461,14 @@ def research(
     review_text = ""
     review_mode = "not-run"
     review_gaps: list[str] = []
-    pending = [{"kind": "search", "query": query, "depth": 1, "origin": "seed"} for query in planned]
+    from .boundary import is_noise_hit
+    from .entity import extract_entities
+    from .rerank import rerank
+
+    targets = extract_entities(objective)
+    strict_seed = query_source == "model"
+    pending = [{"kind": "search", "query": query, "depth": 1, "origin": "seed", "strict": strict_seed} for query in planned]
+    filtered: list[dict] = []
     round_no = 0
     while pending and round_no < rounds and not budget_hit:
         round_no += 1
@@ -411,6 +490,11 @@ def research(
             query = job["query"]
             depth = job["depth"]
             if depth > rounds:
+                continue
+            noise = _reject_query(query, objective, task_class, provided=query_source == "provided")
+            if noise:
+                failures.append({"query": "[rejected-query]", "stage": "query", "error": noise})
+                filtered.append({"query": "[rejected-query]", "reason": noise})
                 continue
             if job["kind"] == "search":
                 if query in searched:
@@ -441,15 +525,19 @@ def research(
                 if search_result.status != "ok":
                     failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
                     continue
-                hits = sorted(
-                    captured.get("hits") or [],
-                    key=lambda hit: 0 if rank_source(hit.get("url") or "", text=hit.get("snippet") or "", query=query, title=hit.get("title") or "") == "PRIMARY_OFFICIAL" else 1,
-                )
+                hits = rerank(query, captured.get("hits") or [], objective)
                 opened_any = False
                 for hit in hits:
+                    if is_noise_hit(hit.get("url") or "", hit.get("title") or "", hit.get("snippet") or ""):
+                        filtered.append({"url": hit.get("url"), "reason": "noise", "rerank_score": hit.get("rerank_score")})
+                        failures.append({"query": query, "stage": "relevance", "url": hit.get("url") or "", "error": "noise_rejected"})
+                        continue
+                    if _drop_low_score(hit, objective, strict=bool(job.get("strict"))):
+                        filtered.append({"url": hit.get("url"), "reason": "below_relevance_threshold", "rerank_score": hit.get("rerank_score")})
+                        continue
                     opened = _open_hit(
                         hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence,
-                        browse_fn=browse_fn, browser_left=browser_left,
+                        browse_fn=browse_fn, browser_left=browser_left, objective=objective, task_class=task_class,
                     )
                     opened_any = opened_any or opened
                     if opened and followed < 3 and round_no < rounds:
@@ -461,7 +549,10 @@ def research(
                     later.append({"kind": "search", "query": query + " primary official source", "depth": round_no + 1, "origin": "retry"})
             else:
                 hit = {"url": job.get("url") or "", "title": job.get("title") or "", "snippet": ""}
-                _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=browse_fn, browser_left=browser_left)
+                _open_hit(
+                    hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence,
+                    browse_fn=browse_fn, browser_left=browser_left, objective=objective, task_class=task_class,
+                )
         if os.environ.get("AYVEN_AGENTIC_RESEARCH", "1") != "0" and not budget_hit:
             try:
                 review_text, review_mode = _agentic_review(objective, evidence, review_gaps, searched, reviewer)
@@ -475,13 +566,22 @@ def research(
                 if unknown and unknown not in review_gaps:
                     review_gaps.append(unknown)
                 extra = _next_query(review_text)
+                rejected = _reject_query(extra, objective, task_class, provided=query_source == "provided") if extra else ""
+                if extra and rejected:
+                    filtered.append({"query": extra, "reason": rejected})
+                    extra = ""
                 room = round_no < rounds and len(searched) < max_searches and len(evidence) < max_pages and time.monotonic() <= deadline
                 if extra and extra not in searched and room:
-                    later.append({"kind": "search", "query": extra, "depth": round_no + 1, "origin": "review"})
+                    later.append({"kind": "search", "query": extra, "depth": round_no + 1, "origin": "review", "strict": False})
+            if review_mode == "model" and "SUFFICIENT" in (review_text or "").upper() and evidence and not budget_hit:
+                later = [item for item in later if item.get("kind") != "search"]
+                budget_hit = budget_hit or ""
         pending = later
 
     gaps = list(review_gaps)
     gaps.extend(_unsupported_requirements(skills, evidence))
+    if any((item.get("error") == "off_topic") or (item.get("reason") == "off_topic") for item in failures + filtered):
+        gaps.append("Off-topic pages were dropped and do not count as evidence.")
     if not evidence:
         gaps.append("Research produced no opened page. No model-memory fallback was used.")
     elif mode == "live" and failures:
@@ -502,17 +602,59 @@ def research(
         "skipped": False,
         "rounds": rounds,
         "rounds_used": round_no,
-        "rounds_exhausted": True,
+        "rounds_exhausted": not (bool(evidence) and review_mode == "model" and "SUFFICIENT" in (review_text or "").upper() and not budget_hit),
         "followed_links": followed,
         "memory_fallback_used": False,
         "review": review_text,
         "review_mode": review_mode,
+        "targets": targets,
+        "filtered": filtered,
+        "stopped_for_coverage": bool(evidence) and review_mode == "model" and "SUFFICIENT" in (review_text or "").upper() and not budget_hit,
         "budget": {"max_rounds": rounds, "max_searches": max_searches, "max_pages": max_pages, "max_browser_actions": max_browser, "hit": budget_hit},
         "browser_actions": max_browser - browser_left[0],
     }
 
 
-def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=None, browser_left=None) -> bool:
+def _injection(text: str) -> list[str]:
+    from .security import injection_signals
+
+    return injection_signals(text)
+
+
+def _plain_text(text: str) -> str:
+    """Drop tags, stylesheets, and reasoning-media URLs before a page becomes a claim."""
+    from .boundary import is_noise_hit
+
+    raw = text or ""
+    raw = re.sub(r"(?is)<(script|style|noscript)\b[^>]*>.*?</\1>", " ", raw)
+    raw = re.sub(r"(?is)<[^>]+>", " ", raw)
+
+    def _keep(match: re.Match) -> str:
+        url = match.group(0).rstrip(".,")
+        if is_noise_hit(url) or url.lower().split("?")[0].endswith(_MEDIA_NOISE):
+            return " "
+        return url
+
+    raw = re.sub(r"https?://[^\s)>\"]+", _keep, raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+_MEDIA_NOISE = (".mp3", ".wav", ".ogg", ".css", ".js", ".woff", ".woff2", ".svg", ".mp4")
+
+
+def _reject_query(query: str, objective: str, task_class: str, provided: bool) -> str:
+    """A supplied fixture key is searched as given. A model query has to stay on this brief."""
+    from .boundary import reject_reasoning_query
+    from .deliverable import reject_search_query
+
+    reason = reject_reasoning_query(query or "")
+    if reason:
+        return reason
+    brief = "" if provided or task_class not in {"business_research", "web_research"} else objective
+    return reject_search_query(query, brief)
+
+
+def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=None, browser_left=None, objective: str = "", task_class: str = "") -> bool:
     url = hit.get("url") or ""
     if url in seen:
         duplicates.append(url)
@@ -542,7 +684,29 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 error=str(page.get("error"))[:300], timestamp=now(),
                 metadata={"mode": mode, "attempts": attempts, "round": depth},
             )
-        text = page.get("text") or ""
+        raw_text = page.get("text") or ""
+        text = raw_text
+        looks_html = "<" in raw_text and ">" in raw_text
+        from .crawl_adapter import crawl_live, extract as crawl_extract, route_fetch
+
+        route = route_fetch(html=raw_text if looks_html else "", javascript_wall=_js_wall(_plain_text(raw_text)))
+        page = dict(page)
+        page["fetch_route"] = route
+        if route == "crawl4ai_live":
+            crawled = crawl_live(page.get("url") or u)
+            if crawled.get("ok") and crawled.get("text"):
+                text = crawled["text"]
+                page["text"] = text
+                page["via_crawl"] = crawled.get("engine") or True
+            else:
+                page["fetch_route"] = "browser_use"
+        elif looks_html or (mode == "live" and len(raw_text) < 40 and not page.get("error")):
+            crawled = crawl_extract(page.get("url") or u, raw_text)
+            if crawled.get("ok") and crawled.get("text"):
+                text = crawled["text"]
+                page["text"] = text
+                page["via_crawl"] = crawled.get("engine") or True
+        text = _plain_text(text)
         if _js_wall(text):
             from .fallbacks import on_http_result
 
@@ -582,6 +746,21 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
         ]
         final_url = page.get("url") or u
         page_title = page.get("title") or h.get("title") or ""
+        if task_class == "business_research":
+            from .deliverable import page_is_relevant
+
+            if not page_is_relevant(objective, page_title, text, final_url):
+                return ToolResult(
+                    tool="fetch_page",
+                    status="error",
+                    query=query,
+                    source_url=final_url,
+                    source_title=page_title,
+                    error="off_topic",
+                    extracted_content="",
+                    timestamp=page.get("retrieved_at") or now(),
+                    metadata={"mode": mode, "evidence_level": "none", "relevant": False, "freshness": "UNRESOLVED", "round": depth},
+                )
         return ToolResult(
             tool="fetch_page",
             status="ok",
@@ -606,6 +785,12 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 "relevant": relevant,
                 "round": depth,
                 "unsupported_reseller": unsupported_reseller_claim(final_url, text, query=query, title=page_title),
+                "authority_class": _authority(final_url, text, page_title),
+                "rerank_score": (h.get("rerank_score") if isinstance(h, dict) else None),
+                "injection_signals": _injection(text),
+                "action_from_web": False,
+                "via_crawl": bool(page.get("via_crawl")),
+                "fetch_route": page.get("fetch_route") or "",
             },
         )
 
@@ -693,6 +878,12 @@ def _next_query(text: str) -> str:
         if stripped.upper().startswith("NEXT:"):
             return stripped.split(":", 1)[1].strip()[:180]
     return ""
+
+
+def _authority(url: str, text: str, title: str) -> str:
+    from .authority import classify_authority
+
+    return classify_authority(url, text=text, title=title)
 
 
 def is_availability_text(text: str) -> bool:

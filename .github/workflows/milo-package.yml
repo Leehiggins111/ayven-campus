@@ -1,0 +1,55 @@
+name: milo-package
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/ayven-v2-workable-a9eb
+
+permissions:
+  contents: read
+
+concurrency:
+  group: milo-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    environment: milo-package
+    env:
+      MILO_SHA: 1d04499b8d05819f2743bf54b7d1a9f791b157ca
+      CAMPUS_SHA: ${{ github.sha }}
+      MILO_DIR: ${{ github.workspace }}/milo
+      CAMPUS_DIR: ${{ github.workspace }}/campus
+      WORK_DIR: ${{ github.workspace }}/work
+      MILO_BUILD_TOKEN: ${{ secrets.MILO_BUILD_TOKEN }}
+    steps:
+      - name: Mask build token
+        shell: pwsh
+        env:
+          MILO_BUILD_TOKEN: ${{ secrets.MILO_BUILD_TOKEN }}
+        run: |
+          Write-Output "::add-mask::$env:MILO_BUILD_TOKEN"
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: campus
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Leehiggins111/Milo
+          ref: 1d04499b8d05819f2743bf54b7d1a9f791b157ca
+          token: ${{ secrets.MILO_BUILD_TOKEN }}
+          persist-credentials: false
+          path: milo
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Assemble and accept the Windows package
+        shell: pwsh
+        run: node "$env:CAMPUS_DIR\scripts\ci\milo-package-runner.js"

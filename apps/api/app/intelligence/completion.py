@@ -79,6 +79,15 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
             outcome = "PASS"
         else:
             outcome = "PARTIAL"
+    elif task_class == "calculation":
+        value = str((research.get("calculation") or {}).get("value") or "")
+        useful = 1.0 if value and value in (text or "") else 0.0
+        requested = useful
+        coverage = useful
+        evidence_coverage = useful
+        unresolved = 0.0 if useful else 1.0
+        correctness = useful
+        outcome = "PASS" if safety_outcome == "PASS" and useful == 1.0 else "FAIL"
     elif task_class == "football_tickets":
         urls = re.findall(r"https?://[^\s)>\]]+", text or "")
         hits = len({url.rstrip(".,") for url in urls})
@@ -97,6 +106,29 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
             outcome = "PARTIAL"
         else:
             outcome = "FAIL"
+    elif task_class == "business_research":
+        from .deliverable import evidence_blob, plan_sections_filled, relevant_evidence
+
+        blob = evidence_blob(evidence)
+        objective = str(research.get("objective") or "")
+        filled = plan_sections_filled(text, blob)
+        relevant = relevant_evidence(objective, evidence) if objective else [item for item in evidence if (item.get("source_url") or "").startswith("http")]
+        useful = 1.0 if filled and relevant else 0.0
+        requested = useful
+        coverage = useful
+        evidence_coverage = 1.0 if relevant else 0.0
+        unresolved = 0.0 if filled and relevant else 1.0
+        correctness = 1.0 if filled and relevant else 0.0
+        outcome = "PASS" if safety_outcome == "PASS" and filled and relevant else "FAIL"
+    elif task_class == "software_build":
+        passed = "tests: passed" in lowered
+        useful = 1.0 if passed else 0.0
+        requested = useful
+        coverage = useful
+        evidence_coverage = useful
+        unresolved = 0.0 if passed else 1.0
+        correctness = useful
+        outcome = "PASS" if safety_outcome == "PASS" and passed else "FAIL"
     else:
         useful = 1.0 if text else 0.0
         requested = useful

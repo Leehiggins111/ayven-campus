@@ -1,0 +1,3 @@
+# Optional. fastembed wants pillow<12. browser-use wants pillow==12.3.0.
+# Install this extra, then reinstall pillow and click from constraints.txt.
+fastembed==0.7.4

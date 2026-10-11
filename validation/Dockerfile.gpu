@@ -1,0 +1,36 @@
+# Reproducible GPU image spec. Do not build or push this from a paid pod.
+# llama-cpp-python is installed from a prebuilt CUDA wheel index, not compiled here.
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    AYVEN_ALLOW_ESCALATION=0 \
+    AYVEN_MODEL_DIR=/models \
+    HF_HOME=/models/hf \
+    TRANSFORMERS_CACHE=/models/hf
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv git ca-certificates \
+        wget gnupg unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/ayven
+COPY apps/api/requirements.txt apps/api/requirements-frankenstein.txt apps/api/requirements-documents.txt apps/api/constraints.txt /opt/ayven/apps/api/
+RUN python3 -m pip install --no-cache-dir -U pip \
+    && python3 -m pip install --no-cache-dir \
+        -r /opt/ayven/apps/api/requirements.txt \
+        -r /opt/ayven/apps/api/requirements-frankenstein.txt \
+        -r /opt/ayven/apps/api/requirements-documents.txt \
+        -c /opt/ayven/apps/api/constraints.txt \
+    && python3 -m pip install --no-cache-dir \
+        'click==8.3.3' 'pillow==12.3.0' 'pypdf==6.16.2' 'typing-extensions>=4.12,<5' \
+    && python3 -m pip install --no-cache-dir llama-cpp-python \
+        --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+
+# Browser packages are already in the Frankenstein requirements.
+# Model weights are mounted at /models and are not baked into the image.
+COPY . /opt/ayven
+ENV PYTHONPATH=/opt/ayven/apps/api
+WORKDIR /opt/ayven
+CMD ["bash", "scripts/run_ayven_validation.sh"]

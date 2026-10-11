@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .deliverable import clip_at_boundary
+
 
 def _money_lines(lines: list[dict]) -> list[str]:
     rendered = []
@@ -29,7 +31,11 @@ def render_focus(focus: str, facts: dict) -> str:
     if focus == "evidence":
         if task == "internal_door_quote":
             return _suppliers(facts)
-        return _routes(facts) if task == "football_tickets" else _prospects(facts)
+        if task == "football_tickets":
+            return _routes(facts)
+        if task == "vending_prospects":
+            return _prospects(facts)
+        return _general_evidence(facts)
     return _gaps(facts)
 
 
@@ -38,7 +44,7 @@ def render_parent(facts: dict, audits: list[dict], manager_decision: str, comple
         "# Ayven briefing",
         f"Task class: {facts['task_class']}",
         f"Research mode: {facts['research'].get('mode')} ({_mode_label(facts['research'].get('mode'))})",
-        "Validation: LOCAL_DETERMINISTIC. Real-model quality is not claimed from this text alone.",
+        "Checks: opened pages and the completion gate. A section that only says Unresolved is not a finished plan.",
         "",
         "## Objective",
         facts["objective"],
@@ -57,7 +63,7 @@ def render_parent(facts: dict, audits: list[dict], manager_decision: str, comple
         parts.append(f"Resolution method: {resolution.get('resolution_method')}. {resolution.get('reason')}")
     parts.append("")
     synthesis = (facts.get("synthesis") or "").strip()
-    if synthesis:
+    if synthesis and facts.get("task_class") not in ("business_research", "software_build"):
         parts += ["## Reasoning within the evidence", synthesis, ""]
     if completion:
         parts.append(
@@ -93,6 +99,9 @@ def _mode_label(mode: str | None) -> str:
 
 
 def _scenarios(facts: dict) -> str:
+    calc = facts.get("calculation") or {}
+    if calc.get("value"):
+        return f"Deterministic result: {calc['expression']} = {calc['value']}. Nothing was sent."
     quote = facts.get("quote")
     if not quote:
         return "No deterministic calculation was required for this focus."
@@ -219,6 +228,24 @@ def _prospects(facts: dict) -> str:
     return "\n".join(lines)
 
 
+def _general_evidence(facts: dict) -> str:
+    lines = ["Opened pages are the only facts. A question with no opened page stays a gap."]
+    evidence = facts["research"].get("evidence") or []
+    if not evidence:
+        lines.append("No page was opened. No fact is asserted from memory.")
+    for item in evidence:
+        lines.append(f"- {item.get('source_title') or 'page'}: {item.get('source_url')}")
+        excerpt = clip_at_boundary(item.get("extracted_content") or "", 2000)
+        if excerpt:
+            lines.append(excerpt)
+    for gap in facts["research"].get("gaps") or []:
+        lines.append(f"- Gap: {gap}")
+    if not evidence and not (facts["research"].get("gaps") or []):
+        lines.append("Gap: the requested fact was not on an opened page.")
+    lines.append("Nothing was sent. No purchase was made.")
+    return "\n".join(lines)
+
+
 def _draft(facts: dict) -> str:
     if facts["task_class"] == "vending_prospects":
         prospects = facts.get("prospects") or []
@@ -233,11 +260,86 @@ def _draft(facts: dict) -> str:
             "Nothing was sent.",
             "Approval: required before any contact.",
         ])
+    if facts["task_class"] == "business_research":
+        return _business_plan(facts)
     return "\n".join([
         "Next action remains inside Ayven until a person approves it.",
         "Sent: no. Nothing was sent.",
         "No purchase was made.",
     ])
+
+
+def _business_plan(facts: dict) -> str:
+    """Owner-facing launch plan. Unopened facts stay unresolved."""
+    evidence = facts["research"].get("evidence") or []
+    opened = []
+    for item in evidence:
+        url = item.get("source_url") or ""
+        if url.startswith("http"):
+            opened.append(item)
+    objective = (facts.get("objective") or "").strip()
+    answered = ""
+    for line in objective.splitlines():
+        if line.lower().startswith("lee answered:"):
+            answered = line.split(":", 1)[-1].strip()
+    lines = [
+        "Business launch plan",
+        "Facts come from the request or from a page that was opened. Anything else is unresolved.",
+        "",
+        "Service",
+        "The request asks for a launch plan. The service is only what that request and the opened pages say.",
+        objective or "The request did not name a service.",
+        "",
+        "Target customer",
+        f"User-provided: {answered}" if answered else "Unresolved. The request did not name who pays.",
+        "",
+        "Problem",
+        "Unresolved. No opened page stated the customer's problem.",
+        "",
+        "Offer and positioning",
+        "Unresolved. No opened page stated an offer or how it differs from other providers.",
+        "",
+        "Competitor and market research",
+    ]
+    if not opened:
+        lines.append("Unresolved. No page was opened, so no competitor or market fact is stated.")
+    for item in opened:
+        meta = item.get("metadata") or {}
+        lines.append(item.get("source_title") or "Opened page")
+        lines.append(f"URL: {item.get('source_url')}")
+        retrieved = item.get("timestamp") or ""
+        if retrieved:
+            lines.append(f"Retrieved: {retrieved}")
+        excerpt = clip_at_boundary(item.get("extracted_content") or "", 2000)
+        if excerpt:
+            lines.append(excerpt)
+        lines.append(f"Label: {meta.get('freshness') or 'UNRESOLVED'}")
+        lines.append("")
+    lines += [
+        "Pricing",
+        "Unresolved. No opened page stated a price, so none is shown. A later number would be an assumption until a source states it.",
+        "",
+        "Channels",
+        "Unresolved as a researched fact. A direct conversation is the next step. Nothing was sent.",
+        "",
+        "Advert",
+        "Draft only, using the name in the request. This was not researched as a fact and it was not published.",
+        "Ask what the work includes and what it would cost before you decide.",
+        "",
+        "Call to action",
+        "Ask for a conversation. No booking was made. Nothing was sent.",
+        "",
+        "Next steps",
+        "Confirm the service and the customer with the owner, and do not publish a price that a page did not state.",
+        "",
+        "Assumptions",
+        "The business name is taken from the request. It is not evidence of demand.",
+        "",
+        "Unresolved",
+        "Problem, offer, positioning, price, and channels stay unresolved until a page or the owner supplies them.",
+        "Nothing was sent. No purchase was made.",
+    ]
+    return "\n".join(lines)
 
 
 def _suppliers(facts: dict) -> str:

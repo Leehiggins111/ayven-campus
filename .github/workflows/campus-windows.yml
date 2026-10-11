@@ -1,0 +1,248 @@
+name: campus-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/ayven-v2-workable-a9eb
+
+concurrency:
+  group: campus-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  campus-ollama:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    env:
+      AYVEN_ALLOW_ESCALATION: "0"
+      AYVEN_LLM_STUB: "0"
+      AYVEN_RESEARCH_MODE: live
+      AYVEN_LOCAL_LLM_BASE_URL: http://127.0.0.1:11434/v1
+      AYVEN_EMPLOYEE_MODEL: qwen3:4b
+      AYVEN_SUPERVISOR_MODEL: qwen3:4b
+      AYVEN_MANAGER_MODEL: qwen3:4b
+      AYVEN_LLM_TIMEOUT_S: "600"
+      AYVEN_ACCEPTANCE_JOB_TIMEOUT_S: "5400"
+      AYVEN_STAGE_TIMEOUT_S: "1200"
+      AYVEN_MAX_RESEARCH_SECONDS: "300"
+      AYVEN_MAX_RESEARCH_ROUNDS: "1"
+      AYVEN_MAX_ATTEMPTS: "1"
+      AYVEN_OLLAMA_THINK: "0"
+      AYVEN_ALLOW_CODE: "1"
+      AYVEN_ACCESS_KEY: campus-windows-gate
+      OLLAMA_NO_GPU: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            apps/api/requirements.txt
+            apps/api/requirements-frankenstein.txt
+            apps/api/requirements-documents.txt
+            apps/api/requirements-crawl.txt
+            apps/api/requirements-memory.txt
+            apps/api/requirements-pydantic-ai.txt
+            apps/api/constraints.txt
+
+      - name: Install Campus dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r apps/api/requirements.txt -r apps/api/requirements-frankenstein.txt -r apps/api/requirements-documents.txt -r apps/api/requirements-pydantic-ai.txt -c apps/api/constraints.txt
+          python -m pip install -r apps/api/requirements-crawl.txt -c apps/api/constraints.txt
+          python -m pip install -r apps/api/requirements-memory.txt
+          python -m pip install click==8.3.3 pillow==12.3.0 uvicorn
+
+      - name: Restore Ollama model cache
+        id: ollama-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen3-4b-${{ runner.os }}-v1
+
+      - name: Restore Ollama app cache
+        id: ollama-app
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ollama-app
+          key: ollama-windows-app-v0.40.2
+
+      - name: Fetch qwen3:4b blobs
+        id: fetch-model
+        timeout-minutes: 40
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $models = Join-Path $env:USERPROFILE ".ollama\models"
+          $manifestPath = Join-Path $models "manifests\registry.ollama.ai\library\qwen3\4b"
+          $blobDir = Join-Path $models "blobs"
+          New-Item -ItemType Directory -Force -Path (Split-Path $manifestPath) | Out-Null
+          New-Item -ItemType Directory -Force -Path $blobDir | Out-Null
+          $registry = "https://registry.ollama.ai/v2/library/qwen3"
+          Write-Host "models dir $models"
+          if (-not (Test-Path $manifestPath) -or (Get-Item $manifestPath).Length -lt 50) {
+            Write-Host "fetching manifest"
+            & curl.exe -fL --retry 5 --retry-all-errors --retry-delay 2 -H "Accept: application/vnd.docker.distribution.manifest.v2+json" -o $manifestPath "$registry/manifests/4b"
+            if ($LASTEXITCODE -ne 0) { throw "manifest download failed" }
+          }
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          $parts = New-Object System.Collections.Generic.List[object]
+          $parts.Add([pscustomobject]@{ digest = [string]$manifest.config.digest; size = [int64]$manifest.config.size })
+          foreach ($layer in @($manifest.layers)) {
+            $parts.Add([pscustomobject]@{ digest = [string]$layer.digest; size = [int64]$layer.size })
+          }
+          foreach ($part in $parts) {
+            $name = ([string]$part.digest).Replace(":", "-")
+            $dest = Join-Path $blobDir $name
+            $expected = [int64]$part.size
+            if ((Test-Path $dest) -and (Get-Item $dest).Length -eq $expected) {
+              Write-Host "present $name $expected"
+              continue
+            }
+            $partial = "$dest.partial"
+            if ((Test-Path $partial) -and (Get-Item $partial).Length -gt $expected) {
+              Remove-Item $partial -Force
+            }
+            $done = $false
+            foreach ($attempt in 1..8) {
+              Write-Host "attempt $attempt $name expected $expected"
+              $curlArgs = @("-fL", "--retry", "3", "--retry-all-errors", "--retry-delay", "2", "-o", $partial, "$registry/blobs/$($part.digest)")
+              if (Test-Path $partial) { $curlArgs = @("-fL", "--retry", "3", "--retry-all-errors", "--retry-delay", "2", "-C", "-", "-o", $partial, "$registry/blobs/$($part.digest)") }
+              $proc = Start-Process -FilePath "curl.exe" -ArgumentList $curlArgs -PassThru -NoNewWindow
+              $last = -1
+              $stalls = 0
+              while (-not $proc.HasExited) {
+                Start-Sleep -Seconds 15
+                $len = 0
+                if (Test-Path $partial) { $len = (Get-Item $partial).Length }
+                Write-Host ("progress {0} {1:N0}/{2:N0}" -f $name, $len, $expected)
+                if ($len -eq $last) { $stalls++ } else { $stalls = 0; $last = $len }
+                if ($stalls -ge 8) {
+                  Write-Host "stalled $name, restarting"
+                  try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+                  break
+                }
+              }
+              if ((Test-Path $partial) -and (Get-Item $partial).Length -eq $expected) {
+                Move-Item -Force $partial $dest
+                Write-Host "saved $name"
+                $done = $true
+                break
+              }
+              $got = 0
+              if (Test-Path $partial) { $got = (Get-Item $partial).Length }
+              Write-Host "incomplete $name exit=$($proc.ExitCode) size=$got"
+            }
+            if (-not $done) { throw "failed to fetch $name" }
+          }
+          Write-Host "qwen3:4b blobs ready"
+
+      - name: Install Ollama from the zip and serve the cached model
+        id: serve-model
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          function Receive-File([string]$url, [string]$dest) {
+            $partial = "$dest.partial"
+            foreach ($attempt in 1..6) {
+              Write-Host "attempt $attempt $url"
+              $curlArgs = @("-fL", "--retry", "3", "--retry-all-errors", "--retry-delay", "2", "-o", $partial, $url)
+              if (Test-Path $partial) {
+                $curlArgs = @("-fL", "--retry", "3", "--retry-all-errors", "--retry-delay", "2", "-C", "-", "-o", $partial, $url)
+              }
+              $proc = Start-Process -FilePath "curl.exe" -ArgumentList $curlArgs -PassThru -NoNewWindow
+              $last = -1
+              $stalls = 0
+              while (-not $proc.HasExited) {
+                Start-Sleep -Seconds 10
+                $len = 0
+                if (Test-Path $partial) { $len = (Get-Item $partial).Length }
+                Write-Host ("progress {0:N0}" -f $len)
+                if ($len -eq $last) { $stalls++ } else { $stalls = 0; $last = $len }
+                if ($stalls -ge 8) {
+                  Write-Host "stalled, restarting"
+                  try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+                  break
+                }
+              }
+              if ($proc.HasExited -and $proc.ExitCode -eq 0 -and (Test-Path $partial) -and (Get-Item $partial).Length -gt 1000000) {
+                Move-Item -Force $partial $dest
+                Write-Host "saved $dest"
+                return
+              }
+            }
+            throw "failed to download $url"
+          }
+          $env:OLLAMA_NO_GPU = "1"
+          $env:OLLAMA_MODELS = Join-Path $env:USERPROFILE ".ollama\models"
+          $env:OLLAMA_HOST = "127.0.0.1:11434"
+          Add-Content -Path $env:GITHUB_ENV -Value "OLLAMA_MODELS=$($env:OLLAMA_MODELS)"
+          Add-Content -Path $env:GITHUB_ENV -Value "OLLAMA_HOST=127.0.0.1:11434"
+          $appRoot = Join-Path $env:USERPROFILE ".ollama-app"
+          New-Item -ItemType Directory -Force -Path $appRoot | Out-Null
+          $ollama = Get-ChildItem -Path $appRoot -Recurse -Filter ollama.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $ollama) {
+            $zip = Join-Path $env:RUNNER_TEMP "ollama-windows-amd64.zip"
+            Receive-File "https://github.com/ollama/ollama/releases/download/v0.40.2/ollama-windows-amd64.zip" $zip
+            Write-Host "extracting ollama zip"
+            tar -xf $zip -C $appRoot
+            $ollama = Get-ChildItem -Path $appRoot -Recurse -Filter ollama.exe | Select-Object -First 1
+          }
+          if (-not $ollama) { throw "ollama.exe was not extracted" }
+          Write-Host "ollama.exe $($ollama.FullName)"
+          Get-ChildItem -Path $env:OLLAMA_MODELS -Recurse -File | ForEach-Object {
+            Write-Host ("model-file {0} {1}" -f $_.FullName.Replace($env:OLLAMA_MODELS, ""), $_.Length)
+          }
+          Get-Process | Where-Object { $_.ProcessName -match 'ollama' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Write-Host "starting serve"
+          Start-Process -FilePath $ollama.FullName -ArgumentList "serve" -WorkingDirectory $ollama.DirectoryName -WindowStyle Hidden
+          $ready = $false
+          foreach ($try in 1..30) {
+            try {
+              Invoke-RestMethod http://127.0.0.1:11434/api/tags | Out-Null
+              $ready = $true
+              break
+            } catch { Start-Sleep -Seconds 2 }
+          }
+          if (-not $ready) { throw "Ollama did not start" }
+          $names = @((Invoke-RestMethod http://127.0.0.1:11434/api/tags).models | ForEach-Object { $_.name })
+          Write-Host ("tags: " + ($names -join ", "))
+          if ($names -notcontains "qwen3:4b") { throw "qwen3:4b is not in ollama tags" }
+
+      - name: Save Ollama model cache
+        if: always() && steps.ollama-cache.outputs.cache-hit != 'true' && steps.fetch-model.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen3-4b-${{ runner.os }}-v1
+
+      - name: Save Ollama app cache
+        if: always() && steps.ollama-app.outputs.cache-hit != 'true' && steps.serve-model.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ollama-app
+          key: ollama-windows-app-v0.40.2
+
+      - name: Run Campus acceptance
+        timeout-minutes: 150
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }};${{ github.workspace }}\apps\api
+          AYVEN_ACCEPTANCE_DIR: ${{ github.workspace }}\acceptance-artifacts
+        run: python scripts/windows_campus_acceptance.py
+
+      - name: Upload Campus acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: campus-windows-acceptance
+          path: acceptance-artifacts/**
+          if-no-files-found: warn

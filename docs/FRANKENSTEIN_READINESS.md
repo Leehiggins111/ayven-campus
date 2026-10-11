@@ -1,8 +1,10 @@
 # Frankenstein readiness
 
-Version 1.1.1. This is the list of what the next GPU run actually exercises.
+Version 2.0.0. Readiness is **PARTIAL**. This is the list of what the next GPU run actually exercises. A GPU run of 2.0.0 has not happened, so this is not READY.
 
-Label for everything below that was executed here: **INTEGRATION TESTED. MODEL INTELLIGENCE UNTESTED.** No GPU was started. No paid API was enabled.
+Label for everything below that was executed here: **SYSTEM VERIFIED** for local integration. **MODEL INTELLIGENCE UNVERIFIED.** No GPU was started. No paid API was enabled.
+
+v2 additions on the same production path: typed tool boundary (llguidance when installed), entity targets, authority class, rerank, noise rejection, claim repair, employee self-check, completion contract, workflow state, approval on required escalation, campus brief, and a durable-export gate. Crawl4AI, DSPy, Langfuse, Garak, llm-guard, and a PDF parser are optional and not installed. Details: `docs/V2_ENGINEERING_HANDOFF.md`.
 
 | Capability | State | What actually runs |
 | --- | --- | --- |
@@ -11,7 +13,7 @@ Label for everything below that was executed here: **INTEGRATION TESTED. MODEL I
 | Iterative research | ACTIVE | The employee model plans the first queries from the objective and the skill text when a real model is loaded. Stub and no-model runs derive queries from the objective text only. Review runs after each round and may add a query or a gap. A reviewer exception is stored as a failure. Budgets: rounds, searches, pages, browser actions, time. |
 | Browser Use | ACTIVE | browser-use 0.13.10 plus system Chrome. Read and navigate only. HTTP fetch remains the default. A JS wall escalates when a browser function is available. Fixture hosts do not launch Chrome. |
 | MCP | ACTIVE | mcp 2.1.1 stdio client. Servers come from `AYVEN_MCP_SERVERS`. The validation harness points that config at `app.intelligence.mcp_local_server`. Read vs action is classified. Actions need a capability and approval. A dead server marks the call unavailable. |
-| Claim ledger | ACTIVE | Unchanged from 1.0.1. Statuses, entailment, supersession, empty evidence cannot stay supported. |
+| Claim ledger | ACTIVE | Statuses, entailment, supersession. Empty evidence cannot stay supported. v2 stores origin, contradicting evidence, authority, repair history, and verification history. A disproved material claim is repaired and demoted rather than published. |
 | Grounding | ACTIVE | Unsupported prices, URLs, and contacts are stripped before publication. |
 | Critic | ACTIVE | Deterministic critique of the draft against the ledger. |
 | Verifier | ACTIVE | Deterministic checks, including the door totals. |

@@ -61,13 +61,21 @@ def authoritative_decision(report: str, task_class: str, focus: str, attempt: in
             return "RETURN" if attempt < limit else "TAKE_OVER"
         if task_class == "internal_door_quote" and "no supplier is named" not in text and "http" not in text:
             return "TAKE_OVER"
+        if task_class == "business_research" and not _business_evidence_ok(report):
+            return "RETURN" if attempt < limit else "TAKE_OVER"
         return "ACCEPT"
     if focus in ("prospects", "draft"):
         if "nothing was sent" not in text and "sent: no" not in text:
             return "TAKE_OVER"
+        if task_class == "business_research" and focus == "draft" and not _business_draft_ok(report):
+            return "RETURN" if attempt < limit else "TAKE_OVER"
         return "ACCEPT"
     if focus == "trivial":
         return "ACCEPT"
+    if focus == "build":
+        if "tests: passed" in text and "nothing was sent" in text:
+            return "ACCEPT"
+        return "TAKE_OVER"
     return "ACCEPT"
 
 
@@ -91,7 +99,7 @@ def run_supervisor_attempts(decide, limit: int | None = None) -> dict:
     return {"decision": "RETURN", "path": path, "attempts": cap, "limited": True}
 
 
-def challenge_material_claims(claims: list[dict], evidence_blob: str = "", quote: dict | None = None, model_text: str = "") -> list[dict]:
+def challenge_material_claims(claims: list[dict], evidence_blob: str = "", quote: dict | None = None, model_text: str = "", objective: str = "") -> list[dict]:
     """Try to disprove material claims. A miss is recorded as STOOD, not skipped."""
     totals = set()
     if quote:
@@ -106,9 +114,13 @@ def challenge_material_claims(claims: list[dict], evidence_blob: str = "", quote
         challenge = "independent comparison with the evidence passage and the calculator"
         result = "STOOD"
         resolution = "The challenge did not disprove the claim."
+        follow = ""
         if claim.get("claim_type") == "MISSING_INFORMATION":
             challenge = "is this missing field being presented as a known fact"
             resolution = "It is a gap, so there is nothing to invent."
+        elif claim.get("claim_type") == "SOURCE_FAILURE":
+            challenge = "is this a failed retrieval rather than a fact"
+            resolution = "A failed fetch is a gap. It is not a contradicted fact."
         elif claim.get("claim_type") == "CALCULATION" and totals:
             mentioned = re.findall(r"\d+\.\d+", text)
             if mentioned and not any(amount in totals for amount in mentioned):
@@ -120,7 +132,14 @@ def challenge_material_claims(claims: list[dict], evidence_blob: str = "", quote
         else:
             nums = [n for n in re.findall(r"\d{3,}(?:\.\d+)?", text) if n not in ev and n not in corpus]
             urls = re.findall(r"https?://[^\s)>\]]+", text)
-            if urls and any(url.rstrip(".,") not in corpus and url.rstrip(".,") not in ev for url in urls):
+            entity_tokens = _entity_tokens(objective)
+            entity_blob = f"{text} {claim.get('source_url') or ''} {ev}".lower()
+            if claim.get("claim_type") == "ROUTE" and entity_tokens and not any(token in entity_blob for token in entity_tokens):
+                result = "DISPROVED"
+                challenge = "does the opened page name a requested entity"
+                resolution = "The opened page does not name a requested entity."
+                follow = _entity_follow_up(objective)
+            elif urls and any(url.rstrip(".,") not in corpus and url.rstrip(".,") not in ev for url in urls):
                 result = "DISPROVED"
                 challenge = "was this URL opened"
                 resolution = "The URL is not in the opened evidence."
@@ -144,6 +163,7 @@ def challenge_material_claims(claims: list[dict], evidence_blob: str = "", quote
             "result": result,
             "evidence": (ev or corpus)[:400],
             "resolution": resolution,
+            "follow_up": follow,
         })
     if model_text and totals:
         stray = []
@@ -165,6 +185,40 @@ def challenge_material_claims(claims: list[dict], evidence_blob: str = "", quote
                 "resolution": f"Removed model amounts {', '.join(stray)}. The calculator totals stand.",
             })
     return rows
+
+
+def _entity_tokens(objective: str) -> list[str]:
+    from .entity import extract_entities
+
+    tokens: list[str] = []
+    for target in extract_entities(objective or ""):
+        for word in re.findall(r"[a-z0-9]{4,}", (target.get("entity") or "").lower()):
+            if word not in tokens:
+                tokens.append(word)
+    return tokens
+
+
+def _entity_follow_up(objective: str) -> str:
+    from .entity import extract_entities
+
+    targets = extract_entities(objective or "")
+    if not targets:
+        return ""
+    return f"{targets[0]['entity']} official site"[:160]
+
+
+def _business_evidence_ok(report: str) -> bool:
+    """An evidence section with no opened page is not competitor research."""
+    lowered = (report or "").lower()
+    if "no page was opened" in lowered or "no fact is asserted" in lowered:
+        return False
+    return "http://" in lowered or "https://" in lowered
+
+
+def _business_draft_ok(report: str) -> bool:
+    from .deliverable import plan_sections_filled
+
+    return plan_sections_filled(report or "")
 
 
 def advisory_decision(model_text: str) -> str:

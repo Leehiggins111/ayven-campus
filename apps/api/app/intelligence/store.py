@@ -15,6 +15,12 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _trace_id() -> str:
+    from .observability import current_trace
+
+    return current_trace()
+
+
 def insert_package(**kw) -> str:
     pid = kw.get("id") or str(uuid.uuid4())
     ts = now()
@@ -89,31 +95,44 @@ def save_quality(package_id: str, payload: dict) -> None:
 
 
 def save_model_call(package_id: str, role: str, task_class: str, meta: dict, text: str) -> None:
+    """Store the reply verbatim. The parser hop is a later row, not a deleted one."""
     usage_prompt = int(meta.get("prompt_tokens") or 0)
     usage_completion = int(meta.get("completion_tokens") or meta.get("tokens") or 0)
+    raw = meta.get("raw_response")
+    if not isinstance(raw, str) or not raw:
+        raw = text or ""
     conn = connect()
     conn.execute(
         """INSERT INTO model_calls(
             id,package_id,role,model_id,provider,task_class,prompt_tokens,completion_tokens,
-            latency_s,est_cost_usd,backend,created_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            latency_s,est_cost_usd,backend,created_at,trace_id,response_text,finish_reason
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             str(uuid.uuid4()), package_id, role, meta.get("model") or meta.get("model_id") or "",
             meta.get("provider") or meta.get("backend") or "", task_class, usage_prompt, usage_completion,
             float(meta.get("elapsed_s") or meta.get("generation_s") or 0), float(meta.get("est_cost_usd") or 0),
             meta.get("backend") or meta.get("execution") or "", now(),
+            meta.get("trace_id") or _trace_id(),
+            raw,
+            str(meta.get("finish_reason") or ""),
         ),
     )
     conn.commit()
     conn.close()
-    del text
+
+
+def _stored_excerpt(text: str, limit: int = 2000) -> str:
+    """Keep a stored passage whole up to the limit, and never end it mid-word."""
+    from .deliverable import clip_at_boundary
+
+    return clip_at_boundary(strip_think(text or ""), limit)
 
 
 def save_source(package_id: str, url: str, title: str, snippet: str, note: str) -> None:
     conn = connect()
     conn.execute(
-        "INSERT INTO sources(id,package_id,url,title,snippet,note,created_at) VALUES(?,?,?,?,?,?,?)",
-        (str(uuid.uuid4()), package_id, url, title, strip_think(snippet)[:500], note, now()),
+        "INSERT INTO sources(id,package_id,url,title,snippet,note,created_at,trace_id) VALUES(?,?,?,?,?,?,?,?)",
+        (str(uuid.uuid4()), package_id, url, title, _stored_excerpt(snippet), note, now(), _trace_id()),
     )
     conn.commit()
     conn.close()
