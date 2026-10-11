@@ -231,7 +231,7 @@ def _door_section(user: str) -> str:
         )
     if "Name the channel." in user:
         return "Customers are reached through local search, where the owner posts one note about replacing kitchen doors, worktops and handles."
-    if "Ask the customer to take a step" in user:
+    if "Ask the reader to get in touch" in user:
         return "Ask for a visit and a written scope before any booking is made."
     if "Name the owner's next action." in user:
         return "The owner opens two supplier pages and writes down the prices they publish for the doors, worktops and handles."
@@ -1253,6 +1253,13 @@ def test_a_competitor_price_has_to_use_the_pages_own_words():
     promise = "Contact us today to schedule a free consultation and refresh the kitchen in one day."
     assert "free consultation" in unsupported_promise(promise, DOOR, titled)
     assert unsupported_promise(quoted, DOOR, titled) == ""
+    borrowed_figure = "Assumption: doors cost £950 for a full kitchen transformation including doors and worktops."
+    assert claim_mismatch(borrowed_figure, titled) != ""
+    from app.intelligence.deliverable import page_line_for_check
+
+    shown = page_line_for_check("The opened page states 'pay on completion' with the £ figure. The claim does not.", titled)
+    assert "£950" in shown
+    assert "pay on completion" in shown.lower()
 
 
 def test_a_page_price_without_a_spec_is_a_market_reference():

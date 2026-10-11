@@ -56,7 +56,7 @@ def _door_section(user: str) -> str:
         )
     if "Name the channel." in user:
         return "Customers are reached through local search, where the owner posts one note about replacing kitchen doors, worktops and handles."
-    if "Ask the customer to take a step" in user:
+    if "Ask the reader to get in touch" in user:
         return "Ask for a visit and a written scope before any booking is made."
     if "Name the owner's next action." in user:
         return "The owner opens two supplier pages and writes down the prices they publish for the doors, worktops and handles."
@@ -88,7 +88,7 @@ def _coffee_section(user: str) -> str:
         return "Assumption: the opened page did not state a durable coffee machine rental price, so a visit still has to see the office."
     if "Name the channel." in user:
         return "Customers are reached through local search, where the owner posts one note about coffee machine rental."
-    if "Ask the customer to take a step" in user:
+    if "Ask the reader to get in touch" in user:
         return "Ask for a visit and a written scope before any booking is made."
     if "Name the owner's next action." in user:
         return "The owner confirms which offices to visit and counts the coffee machines to rent."

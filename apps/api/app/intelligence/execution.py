@@ -1479,12 +1479,12 @@ def _section_jobs(objective: str) -> tuple:
         ("service", "Service", "Write one sentence. Name the service. Use the request's own words. Do not use a business name that appears only on an opened page." + shared, "The service "),
         ("target customer", "Target customer", "Write one sentence. Name the customer." + shared, "The customer is "),
         ("problem", "Problem", "Write one or two sentences. Name the problem." + shared, "The problem is "),
-        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs." + shared, "The offer "),
+        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs. Do not use a business name that appears only on an opened page." + shared, "The offer "),
         ("competitor and market research", "Competitor and market research", "Write two sentences. In each sentence name one opened page by its site and state the £ figure in that page's own words. Do not add a unit or a product the page does not use. Do not use a £ figure that is not written on that page." + shared, "Opened pages state "),
         ("pricing", "Pricing", "Write one line for each part. Start each line with Assumption. A £ figure on an opened page is a market reference. Use that page's own words for the product, the unit, and any exclusion. Do not add a unit or a product the page does not use. When no opened page states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, "Assumption: "),
         ("channels", "Channels", "Write one sentence. Name the channel. Say what the owner does there. Do not mention hours." + shared, "Customers are reached through "),
-        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\n" + shared, ""),
-        ("call to action", "Call to action", "Write one sentence. Ask the customer to take a step." + shared, "Ask "),
+        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\nDo not use a business name that appears only on an opened page.\n" + shared, ""),
+        ("call to action", "Call to action", "Write one sentence. Ask the reader to get in touch. Do not name the person who wrote the request. Do not use a business name that appears only on an opened page." + shared, "Ask "),
         ("next steps", "Next steps", "Write one sentence. Name the owner's next action. Do not name a service area." + shared, "The owner phones "),
         ("assumptions", "Assumptions", "Write one sentence. Name one assumption." + shared, "The plan assumes "),
         ("unresolved", "Unresolved", "Write one sentence. Name one open fact." + shared, "Still open: "),
@@ -1563,17 +1563,22 @@ def _check_for_model(reason: str) -> str:
         return "The name comes from an opened page, not from the request. Use the request's own words."
     if "promises '" in lowered:
         return "The previous line promised something the request does not say. Do not repeat that promise."
+    if "does not ask the customer" in lowered or "names the person who wrote" in lowered:
+        return "Ask the reader to get in touch. Do not name the person who wrote the request."
     return text
 
 
-def _section_prompt(instruction: str, attempt: int, reason: str, prices: str) -> str:
+def _section_prompt(instruction: str, attempt: int, reason: str, prices: str, page_line: str = "") -> str:
     """Evidence stays the prefix so a later section reuses it. The retry names the failed check."""
     if attempt <= 1:
         tail = instruction
     else:
+        shown = page_line.strip()
+        extra = f"{shown}\n" if shown else ""
         tail = (
             "The previous answer was rejected and was not stored.\n"
             f"Check: {_check_for_model(reason)}\n"
+            f"{extra}"
             "Write the finished lines only. Do not repeat a rejected claim.\n"
             + instruction
         )
@@ -1630,7 +1635,10 @@ def _section_evidence(programme: Programme, key: str = "") -> str:
 
 def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1, reason: str = "") -> tuple[str, str, dict]:
     prices = _section_evidence(programme, key)
-    user = _section_prompt(instruction, attempt, reason, prices)
+    from .deliverable import evidence_blob, page_line_for_check
+
+    page_line = page_line_for_check(reason, evidence_blob(programme.research.get("evidence")))
+    user = _section_prompt(instruction, attempt, reason, prices, page_line)
     limit, stop = _section_budget(key, attempt)
     text, _tokens, meta = _complete(
         "EMPLOYEE",
@@ -1708,6 +1716,7 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             sections[key] = ""
     rejected: dict[str, str] = {}
     advert_rest = ("", "")
+    hours_rejected = False
     for _pass in range(3):
         pending = [job for job in jobs if _section_missing(job[0], sections.get(job[0]) or "", blob, programme.objective)]
         if not pending:
@@ -1719,8 +1728,11 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             if key == "advert" and attempt > 1 and advert_rest[0] and advert_rest[1]:
                 use_instruction = "Write one line only. Start with Headline:. Name the result for the customer."
                 use_prefill = "Headline: "
-            elif key == "channels" and attempt > 1 and "24/7" in (rejected.get(key) or "").lower():
+            elif key == "channels" and attempt > 1 and (
+                hours_rejected or "24/7" in (rejected.get(key) or "").lower() or "availability" in (rejected.get(key) or "").lower()
+            ):
                 use_prefill = "The owner uses "
+                use_instruction = instruction + " Do not claim that the service is available at all hours."
             written, raw, meta = _write_one_section(
                 programme, key, title, use_instruction, prefill=use_prefill, attempt=attempt, reason=rejected.get(key, ""),
             )
@@ -1734,6 +1746,8 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept", attempt=attempt)
             if reason:
                 rejected[key] = reason
+                if key == "channels" and ("24/7" in reason.lower() or "availability" in reason.lower()):
+                    hours_rejected = True
                 if key == "advert":
                     body, cta = _advert_saved_lines(raw)
                     if body and cta:

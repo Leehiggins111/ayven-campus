@@ -873,6 +873,25 @@ def _pricing_omits_page_figure(body: str, blob: str) -> str:
     return "An opened page states a £ figure. The pricing section does not use it."
 
 
+def page_line_for_check(reason: str, blob: str) -> str:
+    """The opened sentence the failed check named. The model still writes the section."""
+    match = re.search(r"states '([^']+)'", reason or "", re.I)
+    if not match:
+        return ""
+    phrase = match.group(1).lower()
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", blob or ""):
+        if phrase in sentence.lower() and "£" in sentence:
+            return "The opened page says: " + re.sub(r"\s+", " ", sentence).strip()[:360]
+    return ""
+
+
+def names_requester(body: str, objective: str) -> str:
+    for name in requester_names(objective):
+        if name and re.search(rf"\b{re.escape(name)}\b", body or "", re.I):
+            return "The section names the person who wrote the request."
+    return ""
+
+
 def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -> str:
     """A readable reason this check failed. Empty when the section passes."""
     if not (raw or "").strip():
@@ -1474,6 +1493,14 @@ def claim_mismatch(sentence: str, blob: str) -> str:
         return ""
     named = [url for url, _text in _pages_in_blob(blob) if url and _names_opened_page(sentence, url)]
     if not named:
+        # A planning line that uses a page's figure still has to use that page's words.
+        holders: list[str] = []
+        for number in _claimed_numbers(sentence):
+            for url, text in _pages_in_blob(blob):
+                if url and _number_on_page(number, text) and url not in holders:
+                    holders.append(url)
+        if len(holders) == 1:
+            return _mismatch_against(sentence, _page_text(blob, holders[0]))
         return ""
     if len(named) > 1:
         pieces = re.split(r"\b(?:and|while|whereas)\b", sentence or "", flags=re.I)
@@ -1598,6 +1625,9 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
     elif key == "competitor and market research":
         return _competitor_prices(body, blob)
     elif key == "call to action":
+        named_owner = names_requester(body, objective)
+        if named_owner:
+            return named_owner
         if _sells_avoided(body, objective):
             return "The call to action asks for the alternative the service avoids."
         if not _ASK.search(lowered):

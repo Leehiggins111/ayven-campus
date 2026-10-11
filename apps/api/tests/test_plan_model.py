@@ -366,7 +366,8 @@ def test_a_price_must_name_its_page_unless_it_is_labelled_an_assumption():
         blob,
         door,
     )
-    assert "without naming the opened page" in unlinked
+    assert unlinked
+    assert "without naming the opened page" in unlinked or "opened page does not" in unlinked
     linked = section_rejection(
         "competitor and market research",
         "Refresh Kitchen charges £950 for a complete kitchen refresh.",
