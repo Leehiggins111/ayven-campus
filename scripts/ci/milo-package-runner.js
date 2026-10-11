@@ -120,6 +120,7 @@ function diagnosticLines(output) {
     const line = redact(raw);
     if (!line) continue;
     if (/^(def |class |function |const |import )/.test(line)) continue;
+    if (line.includes("$") || /^\d+\s*\|/.test(line)) continue;
     if (/ERROR:|error:|Failed|Could not|No matching|No module named|not recognized|requirements|Cannot find|exit code/i.test(line)) {
       kept.push(line);
     }
@@ -421,12 +422,14 @@ async function main() {
     process.exit(1);
   }
   const vars = { workspace: path.dirname(milo), miloSha, temp, campus };
-  const campusLink = path.join(milo, "campus");
-  if (campus && milo && !fs.existsSync(campusLink)) {
-    try {
-      fs.symlinkSync(campus, campusLink, "junction");
-    } catch {
-      // The embed step can still use CAMPUS_DIR when the link cannot be created.
+  if (campus && milo) {
+    for (const dest of [path.join(milo, "campus"), path.join(milo, "campus-src"), path.join(path.dirname(milo), "campus-src")]) {
+      if (fs.existsSync(dest)) continue;
+      try {
+        fs.symlinkSync(campus, dest, "junction");
+      } catch {
+        // The embed step can still use CAMPUS_DIR when the link cannot be created.
+      }
     }
   }
   const preludeOk = runPrelude(milo, vars);
