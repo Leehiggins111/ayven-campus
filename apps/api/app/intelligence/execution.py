@@ -1377,31 +1377,29 @@ def _price_notes(programme: Programme) -> str:
 
 
 def _section_jobs(objective: str) -> tuple:
-    """One focused prompt per section. The shape is described, not copied from another trade."""
-    from .deliverable import covered_items, distinctive_terms
+    """One focused prompt per section. The stem is the start of the sentence, not a second trade."""
+    from .deliverable import covered_items, service_brief
 
-    words = ", ".join(distinctive_terms(objective)[:8]) or "the service in the objective"
+    brief = service_brief(objective)
     parts = covered_items(objective)
     labeled = ", ".join(parts) if parts else "the service"
     shared = (
-        f"\nService words: {words}.\n"
-        "Use those words in the finished sentence. Do not quote a sentence from the objective. "
-        "Do not name a person. Do not name a trade this request does not name. "
-        "Do not say let's, I think, we need to, or the user.\n"
+        f"\nRequest: {brief}\n"
+        "Finish the sentence for the owner. Do not quote the request. Do not describe this task.\n"
     )
     return (
-        ("service", "Service", "Write one sentence. Name the service. Say what the customer gets." + shared, ""),
-        ("target customer", "Target customer", "Write one sentence. Name the customer. Name the kind of buyer this request is for." + shared, ""),
-        ("problem", "Problem", "Write one sentence. Name the problem. Name the cost, the delay, or the waste the buyer faces." + shared, ""),
-        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs, using differs, instead, or without." + shared, ""),
-        ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages. State a £ figure each page gives. Use only figures from the list below." + shared, ""),
-        ("pricing", "Pricing", "Write one assumption line for each part. Label each part. Start each line with Assumption:. If the price list gives a £ figure for that part, copy that figure. If it does not, write not stated on an opened page. Do not write not stated for a part the list already prices. Parts: " + labeled + "." + shared, ""),
-        ("channels", "Channels", "Write one sentence. Name the channel. Name a different action the owner takes there, such as post, phone, or send." + shared, ""),
-        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline: a short promise using the service words.\nBody: one sentence about the result for the customer.\nCall to action: one sentence that asks the customer to phone, email, or ask for a quote.\nDo not describe these lines. Write them." + shared, ""),
-        ("call to action", "Call to action", "Write one sentence. Ask the customer to take a step: phone, email, or ask for a quote. Do not ask them to confirm the request." + shared, ""),
-        ("next steps", "Next steps", "Write one sentence. Name the owner's next action. Use phone, measure, or write. It is not the service itself." + shared, ""),
-        ("assumptions", "Assumptions", "Write one sentence. Name one assumption. Say what still has to be checked on a visit." + shared, ""),
-        ("unresolved", "Unresolved", "Write one sentence. Name one open fact. The objective does not settle it." + shared, ""),
+        ("service", "Service", "Write one sentence. Name the service." + shared, "The service "),
+        ("target customer", "Target customer", "Write one sentence. Name the customer." + shared, "The customer is "),
+        ("problem", "Problem", "Write one sentence. Name the problem." + shared, "The problem is "),
+        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer." + shared, "The offer "),
+        ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages. State the £ figure each page gives." + shared, "Opened pages state "),
+        ("pricing", "Pricing", "Write one assumption line for each part. Label each part. Copy a £ figure from the price list when that list prices the part. Write not stated on an opened page only when it does not. Parts: " + labeled + "." + shared, "Assumption: "),
+        ("channels", "Channels", "Write one sentence. Name the channel. Say what the owner does there." + shared, "Customers are reached through "),
+        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\n" + shared, ""),
+        ("call to action", "Call to action", "Write one sentence. Ask the customer to take a step." + shared, "Ask "),
+        ("next steps", "Next steps", "Write one sentence. Name the owner's next action." + shared, "The owner "),
+        ("assumptions", "Assumptions", "Write one sentence. Name one assumption." + shared, "The plan assumes "),
+        ("unresolved", "Unresolved", "Write one sentence. Name one open fact." + shared, "Still open: "),
     )
 
 
@@ -1483,9 +1481,10 @@ def _section_prompt(instruction: str, attempt: int, reason: str, prices: str) ->
 
 
 def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1, reason: str = "") -> tuple[str, str, dict]:
-    prices = ""
-    if title in ("Pricing", "Competitor and market research"):
-        prices = f"\nPrices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+    prices = (
+        f"\nOpened pages:\n{_opened_index(programme) or 'None.'}\n"
+        f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+    )
     user = _section_prompt(instruction, attempt, reason, prices)
     limit, stop = _section_budget(key, attempt)
     text, _tokens, meta = _complete(
@@ -1552,6 +1551,15 @@ def _clean_headline(raw: str) -> str:
 def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict:
     """Ask for each missing section on its own, at most three times. Return the reason each check still failed."""
     jobs = _section_jobs(programme.objective)
+    for key, _title, _instruction, _prefill in jobs:
+        raw = sections.get(key) or ""
+        if not raw.strip():
+            continue
+        cleaned = _section_body(raw, key, programme.objective)
+        if cleaned and not _section_missing(key, cleaned, blob, programme.objective):
+            sections[key] = cleaned
+        else:
+            sections[key] = ""
     rejected: dict[str, str] = {}
     advert_rest = ("", "")
     for _pass in range(3):

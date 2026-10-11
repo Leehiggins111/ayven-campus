@@ -805,6 +805,41 @@ def test_owner_review_rejects_meta_echo_and_a_single_part_price(monkeypatch):
     assert "bicycle" not in prompts
     assert "chains" not in prompts
     assert "alex" not in prompts
+    echoed_task = section_rejection(
+        "target customer",
+        "They need me to name a customer, specify the kind of buyer, and use certain service words: replaces, kitchen, doors.",
+        page,
+        objective,
+    )
+    assert echoed_task
+    contradictory = section_rejection(
+        "problem",
+        "Replacing kitchen doors without avoiding full replacement of worktops and handles results in cost and delay.",
+        page,
+        objective,
+    )
+    assert contradictory
+    sold = section_rejection(
+        "offer and positioning",
+        "This full kitchen replacement service differs by replacing doors and worktops instead of handles.",
+        page,
+        objective,
+    )
+    assert "alternative" in sold.lower() or "differs" in sold.lower()
+    full_quote = section_rejection(
+        "advert",
+        "Headline: Kitchen doors replaced\nBody: The work avoids a full kitchen replacement and keeps the cabinets.\nCall to action: Call us for a full replacement quote today.",
+        page,
+        objective,
+    )
+    assert full_quote
+    meta_cta = section_rejection(
+        "call to action",
+        'ask for a quote" might be tricky because it could imply a quote, but in this context it is for the rental.',
+        "Rental coffee machines from £10 a week.",
+        coffee,
+    )
+    assert meta_cta
 
 
 def test_an_unsupported_percentage_is_rejected():

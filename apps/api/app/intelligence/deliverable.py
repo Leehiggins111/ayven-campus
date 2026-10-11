@@ -423,8 +423,10 @@ def narration_reason(line: str) -> str:
     compact = re.sub(r"\s+", "", lowered)
     if re.search(r"(.{1,4})\1{6,}", compact):
         return "The line is repeated characters, not a sentence."
-    if re.search(r"\b(let's|let’s|i think|we need to|the user)\b", lowered):
+    if re.search(r"\b(let's|let’s|i think|we need to|the user|they need me|service words|kind of buyer|in this context|might be tricky|without avoiding|full damage)\b", lowered):
         return "The line is model self-talk, not a sentence the owner can use."
+    if re.search(r"\b(name a customer|name a problem|name the owner|name two opened|crafting the|looking at the prices)\b", lowered):
+        return "The section describes the task instead of answering it."
     if re.search(r"\b(does not imply|do not imply|service name that|hours or availability)\b", lowered):
         return "The line repeats the instruction instead of answering it."
     if "24/7" in lowered:
@@ -1040,6 +1042,13 @@ def _competitor_prices(body: str, blob: str) -> str:
     return ""
 
 
+def _sells_avoided(body: str, objective: str) -> bool:
+    """The offer or the advert must not sell the alternative the request says to avoid."""
+    if not re.search(r"\bavoid(?:s|ing)? a full\b", objective or "", re.I):
+        return False
+    return bool(re.search(r"\bfull (?:kitchen )?replacement (?:service|quote)\b", body or "", re.I))
+
+
 def _offer_differs(body: str, objective: str) -> bool:
     """A contrast word counts only when the request did not already use it."""
     for marker in _CONTRAST:
@@ -1061,6 +1070,8 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         if not any(_has_word(lowered, cue) for cue in _PROBLEM_BURDEN):
             return "The section does not state a concrete problem."
     elif key == "offer and positioning":
+        if _sells_avoided(body, objective):
+            return "The section describes the alternative as the service."
         if not _offer_differs(body, objective):
             return "The section does not state what is sold and how it differs."
     elif key == "channels":
@@ -1081,11 +1092,15 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
     elif key == "competitor and market research":
         return _competitor_prices(body, blob)
     elif key == "call to action":
+        if _sells_avoided(body, objective):
+            return "The call to action asks for the alternative the service avoids."
         if not _ASK.search(lowered):
             return "The call to action does not ask the customer to take a step."
         if len(lowered.strip()) < 20:
             return "The call to action is too short to use."
     elif key == "advert":
+        if _sells_avoided(body, objective):
+            return "The call to action asks for the alternative the service avoids."
         match = re.search(r"call to action\s*:\s*(.+)", body or "", re.I)
         cta = match.group(1) if match else ""
         if cta and _confirm_request(cta):
