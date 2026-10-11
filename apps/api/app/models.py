@@ -1,9 +1,11 @@
 """Configurable workforce model roles. Never hard-code a size forever."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
+from pathlib import Path
 
 from . import llm
 
@@ -25,6 +27,11 @@ def set_role_generator(fn):
 
 def role_model(role: str) -> str:
     return DEFAULT_MODELS.get(role.upper(), DEFAULT_MODELS["EMPLOYEE"])
+
+
+def plan_model() -> str:
+    """Plan-writing model. Empty means the employee model. Read when the call is made."""
+    return (os.environ.get("AYVEN_PLAN_MODEL") or "").strip()
 
 
 def local_base() -> str:
@@ -55,6 +62,42 @@ def log_generation(role: str, meta: dict, raw: str) -> None:
     )
 
 
+def note_eval_call(meta: dict) -> None:
+    """Append one call when a model eval is running. Unset in normal use."""
+    path = (os.environ.get("AYVEN_EVAL_CALL_LOG") or "").strip()
+    if not path:
+        return
+    row = {
+        "model": meta.get("model") or "",
+        "role": meta.get("role") or "",
+        "prompt_tokens": int(meta.get("prompt_tokens") or 0),
+        "completion_tokens": int(meta.get("completion_tokens") or 0),
+        "prompt_eval_s": float(meta.get("prompt_eval_s") or 0),
+        "eval_s": float(meta.get("eval_s") or 0),
+        "load_s": float(meta.get("load_s") or 0),
+        "elapsed_s": float(meta.get("elapsed_s") or 0),
+        "finish_reason": meta.get("finish_reason") or "",
+        "error": meta.get("error") or "",
+        "num_ctx": int(meta.get("num_ctx") or 0),
+    }
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row) + "\n")
+    except OSError:
+        return
+
+
+def _lift_timings(meta: dict, source: dict | None) -> None:
+    source = source or {}
+    for key in ("prompt_eval_s", "eval_s", "load_s", "num_ctx", "prompt_chars", "temperature"):
+        if key in source and key not in meta:
+            meta[key] = source[key]
+    if "num_ctx" not in meta and source.get("num_ctx"):
+        meta["num_ctx"] = source["num_ctx"]
+
+
 def _emit(role: str, text: str, tokens: int, meta: dict, raw: str | None = None):
     from .intelligence.think import strip_think
 
@@ -62,12 +105,13 @@ def _emit(role: str, text: str, tokens: int, meta: dict, raw: str | None = None)
     meta["raw_response"] = shown
     meta["completion_tokens"] = int(meta.get("completion_tokens") or tokens or 0)
     log_generation(role, meta, shown)
+    note_eval_call(meta)
     return strip_think(text or ""), tokens, meta
 
 
-def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None):
+def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, model: str | None = None):
     started = time.time()
-    model = role_model(role)
+    model = (model or "").strip() or role_model(role)
     meta = {"role": role.upper(), "model": model, "backend": "stub", "elapsed_s": 0.0, "provider": "ayven"}
     if role.upper() == "ESCALATION" and not escalation_configured():
         text = "Frontier escalation is disabled. AYVEN_ALLOW_ESCALATION=0. No paid API call was made."
@@ -93,6 +137,7 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
         meta["finish_reason"] = (constrained or {}).get("finish_reason") or ""
         meta["prompt_tokens"] = int((constrained or {}).get("prompt_tokens") or 0)
         meta["completion_tokens"] = int(tokens or 0)
+        _lift_timings(meta, constrained)
         return _emit(role, text, tokens, meta, raw=(constrained or {}).get("raw_response") or text)
     if role.upper() == "ESCALATION" and escalation_configured():
         text, tokens = llm.complete(system, user, max_tokens=max_tokens)
@@ -141,25 +186,81 @@ def ollama_raw_prompt(system: str, user: str, prefill: str = "") -> str:
     )
 
 
-def ollama_native_body(model: str, system: str, user: str, max_tokens: int, prefill: str = "", stop=None, ollama_format=None) -> dict:
-    """Native /api/generate with raw ChatML. The OpenAI route cannot turn qwen3 thinking off."""
-    predict = max(int(max_tokens or 0), 64)
+def _ollama_num_ctx(predict: int) -> int:
+    """Default context stays 8192. AYVEN_NUM_CTX is an eval override, read at call time."""
+    raw = (os.environ.get("AYVEN_NUM_CTX") or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return max(int(raw), predict + 64)
+    return max(8192, predict + 4096)
+
+
+def _ollama_temperature() -> float:
+    raw = (os.environ.get("AYVEN_TEMPERATURE") or "").strip()
+    if not raw:
+        return 0.2
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.2
+    if 0 <= value <= 2:
+        return value
+    return 0.2
+
+
+def uses_qwen_chatml(model: str) -> bool:
+    """Qwen is prompted with a closed think block. Other models use Ollama's own chat template."""
+    forced = (os.environ.get("AYVEN_OLLAMA_CHATML") or "").strip().lower()
+    if forced in {"1", "true", "yes"}:
+        return True
+    if forced in {"0", "false", "no"}:
+        return False
+    return "qwen" in (model or "").lower()
+
+
+def _ollama_options(predict: int, stop) -> dict:
     stops = ["<|im_end|>", "<|im_start|>"]
     for item in stop or []:
         if item and item not in stops:
             stops.append(item)
+    return {
+        "num_predict": predict,
+        "num_ctx": _ollama_num_ctx(predict),
+        "temperature": _ollama_temperature(),
+        "stop": stops,
+    }
+
+
+def ollama_native_body(model: str, system: str, user: str, max_tokens: int, prefill: str = "", stop=None, ollama_format=None) -> dict:
+    """Native /api/generate with raw ChatML. The OpenAI route cannot turn qwen3 thinking off."""
+    predict = max(int(max_tokens or 0), 64)
     body = {
         "model": model,
         "prompt": ollama_raw_prompt(system, user, prefill),
         "raw": True,
         "stream": False,
         "think": ollama_thinking_enabled(),
-        "options": {
-            "num_predict": predict,
-            "num_ctx": max(8192, predict + 4096),
-            "temperature": 0.2,
-            "stop": stops,
-        },
+        "options": _ollama_options(predict, stop),
+    }
+    if ollama_format:
+        body["format"] = ollama_format
+    return body
+
+
+def ollama_chat_body(model: str, system: str, user: str, max_tokens: int, prefill: str = "", stop=None, ollama_format=None) -> dict:
+    """Ollama chat for a model that is not Qwen. The server applies that model's template."""
+    predict = max(int(max_tokens or 0), 64)
+    messages = []
+    if (system or "").strip():
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": user or ""})
+    if (prefill or "").strip():
+        messages.append({"role": "assistant", "content": prefill})
+    body = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "think": ollama_thinking_enabled(),
+        "options": _ollama_options(predict, stop),
     }
     if ollama_format:
         body["format"] = ollama_format
@@ -233,6 +334,16 @@ def _ollama_root(base: str) -> str:
 def ollama_generation(payload: dict, elapsed_s: float = 0.0) -> dict:
     """finish_reason, token counts, timing, and the response field before any filter."""
     raw = payload.get("response") if isinstance(payload.get("response"), str) else ""
+    if not raw:
+        message = payload.get("message") or {}
+        content = message.get("content") if isinstance(message, dict) else ""
+        if isinstance(content, str):
+            raw = content
+    def _seconds(value) -> float:
+        if isinstance(value, (int, float)) and value > 0:
+            return round(float(value) / 1_000_000_000, 4)
+        return 0.0
+
     duration = payload.get("total_duration")
     if isinstance(duration, (int, float)) and duration > 0:
         elapsed_s = round(float(duration) / 1_000_000_000, 3)
@@ -242,6 +353,9 @@ def ollama_generation(payload: dict, elapsed_s: float = 0.0) -> dict:
         "prompt_tokens": int(payload.get("prompt_eval_count") or 0),
         "completion_tokens": int(payload.get("eval_count") or 0),
         "elapsed_s": round(float(elapsed_s or 0), 3),
+        "prompt_eval_s": _seconds(payload.get("prompt_eval_duration")),
+        "eval_s": _seconds(payload.get("eval_duration")),
+        "load_s": _seconds(payload.get("load_duration")),
     }
 
 
@@ -256,7 +370,8 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
             system = message.get("content") or ""
         elif message.get("role") == "user":
             user = message.get("content") or ""
-    url = f"{_ollama_root(base)}/api/generate"
+    chatml = uses_qwen_chatml(model)
+    url = f"{_ollama_root(base)}/api/generate" if chatml else f"{_ollama_root(base)}/api/chat"
     first = max(int(max_tokens or 0), 64)
     # The second call runs when the first answer is empty, or when the token budget
     # was spent inside an unfinished note and no answer was closed.
@@ -265,12 +380,31 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
     last_trace = ollama_generation({})
     salvage: tuple[str, dict] | None = None
     for predict in budgets:
-        body = ollama_native_body(model, system, user, predict, prefill=prefill, stop=stop, ollama_format=ollama_format)
+        if chatml:
+            body = ollama_native_body(model, system, user, predict, prefill=prefill, stop=stop, ollama_format=ollama_format)
+        else:
+            body = ollama_chat_body(model, system, user, predict, prefill=prefill, stop=stop, ollama_format=ollama_format)
         started = time.time()
-        response = httpx.post(url, json=body, timeout=timeout)
+        try:
+            response = httpx.post(url, json=body, timeout=timeout)
+        except httpx.TimeoutException:
+            note_eval_call({
+                "model": model,
+                "error": "timeout",
+                "finish_reason": "timeout",
+                "elapsed_s": round(time.time() - started, 3),
+                "num_ctx": int((body.get("options") or {}).get("num_ctx") or 0),
+            })
+            raise
         response.raise_for_status()
         data = response.json()
         last_trace = ollama_generation(data, time.time() - started)
+        last_trace["num_ctx"] = int((body.get("options") or {}).get("num_ctx") or 0)
+        last_trace["temperature"] = (body.get("options") or {}).get("temperature")
+        if chatml:
+            last_trace["prompt_chars"] = len(body.get("prompt") or "")
+        else:
+            last_trace["prompt_chars"] = sum(len((item.get("content") or "")) for item in body.get("messages") or [])
         text = ollama_answer(data)
         if not text:
             log_generation("ollama", last_trace, last_trace.get("raw_response") or "")

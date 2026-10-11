@@ -519,7 +519,7 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         ("Name the service.", answers["Service"]),
     )
 
-    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None):
+    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None, plan=False):
         for marker, answer in by_marker:
             if marker in user:
                 return answer, 12, {"backend": "test"}
@@ -662,7 +662,7 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
         ("Name the service.", "Alba Kitchen Refresh paints and resprays the kitchen cabinets a household already owns."),
     )
 
-    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None):
+    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None, plan=False):
         if "Name the channel." in user:
             if "was rejected" in user:
                 return "Homeowners are reached through local search, in a conversation about painting their kitchen cabinets.", 8, {"backend": "test"}

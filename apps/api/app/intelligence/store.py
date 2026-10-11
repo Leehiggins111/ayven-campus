@@ -105,8 +105,9 @@ def save_model_call(package_id: str, role: str, task_class: str, meta: dict, tex
     conn.execute(
         """INSERT INTO model_calls(
             id,package_id,role,model_id,provider,task_class,prompt_tokens,completion_tokens,
-            latency_s,est_cost_usd,backend,created_at,trace_id,response_text,finish_reason
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            latency_s,est_cost_usd,backend,created_at,trace_id,response_text,finish_reason,
+            prompt_eval_s,eval_s,load_s
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             str(uuid.uuid4()), package_id, role, meta.get("model") or meta.get("model_id") or "",
             meta.get("provider") or meta.get("backend") or "", task_class, usage_prompt, usage_completion,
@@ -115,6 +116,9 @@ def save_model_call(package_id: str, role: str, task_class: str, meta: dict, tex
             meta.get("trace_id") or _trace_id(),
             raw,
             str(meta.get("finish_reason") or ""),
+            float(meta.get("prompt_eval_s") or (meta.get("constrained") or {}).get("prompt_eval_s") or 0),
+            float(meta.get("eval_s") or (meta.get("constrained") or {}).get("eval_s") or 0),
+            float(meta.get("load_s") or (meta.get("constrained") or {}).get("load_s") or 0),
         ),
     )
     conn.commit()

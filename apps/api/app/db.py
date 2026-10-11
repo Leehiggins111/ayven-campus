@@ -48,6 +48,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_v21(conn)
     migrate_v22(conn)
     migrate_v23(conn)
+    migrate_v24(conn)
 
 
 SEED_AGENTS = [
@@ -280,6 +281,12 @@ def migrate_v21(conn: sqlite3.Connection) -> None:
 def migrate_v23(conn: sqlite3.Connection) -> None:
     """Keep the model reply that was parsed. Additive only."""
     _add_columns(conn, "model_calls", {"response_text": "TEXT", "finish_reason": "TEXT"})
+    conn.commit()
+
+
+def migrate_v24(conn: sqlite3.Connection) -> None:
+    """Prompt-eval, generation, and load durations. Additive only."""
+    _add_columns(conn, "model_calls", {"prompt_eval_s": "REAL", "eval_s": "REAL", "load_s": "REAL"})
     conn.commit()
 
 

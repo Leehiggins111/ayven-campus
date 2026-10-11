@@ -462,7 +462,7 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
     )
     seen = []
 
-    def fake(role, system, user, max_tokens=400, programme=None, package_id="", plain=False, prefill="", stop=None, expand_unfinished=True, ollama_format=None):
+    def fake(role, system, user, max_tokens=400, programme=None, package_id="", plain=False, prefill="", stop=None, expand_unfinished=True, ollama_format=None, plan=False):
         seen.append(user)
         if "was rejected" in user:
             assert "24/7" not in user

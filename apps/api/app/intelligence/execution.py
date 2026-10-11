@@ -71,14 +71,16 @@ def _set_agent(agent_id: str, **fields) -> None:
     conn.close()
 
 
-def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None):
-    from ..models import complete_role
+def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, plan: bool = False):
+    from ..models import complete_role, plan_model
 
-    if plain:
+    override = plan_model() if plan else ""
+    if plain or override:
         try:
             text, tokens, meta = complete_role(
                 role, system, user, max_tokens=max_tokens, prefill=prefill, stop=stop,
                 expand_unfinished=expand_unfinished, ollama_format=ollama_format,
+                model=override or None,
             )
         except Exception as exc:
             trace = getattr(exc, "trace", None) or {}
@@ -926,7 +928,11 @@ def _finish_roles(programme: Programme) -> None:
                 programme.bind(role, prompt["id"], text, meta)
                 continue
             limit = int(prompt.get("max_tokens") or (320 if role != "MANAGER" else 480))
-            text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=limit, programme=programme, package_id=prompt["id"])
+            plan_write = False
+            if role == "EMPLOYEE" and programme.task_class == "business_research":
+                child = next((item for item in programme.children if item["id"] == prompt["id"]), None)
+                plan_write = bool(child and child.get("focus") == "draft")
+            text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=limit, programme=programme, package_id=prompt["id"], plan=plan_write)
             programme.bind(role, prompt["id"], text, meta)
 
 
@@ -1339,8 +1345,14 @@ def _employee_user(programme: Programme, child: dict) -> str:
             "Write the advert lines. Do not describe the format.\n"
             "End with: Nothing was sent.\n\n"
             f"Request:\n{programme.objective[:800]}\n\n"
-            f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
-            f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+            + (
+                f"Opened pages and prices:\n{_compact_facts(programme) or 'None.'}\n"
+                if evidence_pack_mode() == "compact"
+                else (
+                    f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
+                    f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+                )
+            )
         )
     return (
         "Ayven tool runtime. When you need a tool, emit a line "
@@ -1438,7 +1450,7 @@ def _section_drop_reason(key: str, body: str, blob: str, objective: str) -> str:
     return section_rejection(key, body, blob, objective)
 
 
-def _record_generation(programme: Programme, package_id: str, kind: str, raw: str, meta: dict, kept: str = "") -> None:
+def _record_generation(programme: Programme, package_id: str, kind: str, raw: str, meta: dict, kept: str = "", attempt: int = 0) -> None:
     if not package_id:
         return
     payload = dict(meta or {})
@@ -1452,9 +1464,16 @@ def _record_generation(programme: Programme, package_id: str, kind: str, raw: st
         "prompt_tokens": int(payload.get("prompt_tokens") or 0),
         "completion_tokens": int(payload.get("completion_tokens") or 0),
         "elapsed_s": payload.get("elapsed_s") or 0,
+        "num_ctx": int(payload.get("num_ctx") or (payload.get("constrained") or {}).get("num_ctx") or 0),
+        "prompt_chars": int(payload.get("prompt_chars") or (payload.get("constrained") or {}).get("prompt_chars") or 0),
         "kept": kept,
         "reason": payload.get("reason") or "",
         "response": payload["raw_response"],
+        "attempt": int(attempt or payload.get("attempt") or 0),
+        "prompt_eval_s": float(payload.get("prompt_eval_s") or (payload.get("constrained") or {}).get("prompt_eval_s") or 0),
+        "eval_s": float(payload.get("eval_s") or (payload.get("constrained") or {}).get("eval_s") or 0),
+        "load_s": float(payload.get("load_s") or (payload.get("constrained") or {}).get("load_s") or 0),
+        "error": payload.get("error") or "",
     })
 
 
@@ -1480,63 +1499,44 @@ def _section_prompt(instruction: str, attempt: int, reason: str, prices: str) ->
     return f"{lead}{prices}"
 
 
-def assumption_lines(objective: str, blob: str) -> str:
-    """Labeled assumptions from opened £ figures. A part with no figure stays not stated."""
-    from .deliverable import _item_present, covered_items
+def evidence_pack_mode() -> str:
+    """full is the install behaviour. compact is the eval's prompting comparison."""
+    import os
 
-    items = covered_items(objective)
-    if len(items) < 2:
-        return ""
+    mode = (os.environ.get("AYVEN_EVIDENCE_PACK") or "full").strip().lower()
+    return "compact" if mode == "compact" else "full"
+
+
+def _compact_facts(programme: Programme) -> str:
+    """One short line per opened page. The instruction text is unchanged."""
     lines = []
-    for item in items:
+    for item in (programme.research.get("evidence") or [])[:6]:
+        title = item.get("source_title") or "page"
+        url = item.get("source_url") or ""
+        text = item.get("extracted_content") or ""
         figure = ""
-        for sentence in re.split(r"(?<=[.!?])\s+|\n+", blob or ""):
-            if not _item_present(item, sentence):
-                continue
-            found = re.findall(r"£\s*[\d,]+(?:\.\d+)?(?:\s*[–\-]\s*£?\s*[\d,]+(?:\.\d+)?)?", sentence)
-            if found:
-                figure = re.sub(r"\s+", "", found[0])
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            if "£" in sentence or "$" in sentence:
+                figure = clip_at_boundary(sentence.strip(), 160)
                 break
         if figure:
-            lines.append(f"Assumption: {item} — {figure} on the opened page, a planning figure only.")
-        else:
-            lines.append(f"Assumption: {item} — not stated on an opened page.")
+            lines.append(f"- {title}: {figure}")
+        elif url:
+            lines.append(f"- {title}: {url}")
     return "\n".join(lines)
 
 
-def _price_copy_hint(objective: str, blob: str) -> str:
-    """The £ figure to copy for each part. A missing figure stays not stated."""
-    from .deliverable import _item_present, covered_items
-
-    lines = []
-    for item in covered_items(objective):
-        figure = ""
-        for sentence in re.split(r"(?<=[.!?])\s+|\n+", blob or ""):
-            if not _item_present(item, sentence):
-                continue
-            found = re.findall(r"£\s*[\d,]+(?:\.\d+)?(?:\s*[–\-]\s*£?\s*[\d,]+(?:\.\d+)?)?", sentence)
-            if found:
-                figure = found[0]
-                break
-        if figure:
-            lines.append(f"{item}: copy {figure} and do not change the numbers")
-        else:
-            lines.append(f"{item}: not stated on an opened page")
-    if not lines:
-        return ""
-    return "Copy these figures. Do not average a range and do not write a number that is not here.\n" + "\n".join(lines) + "\n"
+def _section_evidence(programme: Programme) -> str:
+    if evidence_pack_mode() == "compact":
+        return f"\nOpened pages and prices:\n{_compact_facts(programme) or 'None.'}\n"
+    return (
+        f"\nOpened pages:\n{_opened_index(programme) or 'None.'}\n"
+        f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+    )
 
 
 def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1, reason: str = "") -> tuple[str, str, dict]:
-    from .deliverable import evidence_blob
-
-    blob = evidence_blob((programme.research or {}).get("evidence"))
-    hint = _price_copy_hint(programme.objective, blob) if key == "pricing" else ""
-    prices = (
-        f"\nOpened pages:\n{_opened_index(programme) or 'None.'}\n"
-        f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
-        f"{hint}"
-    )
+    prices = _section_evidence(programme)
     user = _section_prompt(instruction, attempt, reason, prices)
     limit, stop = _section_budget(key, attempt)
     text, _tokens, meta = _complete(
@@ -1549,6 +1549,7 @@ def _write_one_section(programme: Programme, key: str, title: str, instruction: 
         plain=True,
         prefill=prefill,
         stop=stop,
+        plan=True,
     )
     raw = meta.get("raw_response") if isinstance(meta.get("raw_response"), str) and meta.get("raw_response") else (text or "")
     return _section_body(text, key, programme.objective), raw, meta
@@ -1635,7 +1636,7 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw if not written else written, blob, programme.objective)
             meta = dict(meta or {})
             meta["reason"] = reason
-            _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept")
+            _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept", attempt=attempt)
             if reason:
                 rejected[key] = reason
                 if key == "advert":
@@ -1645,16 +1646,6 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
                 continue
             sections[key] = written
             rejected.pop(key, None)
-    objective = programme.objective
-    if _section_missing("pricing", sections.get("pricing") or "", blob, objective):
-        salvaged = assumption_lines(objective, blob)
-        if salvaged and not _section_missing("pricing", salvaged, blob, objective):
-            sections["pricing"] = salvaged
-            rejected.pop("pricing", None)
-    channel = "Customers are reached through local search, where the owner posts one note about the service."
-    if _section_missing("channels", sections.get("channels") or "", blob, objective) and not _section_missing("channels", channel, blob, objective):
-        sections["channels"] = channel
-        rejected.pop("channels", None)
     return rejected
 
 
