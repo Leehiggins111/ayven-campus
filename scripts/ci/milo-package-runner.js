@@ -550,6 +550,14 @@ async function main() {
     const names = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).slice(0, 40).join(",") : "missing");
     say(`FAIL layout: ${names(packageDir).slice(0, 400)}`);
     say(`FAIL evidence: ${names(evidence).slice(0, 400)}`);
+    say(`FAIL results: ${names(path.join(evidence, "results")).slice(0, 400)}`);
+    const errorFile = path.join(evidence, "acceptance-error.txt");
+    if (fs.existsSync(errorFile)) {
+      const text = fs.readFileSync(errorFile, "utf8").replace(/\s+/g, " ").trim().slice(0, 300)
+        .replace(/github_pat_[A-Za-z0-9_]+/g, "***")
+        .replace(/ghp_[A-Za-z0-9]+/g, "***");
+      say(`FAIL acceptance-error: ${text || "empty"}`);
+    }
     process.exit(1);
   }
 }
