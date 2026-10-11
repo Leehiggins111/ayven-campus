@@ -494,7 +494,7 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         "Target customer": "Local UK homeowners who want the cabinets painted rather than ripped out.",
         "Problem": "Replacing a kitchen costs more and takes longer when the units themselves are still sound.",
         "Offer and positioning": "The offer is an on-site cabinet painting service, which differs from a showroom replacement because the existing kitchen stays.",
-        "Competitor and market research": "Opened pages describe UK cabinet painting prices, including a range of £80 to £100, and none of them is Alba.",
+        "Competitor and market research": "Example-painter lists kitchen painting at £80 to £100, and that opened page is not this service.",
         "Pricing": "ASSUMPTION: plan around £80 to £100 from the opened painting page, because a visit still has to see the units.",
         "Channels": "Homeowners nearby are reached through local search and a short conversation about painting their cabinets. Nothing was sent.",
         "Advert": "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope.",
@@ -508,8 +508,8 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         ("Name the customer.", answers["Target customer"]),
         ("Name the problem.", answers["Problem"]),
         ("Name the offer.", answers["Offer and positioning"]),
-        ("Name two opened pages.", answers["Competitor and market research"]),
-        ("Label each part.", answers["Pricing"]),
+        ("name one opened page", answers["Competitor and market research"]),
+        ("Do not invent a £ figure", answers["Pricing"]),
         ("Name the channel.", answers["Channels"]),
         ("three lines", answers["Advert"]),
         ("Ask the customer to take a step", answers["Call to action"]),
@@ -532,7 +532,10 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
     assert "Headline:" in published
     assert "local search" in published
     assert "towns to cover" in published
-    assert plan_sections_filled(published, "costs £80 to £100") is True
+    assert plan_sections_filled(
+        published,
+        "https://example-painter.example/kitchen-painting-prices costs £80 to £100",
+    ) is True
 
 
 def test_opened_pages_stay_ahead_of_failed_fetches():
@@ -652,8 +655,8 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
         ("Name the customer.", "Local UK homeowners who want the cabinets painted rather than ripped out."),
         ("Name the problem.", "Painting the cabinets costs less and takes less time than replacing the kitchen."),
         ("Name the offer.", "The offer is cabinet painting, and the existing kitchen stays in place."),
-        ("Name two opened pages.", "Opened pages state cabinet painting at £80 to £100 on the Airtasker page."),
-        ("Label each part.", "Assumption: plan around £80 to £100 from the opened kitchen painting page, because a visit still has to see the units."),
+        ("name one opened page", "Example-painter lists kitchen painting at £80 to £100."),
+        ("Do not invent a £ figure", "Assumption: plan around £80 to £100 from the opened kitchen painting page, because a visit still has to see the units."),
         ("three lines", "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope."),
         ("Ask the customer to take a step", "Ask for a visit and a written scope before any booking."),
         ("Name the owner's next action.", "Next, the owner confirms the towns to cover, then books the visit."),
@@ -679,4 +682,7 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
     assert "painting their kitchen cabinets" in published.lower()
     assert "£80" in published
     assert "Headline:" in published
-    assert plan_sections_filled(published, "costs £80 to £100") is True
+    assert plan_sections_filled(
+        published,
+        "https://example-painter.example/kitchen-painting-prices costs £80 to £100",
+    ) is True

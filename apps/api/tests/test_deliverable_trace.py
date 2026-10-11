@@ -221,9 +221,9 @@ def _door_section(user: str) -> str:
         return "The problem is that a full kitchen replacement costs more than replacing the doors, worktops and handles."
     if "Name the offer." in user:
         return "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement."
-    if "Name two opened pages." in user:
+    if "name one opened page" in user:
         return "Opened pages state the worktops and handles at https://doors.example/replace and no second price was stated."
-    if "Label each part." in user:
+    if "Do not invent a £ figure" in user:
         return (
             "Assumption: doors — not stated as a durable price, so the kitchen doors are counted on a visit.\n"
             "Assumption: worktops — not stated on an opened page.\n"
@@ -472,7 +472,7 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
 
     monkeypatch.setattr("app.intelligence.execution._complete", fake)
     programme = SimpleNamespace(objective=DOOR, parent_id="", research={"evidence": []})
-    rejected = _fill_plan_sections(programme, sections, "£10 to £40")
+    rejected = _fill_plan_sections(programme, sections, "https://doors.example/replace\n£10 to £40")
     assert rejected == {}
     assert "24/7" not in sections["advert"]
     assert sections["advert"].startswith("Headline: Replacement of kitchen doors")
@@ -610,11 +610,11 @@ def test_a_split_call_to_action_stays_with_the_advert():
     from app.intelligence.execution import _join_advert, _section_missing
 
     draft = {
-        "advert": "Headline: Replace kitchen doors, worktops and handles without full replacement\nBody: Fix kitchen doors, worktops and handles in your existing kitchen at £10-£40 per door",
+        "advert": "Headline: Replace kitchen doors, worktops and handles without full replacement\nBody: Doors.example lists kitchen doors, worktops and handles in an existing kitchen at £10-£40 per door",
         "call to action": "Get a free quote for your kitchen components.",
     }
     joined = _join_advert(draft)
-    blob = "Kitchen door replacement costs £10-£40 per standard door."
+    blob = "https://doors.example/replace\nKitchen door replacement costs £10-£40 per standard door."
     assert "Call to action:" in joined["advert"]
     assert _section_missing("advert", joined["advert"], blob, DOOR) is False
     assert section_rejection("advert", joined["advert"], blob, DOOR) == ""

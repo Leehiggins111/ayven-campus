@@ -110,7 +110,7 @@ def test_prompts_do_not_tell_the_model_which_figure_to_copy(monkeypatch):
     assert full != compact
     assert "£10" in compact
     assert "Prices stated on opened pages" not in compact
-    assert "Name the service." in seen[0] or any("Label each part." in user for user in seen)
+    assert "Name the service." in seen[0] or any("Do not invent a £ figure" in user for user in seen)
 
 
 def test_num_ctx_override_is_opt_in(monkeypatch):
@@ -254,12 +254,33 @@ def test_call_timing_and_lee_projection_use_the_measured_rates():
 
 
 def test_score_marks_an_invented_price_and_a_gate_failure():
-    from scripts.model_eval.score import lee_job_estimate, score_plan, two_model_fit
+    from scripts.model_eval.score import lee_job_estimate, project_to_lee, score_plan, two_model_fit
 
-    plan = "Pricing\nAssumption: doors are about £99.\n"
-    scored = score_plan(plan, DOOR, "https://doors.example/prices\nReplacement doors are £10 to £40.", [])
-    assert scored["gate_pass"] is False
-    assert "£99" in scored["invented_prices"]
+    evidence = "https://doors.example/prices\nReplacement doors are £10 to £40."
+    invented = score_plan("Pricing\nThe service costs £99.\n", DOOR, evidence, [])
+    assert invented["gate_pass"] is False
+    assert "£99" in invented["invented_prices"]
+    labelled = score_plan("Pricing\nAssumption: doors are about £99.\n", DOOR, evidence, [])
+    assert "£99" not in labelled["invented_prices"]
+    cited = score_plan(
+        "Competitor and market research\nRefresh Kitchen charges £950, for the visit.\n",
+        DOOR,
+        "https://refreshkitchen.co.uk/\nRefresh Kitchen\ntransform your kitchen in one day for only £950.",
+        [],
+    )
+    assert cited["invented_prices"] == []
+    assert cited["pages_cited"] == 1
+    absurd = project_to_lee(
+        file_bytes=2_500_000_000,
+        prompt_tokens=0,
+        completion_tokens=100,
+        prompt_eval_s=0,
+        eval_s=10,
+        runner_copy_gbps=30_000_000,
+        unscaled_s=0,
+    )
+    assert absurd["status"] == "not_measured"
+    assert absurd["lee_gpu_job_minutes"] is None
     small = lee_job_estimate(2_500_000_000, 1000, 600)
     assert small["band"] == "weights_fit_in_4gb"
     offload = lee_job_estimate(5_200_000_000, 1200, 3600)
@@ -271,3 +292,95 @@ def test_score_marks_an_invented_price_and_a_gate_failure():
     too_big = two_model_fit(2_500_000_000, 9_300_000_000)
     assert too_big["resident_together_fits"] is False
     assert os.environ.get("AYVEN_PLAN_MODEL", "") != "plan-writer"
+
+
+def test_a_name_query_without_a_service_word_is_off_brief():
+    from app.intelligence.deliverable import reject_search_query
+
+    door = (
+        "The service replaces kitchen doors, worktops and handles, and it avoids a full kitchen replacement."
+    )
+    assert reject_search_query("'s name (so avoid", door) == "off_brief"
+    assert reject_search_query("kitchen doors worktops UK", door) == ""
+
+
+def test_research_timeout_keeps_pages_already_opened():
+    from app.intelligence.execution import _research_kept_after_timeout
+    from app.intelligence.research import research
+
+    empty = _research_kept_after_timeout({}, "research_timeout")
+    assert empty["evidence"] == []
+    assert empty["mode"] == "timeout"
+    page = {"source_url": "https://doors.example/replace", "source_title": "Replacement kitchen doors", "extracted_content": "We replace kitchen doors and worktops."}
+    kept = _research_kept_after_timeout(
+        {"mode": "live", "evidence": [page], "queries": ["kitchen doors worktops"], "failures": [], "gaps": []},
+        "research_timeout",
+    )
+    assert kept["evidence"] == [page]
+    assert kept["queries"] == ["kitchen doors worktops"]
+    assert any("Pages already opened were kept" in gap for gap in kept["gaps"])
+    assert kept["failures"][-1]["error"] == "research_timeout"
+
+    holder: dict = {}
+    door = "Prepare a UK launch plan for a service that replaces kitchen doors, worktops and handles."
+
+    def search(_query, limit=8):
+        return [{"title": "Replacement kitchen doors", "url": "https://doors.example/replace", "snippet": "replacement kitchen doors worktops and handles"}]
+
+    def fetch(url):
+        return {"url": url, "title": "Replacement kitchen doors", "text": "We replace kitchen doors, worktops and handles.", "error": ""}
+
+    result = research(
+        "business_research",
+        door,
+        "pkg-sink",
+        "research-e3",
+        queries=["kitchen doors worktops"],
+        max_rounds=1,
+        search_fn=search,
+        fetch_fn=fetch,
+        sink=holder,
+    )
+    assert result["evidence"]
+    assert holder["evidence"] is result["evidence"]
+
+
+def test_a_price_must_name_its_page_unless_it_is_labelled_an_assumption():
+    from app.intelligence.deliverable import owner_section, section_rejection
+
+    blob = "https://refreshkitchen.co.uk/\nRefresh Kitchen\nonly £950"
+    door = "The service replaces kitchen doors, worktops and handles."
+    unlinked = section_rejection(
+        "competitor and market research",
+        "A competitor charges £950 for a complete kitchen refresh.",
+        blob,
+        door,
+    )
+    assert "without naming the opened page" in unlinked
+    linked = section_rejection(
+        "competitor and market research",
+        "Refresh Kitchen charges £950 for a complete kitchen refresh.",
+        blob,
+        door,
+    )
+    assert "without naming the opened page" not in linked
+    hyphen = section_rejection(
+        "competitor and market research",
+        "Click Doors lists a replacement kitchen door at £11.",
+        "https://click-doors.co.uk/prices\nClick Doors\nfrom £11.",
+        door,
+    )
+    assert "without naming the opened page" not in hyphen
+    invented = section_rejection("offer and positioning", "The offer differs from a full replacement and the price is £200.", blob, door)
+    assert "not on an opened page" in invented
+    assumed = section_rejection(
+        "pricing",
+        "Assumption: doors — about £200.\nAssumption: worktops — not stated.\nAssumption: handles — not stated.",
+        blob,
+        door,
+    )
+    assert "not on an opened page" not in assumed
+    assert "without naming the opened page" not in assumed
+    stored = owner_section("pricing", "Doors are £10 each.")
+    assert "£10" in stored
+    assert not stored.lower().startswith("assumption")

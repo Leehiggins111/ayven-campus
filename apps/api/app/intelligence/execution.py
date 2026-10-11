@@ -169,6 +169,37 @@ def _complete(role: str, system: str, user: str, max_tokens: int = 400, programm
     return text, tokens, meta
 
 
+def _research_kept_after_timeout(holder: dict, err: str) -> dict:
+    """A stage timeout must not throw away pages that were already opened."""
+    evidence = [item for item in (holder.get("evidence") or []) if isinstance(item, dict)]
+    queries = list(holder.get("queries") or [])
+    if not evidence and not queries:
+        return {
+            "mode": "timeout",
+            "queries": [],
+            "evidence": [],
+            "failures": [{"stage": "research", "error": err}],
+            "gaps": [f"Gap: {err}"],
+            "skipped": False,
+        }
+    gaps = list(holder.get("gaps") or [])
+    gaps.append("Research stopped at the time limit. Pages already opened were kept.")
+    failures = list(holder.get("failures") or [])
+    failures.append({"stage": "research", "error": err})
+    return {
+        "mode": holder.get("mode") or "timeout",
+        "queries": queries,
+        "query_source": holder.get("query_source") or "",
+        "evidence": evidence,
+        "failures": failures,
+        "duplicates": list(holder.get("duplicates") or []),
+        "gaps": gaps,
+        "filtered": list(holder.get("filtered") or []),
+        "skipped": False,
+        "memory_fallback_used": False,
+    }
+
+
 class Programme:
     def __init__(self, project_id: str, objective: str, task_id: str | None = None):
         self.project_id = project_id
@@ -267,20 +298,22 @@ class Programme:
             mark_stage(self.parent_id, "RESEARCH", project_id=self.project_id, task_id=self.task_id or "")
             _set_agent("research-e3", visual_state="RESEARCHING", status="researching", current_tool="web_search", last_summary="Collecting evidence", progress=0.35)
             _set_agent("research-e3", visual_state="USING_TOOL", status="using_tool", current_tool="web_search", last_summary="Opening sources", progress=0.4)
+            holder: dict = {}
             researched, err = run_bounded(
                 "research",
-                lambda: research(self.task_class, self.objective, self.parent_id, "research-e3", project_id=self.project_id, skills=self.skills),
+                lambda: research(
+                    self.task_class,
+                    self.objective,
+                    self.parent_id,
+                    "research-e3",
+                    project_id=self.project_id,
+                    skills=self.skills,
+                    sink=holder,
+                ),
             )
             if err:
                 self.errors.append(err)
-                self.research = {
-                    "mode": "timeout",
-                    "queries": [],
-                    "evidence": [],
-                    "failures": [{"stage": "research", "error": err}],
-                    "gaps": [f"Gap: {err}"],
-                    "skipped": False,
-                }
+                self.research = _research_kept_after_timeout(holder, err)
             else:
                 self.research = researched or self.research
             attached = _attached_document(self.objective)
@@ -1340,8 +1373,11 @@ def _employee_user(programme: Programme, child: dict) -> str:
             "Write each section once. Do not repeat a sentence. Do not narrate. Do not say I, let me, let's, I think, we need to, or the user.\n"
             "Do not quote a sentence from the objective. Do not name a person. Do not name a trade this request does not name.\n"
             "Use only the service in this request and the pages opened for this request.\n"
-            "Pricing starts with ASSUMPTION: and uses a £ figure from the price list when that list prices the part. Write not stated only when the list has no £ figure for that part.\n"
-            "Competitor research names an opened page and a £ figure from the price list.\n"
+            "A £ figure is copied from an opened page, and the same sentence names that page. "
+            "A £ figure that is not on an opened page is allowed only on a line that starts with Assumption.\n"
+            "Pricing starts with Assumption: and names each part. Copy a £ figure from the price list when that list prices the part, and name the page. "
+            "Write not stated only when the list has no £ figure for that part.\n"
+            "Competitor research names an opened page and the £ figure from that page in the same sentence.\n"
             "Write the advert lines. Do not describe the format.\n"
             "End with: Nothing was sent.\n\n"
             f"Request:\n{programme.objective[:800]}\n\n"
@@ -1363,7 +1399,7 @@ def _employee_user(programme: Programme, child: dict) -> str:
 
 def _opened_index(programme: Programme) -> str:
     lines = []
-    for item in (programme.research.get("evidence") or [])[:8]:
+    for item in (programme.research.get("evidence") or [])[:16]:
         title = item.get("source_title") or "page"
         url = item.get("source_url") or ""
         if url:
@@ -1375,7 +1411,7 @@ def _price_notes(programme: Programme) -> str:
     import re
 
     notes = []
-    for item in (programme.research.get("evidence") or [])[:8]:
+    for item in (programme.research.get("evidence") or [])[:16]:
         title = item.get("source_title") or "page"
         url = item.get("source_url") or ""
         text = item.get("extracted_content") or ""
@@ -1383,8 +1419,7 @@ def _price_notes(programme: Programme) -> str:
             if "£" not in sentence and "$" not in sentence:
                 continue
             notes.append(f"{title} ({url}): {clip_at_boundary(sentence, 240)}")
-            if len(notes) >= 8:
-                return "\n".join(notes)
+            break
     return "\n".join(notes)
 
 
@@ -1404,8 +1439,8 @@ def _section_jobs(objective: str) -> tuple:
         ("target customer", "Target customer", "Write one sentence. Name the customer." + shared, "The customer is "),
         ("problem", "Problem", "Write one sentence. Name the problem." + shared, "The problem is "),
         ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs." + shared, "The offer "),
-        ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages. State the £ figure each page gives." + shared, "Opened pages state "),
-        ("pricing", "Pricing", "Write one assumption line for each part. Label each part. Copy a £ figure from the price list when that list prices the part. Write not stated on an opened page only when it does not. Parts: " + labeled + "." + shared, "Assumption: "),
+        ("competitor and market research", "Competitor and market research", "Write two sentences. In each sentence name one opened page by its site and state the £ figure that page gives. Do not use a £ figure that is not written on that page." + shared, "Opened pages state "),
+        ("pricing", "Pricing", "Write one line for each part. Start each line with Assumption. When an opened page states a £ figure for that part, copy the figure and name the page. When it does not, write not stated. Do not invent a £ figure. Parts: " + labeled + "." + shared, "Assumption: "),
         ("channels", "Channels", "Write one sentence. Name the channel. Say what the owner does there." + shared, "Customers are reached through "),
         ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\n" + shared, ""),
         ("call to action", "Call to action", "Write one sentence. Ask the customer to take a step." + shared, "Ask "),

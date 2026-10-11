@@ -10,6 +10,8 @@ on:
       - .github/workflows/model-eval.yml
       - apps/api/app/models.py
       - apps/api/app/intelligence/execution.py
+      - apps/api/app/intelligence/deliverable.py
+      - apps/api/app/intelligence/research.py
       - apps/api/app/db.py
       - apps/api/app/intelligence/store.py
 
@@ -24,20 +26,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - slug: qwen3-4b
-            model: qwen3:4b
-            compare: "1"
           - slug: qwen3-8b
             model: qwen3:8b
             compare: "0"
           - slug: qwen3-14b
             model: qwen3:14b
-            compare: "0"
-          - slug: gemma3-12b
-            model: gemma3:12b
-            compare: "0"
-          - slug: phi4
-            model: phi4
             compare: "0"
     env:
       AYVEN_ALLOW_ESCALATION: "0"
@@ -50,6 +43,7 @@ jobs:
       AYVEN_PLAN_MODEL: ${{ matrix.model }}
       AYVEN_LLM_TIMEOUT_S: "600"
       AYVEN_MAX_RESEARCH_SECONDS: "300"
+      AYVEN_TIMEOUT_RESEARCH: "900"
       AYVEN_MAX_RESEARCH_ROUNDS: "1"
       AYVEN_MAX_ATTEMPTS: "1"
       AYVEN_OLLAMA_THINK: "0"

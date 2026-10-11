@@ -46,9 +46,9 @@ def _door_section(user: str) -> str:
         return "The problem is that a full kitchen replacement costs more than replacing the doors, worktops and handles."
     if "Name the offer." in user:
         return "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement."
-    if "Name two opened pages." in user:
+    if "name one opened page" in user:
         return "Opened pages state the worktops and handles at https://doors.example/replace and no second price was stated."
-    if "Label each part." in user:
+    if "Do not invent a £ figure" in user:
         return (
             "Assumption: doors — not stated as a durable price, so the kitchen doors are counted on a visit.\n"
             "Assumption: worktops — not stated on an opened page.\n"
@@ -82,9 +82,9 @@ def _coffee_section(user: str) -> str:
         return "The problem is that buying a coffee machine costs more than renting one for a small office."
     if "Name the offer." in user:
         return "The offer is coffee machine rental, which differs from selling a machine outright to the office."
-    if "Name two opened pages." in user:
+    if "name one opened page" in user:
         return "Opened pages state the coffee machine rental terms at https://brew.example/rental and no second price was stated."
-    if "Label each part." in user:
+    if "Do not invent a £ figure" in user:
         return "Assumption: the opened page did not state a durable coffee machine rental price, so a visit still has to see the office."
     if "Name the channel." in user:
         return "Customers are reached through local search, where the owner posts one note about coffee machine rental."

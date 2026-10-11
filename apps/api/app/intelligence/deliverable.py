@@ -158,6 +158,11 @@ def reject_search_query(query: str, objective: str = "") -> str:
         return "instruction_only"
     if objective and not query_on_brief(query, objective):
         return "off_brief"
+    # A substring of an instruction word ("avoid" inside "avoids") is not a service word.
+    # The query has to contain one of the objective's own words, including a later name.
+    terms = [term for term in distinctive_terms(objective) if len(term) >= 4] if objective else []
+    if terms and not any(token == term for token in content for term in terms):
+        return "off_brief"
     return ""
 
 
@@ -663,10 +668,7 @@ def owner_section(kind: str, text: str) -> str:
                 picked.append(sentence)
         if not picked:
             return ""
-        body = "\n".join(picked[:6])
-        if "assumption" not in body.lower():
-            body = "Assumption: " + body
-        return body
+        return "\n".join(picked[:6])
     if kind == "competitor and market research":
         picked = [sentence for sentence in sentences if "£" in sentence or "http" in sentence.lower()]
         return "\n".join((picked or sentences)[:6])
@@ -815,9 +817,11 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return "The sentence filter removed every line."
     if key == "pricing":
         if _ungrounded_amount(cleaned, blob):
-            return "Pricing cites a £ figure that is not on an opened page."
+            return "Pricing cites a £ figure that is not on an opened page and is not labelled as an assumption."
         if not _pricing_ok(cleaned, blob):
             return "Pricing has no assumption, and the £ amount is not on an opened page."
+    elif _ungrounded_amount(cleaned, blob):
+        return "The section cites a £ figure that is not on an opened page and is not labelled as an assumption."
     elif key == "advert":
         if not _advert_ok({"advert": cleaned}):
             for line in cleaned.splitlines():
@@ -990,6 +994,15 @@ def _pricing_parts(body: str, objective: str) -> str:
     return ""
 
 
+def _pound_amounts(text: str) -> list[str]:
+    """Pound amounts. A comma after the number is punctuation, not part of it."""
+    return re.findall(r"£\s*\d[\d,]*(?:\.\d+)?", text or "")
+
+
+def _assumption_sentence(sentence: str) -> bool:
+    return bool(re.search(r"\bassumption\b", sentence or "", re.I))
+
+
 def _pound_supported(amount: str, blob: str) -> bool:
     number = re.sub(r"[£\s,]", "", amount or "")
     if not number:
@@ -998,9 +1011,50 @@ def _pound_supported(amount: str, blob: str) -> bool:
     return bool(re.search(rf"£\s*{re.escape(number)}(?!\d)", compact))
 
 
-def _ungrounded_amount(body: str, blob: str) -> bool:
-    amounts = re.findall(r"£\s*[\d,]+(?:\.\d+)?", body or "")
-    return any(not _pound_supported(amount, blob) for amount in amounts)
+def _ungrounded_amount(body: str, blob: str, allow_assumption: bool = True) -> bool:
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
+        if allow_assumption and _assumption_sentence(sentence):
+            continue
+        if any(not _pound_supported(amount, blob) for amount in _pound_amounts(sentence)):
+            return True
+    return False
+
+
+def _names_opened_page(sentence: str, blob: str) -> bool:
+    """True when the sentence names a site from an opened page."""
+    compact = re.sub(r"[^a-z0-9]", "", (sentence or "").lower())
+    lowered = (sentence or "").lower()
+    for host in re.findall(r"https?://([^/\s]+)", blob or "", re.I):
+        host = host.lower().split(":")[0]
+        if host in lowered:
+            return True
+        for label in host.split("."):
+            if label in {"www", "co", "uk", "com", "org", "net"}:
+                continue
+            token = re.sub(r"[^a-z0-9]", "", label)
+            if len(token) < 6:
+                continue
+            if token in compact:
+                return True
+    return False
+
+
+def _unlinked_price(body: str, blob: str, *, assumptions: bool = True) -> str:
+    """A £ figure has to name the opened page it came from.
+
+    A line labelled Assumption may state a figure that is not on a page. A competitor
+    price is a citation, so that label does not remove the page name.
+    """
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
+        if "£" not in sentence:
+            continue
+        if assumptions and _assumption_sentence(sentence):
+            continue
+        if not _pound_amounts(sentence):
+            continue
+        if not _names_opened_page(sentence, blob):
+            return "The section states a £ figure without naming the opened page it came from."
+    return ""
 
 
 def _example_leak(text: str, objective: str, blob: str) -> str:
@@ -1045,13 +1099,13 @@ def _false_not_stated(body: str, blob: str, objective: str) -> str:
 
 
 def _competitor_prices(body: str, blob: str) -> str:
-    if not re.search(r"£\s*[\d,]+", blob or ""):
+    if not re.search(r"£\s*\d", blob or ""):
         return ""
-    if _ungrounded_amount(body, blob) or not re.search(r"£\s*[\d,]+", body or ""):
-        if not re.search(r"£\s*[\d,]+", body or ""):
+    if _ungrounded_amount(body, blob, allow_assumption=False) or not _pound_amounts(body):
+        if not _pound_amounts(body):
             return "The competitor section does not cite a £ figure from an opened page."
         return "The competitor section cites a £ figure that is not on an opened page."
-    return ""
+    return _unlinked_price(body, blob, assumptions=False)
 
 
 def _sells_avoided(body: str, objective: str) -> bool:
@@ -1100,6 +1154,9 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         missing = _pricing_parts(body, objective)
         if missing:
             return missing
+        unlinked = _unlinked_price(body, blob)
+        if unlinked:
+            return unlinked
         return _false_not_stated(body, blob, objective)
     elif key == "competitor and market research":
         return _competitor_prices(body, blob)
@@ -1123,6 +1180,10 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
             return "The call to action asks the reader to confirm the request."
         if cta and not _ASK.search(cta):
             return "The call to action does not ask the customer to take a step."
+    if key in {"offer and positioning", "advert", "call to action", "next steps"}:
+        unlinked = _unlinked_price(body, blob)
+        if unlinked:
+            return unlinked
     return ""
 
 

@@ -27,8 +27,21 @@ _COPY = (
 
 
 def _money(text: str) -> list[str]:
-    found = re.findall(r"£\s*[\d,]+(?:\.\d+)?", text or "")
-    return [re.sub(r"\s+", "", item) for item in found]
+    found = re.findall(r"£\s*\d[\d,]*(?:\.\d+)?", text or "")
+    return [re.sub(r"[\s,]", "", item) for item in found]
+
+
+def _money_key(amount: str) -> str:
+    return re.sub(r"[£,\s]", "", amount or "")
+
+
+def _amounts_outside_assumptions(text: str) -> list[str]:
+    amounts = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
+        if re.search(r"\bassumption\b", sentence, re.I):
+            continue
+        amounts.extend(_money(sentence))
+    return amounts
 
 
 def score_plan(plan: str, objective: str, evidence: str, attempts: list[dict] | None = None) -> dict:
@@ -52,18 +65,25 @@ def score_plan(plan: str, objective: str, evidence: str, attempts: list[dict] | 
         if any(phrase in blob for phrase in _COPY):
             copied += 1
     total = len(section_attempts)
-    plan_money = _money(plan or "")
-    evidence_money = set(_money(evidence or ""))
-    invented = [item for item in plan_money if item not in evidence_money]
+    plan_money = _amounts_outside_assumptions(plan or "")
+    evidence_keys = {_money_key(item) for item in _money(evidence or "")}
+    invented = [item for item in plan_money if _money_key(item) not in evidence_keys]
     opened = []
+    titles = []
+    pending_title = False
     for line in (evidence or "").splitlines():
-        if line.strip().startswith("http"):
-            opened.append(line.strip())
+        stripped = line.strip()
+        if stripped.startswith("http"):
+            opened.append(stripped)
+            pending_title = True
+            continue
+        if pending_title:
+            titles.append(stripped)
+            pending_title = False
     cited = 0
-    lowered = (plan or "").lower()
-    for url in opened:
-        host = url.split("/")[2] if url.startswith("http") and len(url.split("/")) > 2 else ""
-        if url.lower() in lowered or (host and host.lower() in lowered):
+    for index, url in enumerate(opened):
+        title = titles[index] if index < len(titles) else ""
+        if _page_cited(plan or "", url, title):
             cited += 1
     prompt_tokens = [int(item.get("prompt_tokens") or 0) for item in attempts if int(item.get("prompt_tokens") or 0)]
     contexts = [int(item.get("num_ctx") or 0) for item in attempts if int(item.get("num_ctx") or 0)]
@@ -123,6 +143,30 @@ def lee_job_estimate(file_bytes: int, completion_tokens: int, cpu_wall_s: float)
     estimate["band"] = "above_install_cap"
     estimate["note"] = "The file is above the 9-10 GB install cap, so it is not a candidate for the default."
     return estimate
+
+
+def _page_cited(plan: str, url: str, title: str) -> bool:
+    """A page counts as cited when the plan names its address or its site."""
+    lowered = (plan or "").lower()
+    if url and url.lower() in lowered:
+        return True
+    parts = url.split("/")
+    host = parts[2].lower() if url.startswith("http") and len(parts) > 2 else ""
+    if host and host in lowered:
+        return True
+    compact = re.sub(r"[^a-z0-9]", "", lowered)
+    for label in host.split("."):
+        if label in {"www", "co", "uk", "com", "org", "net"}:
+            continue
+        token = re.sub(r"[^a-z0-9]", "", label)
+        if len(token) < 6:
+            continue
+        if token in compact:
+            return True
+    title_words = [word for word in re.findall(r"[a-z0-9]+", (title or "").lower()) if len(word) >= 4]
+    if len(title_words) >= 2 and f"{title_words[0]} {title_words[1]}" in lowered:
+        return True
+    return False
 
 
 def _timeout(call: dict) -> bool:
@@ -188,7 +232,18 @@ def project_to_lee(
     prompt_tps = (prompt_tokens / prompt_eval_s) if prompt_eval_s else 0
     achieved_gbps = (gen_tps * file_bytes / 1e9) if file_bytes and gen_tps else 0
     copy = float(runner_copy_gbps or 0)
-    efficiency = min(1.0, achieved_gbps / copy) if copy and achieved_gbps else 0
+    # A memcpy the compiler deleted reports tens of millions of GB/s. That is not a measurement.
+    if copy <= 0 or copy > 400:
+        return {
+            "measured_generation_tokens_per_second": round(gen_tps, 2),
+            "measured_prompt_tokens_per_second": round(prompt_tps, 2),
+            "achieved_read_gbps": round(achieved_gbps, 2),
+            "runner_copy_gbps": round(copy, 2),
+            "status": "not_measured",
+            "lee_gpu_job_minutes": None,
+            "note": "The copy-bandwidth measurement was not usable, so the job was not projected.",
+        }
+    efficiency = min(1.0, achieved_gbps / copy) if achieved_gbps else 0
     out = {
         "measured_generation_tokens_per_second": round(gen_tps, 2),
         "measured_prompt_tokens_per_second": round(prompt_tps, 2),

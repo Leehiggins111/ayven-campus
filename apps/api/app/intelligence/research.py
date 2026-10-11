@@ -446,6 +446,7 @@ def research(
     reviewer=None,
     browse_fn=None,
     skills=None,
+    sink: dict | None = None,
 ) -> dict:
     mode = research_mode()
     rounds = max_rounds if max_rounds is not None else int(os.environ.get("AYVEN_MAX_RESEARCH_ROUNDS", "2"))
@@ -487,6 +488,20 @@ def research(
     strict_seed = query_source == "model"
     pending = [{"kind": "search", "query": query, "depth": 1, "origin": "seed", "strict": strict_seed} for query in planned]
     filtered: list[dict] = []
+    if sink is not None:
+        sink.clear()
+        sink.update({
+            "mode": mode,
+            "queries": searched,
+            "query_source": query_source,
+            "evidence": evidence,
+            "failures": failures,
+            "duplicates": duplicates,
+            "gaps": review_gaps,
+            "filtered": filtered,
+            "skipped": False,
+            "memory_fallback_used": False,
+        })
     round_no = 0
     while pending and round_no < rounds and not budget_hit:
         round_no += 1

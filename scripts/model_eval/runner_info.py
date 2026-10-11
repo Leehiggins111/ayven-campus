@@ -51,14 +51,16 @@ int main(void) {
     struct timespec s, e;
     clock_gettime(CLOCK_MONOTONIC, &s);
     double bytes = 0;
+    volatile unsigned long sink = 0;
     for (int i = 0; i < 8; i++) {
         memcpy(b, a, n);
+        sink += (unsigned char)b[(size_t)i * 4096 % n];
         bytes += (double)n;
     }
     clock_gettime(CLOCK_MONOTONIC, &e);
     double sec = (double)(e.tv_sec - s.tv_sec) + (double)(e.tv_nsec - s.tv_nsec) / 1e9;
     if (sec <= 0) return 1;
-    printf("%.3f\n", bytes / sec / 1e9);
+    printf("%.3f %lu\n", bytes / sec / 1e9, sink);
     return 0;
 }
 """
@@ -69,7 +71,7 @@ int main(void) {
             src.write_text(source, encoding="utf-8")
             subprocess.check_call(["gcc", "-O2", str(src), "-o", str(bin_path)], timeout=60)
             out = subprocess.check_output([str(bin_path)], text=True, timeout=60).strip()
-            return float(out)
+            return float(out.split()[0])
     except (OSError, subprocess.SubprocessError, ValueError):
         return 0.0
 
