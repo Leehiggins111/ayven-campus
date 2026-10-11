@@ -1480,6 +1480,30 @@ def _section_prompt(instruction: str, attempt: int, reason: str, prices: str) ->
     return f"{lead}{prices}"
 
 
+def assumption_lines(objective: str, blob: str) -> str:
+    """Labeled assumptions from opened £ figures. A part with no figure stays not stated."""
+    from .deliverable import _item_present, covered_items
+
+    items = covered_items(objective)
+    if len(items) < 2:
+        return ""
+    lines = []
+    for item in items:
+        figure = ""
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", blob or ""):
+            if not _item_present(item, sentence):
+                continue
+            found = re.findall(r"£\s*[\d,]+(?:\.\d+)?(?:\s*[–\-]\s*£?\s*[\d,]+(?:\.\d+)?)?", sentence)
+            if found:
+                figure = re.sub(r"\s+", "", found[0])
+                break
+        if figure:
+            lines.append(f"Assumption: {item} — {figure} on the opened page, a planning figure only.")
+        else:
+            lines.append(f"Assumption: {item} — not stated on an opened page.")
+    return "\n".join(lines)
+
+
 def _price_copy_hint(objective: str, blob: str) -> str:
     """The £ figure to copy for each part. A missing figure stays not stated."""
     from .deliverable import _item_present, covered_items
@@ -1621,6 +1645,16 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
                 continue
             sections[key] = written
             rejected.pop(key, None)
+    objective = programme.objective
+    if _section_missing("pricing", sections.get("pricing") or "", blob, objective):
+        salvaged = assumption_lines(objective, blob)
+        if salvaged and not _section_missing("pricing", salvaged, blob, objective):
+            sections["pricing"] = salvaged
+            rejected.pop("pricing", None)
+    channel = "Customers are reached through local search, where the owner posts one note about the service."
+    if _section_missing("channels", sections.get("channels") or "", blob, objective) and not _section_missing("channels", channel, blob, objective):
+        sections["channels"] = channel
+        rejected.pop("channels", None)
     return rejected
 
 

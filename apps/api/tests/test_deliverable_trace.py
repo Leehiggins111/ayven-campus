@@ -840,6 +840,22 @@ def test_owner_review_rejects_meta_echo_and_a_single_part_price(monkeypatch):
         coffee,
     )
     assert businesses == ""
+    copied_check = section_rejection(
+        "call to action",
+        "1: The call to action does not ask the customer to take a step.",
+        page,
+        objective,
+    )
+    assert copied_check
+    guide = section_rejection(
+        "advert",
+        "Headline: 2026 UK Kitchen Door Replacement Cost Guide: £10-£40 per Door\n"
+        "Body: The service replaces kitchen doors, worktops and handles at £10-£40 per door.\n"
+        "Call to action: Get your custom quote today.",
+        page,
+        objective,
+    )
+    assert "title" in guide.lower() or "headline" in guide.lower()
     meta_cta = section_rejection(
         "call to action",
         'ask for a quote" might be tricky because it could imply a quote, but in this context it is for the rental.',

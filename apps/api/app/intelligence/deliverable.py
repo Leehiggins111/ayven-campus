@@ -427,7 +427,7 @@ def narration_reason(line: str) -> str:
         return "The line is model self-talk, not a sentence the owner can use."
     if re.search(r"\bask\s+\d+\b", lowered):
         return "The line is model self-talk, not a sentence the owner can use."
-    if re.search(r"\b(name a customer|name a problem|name the owner|name two opened|crafting the|looking at the prices)\b", lowered):
+    if re.search(r"\b(name a customer|name a problem|name the owner|name two opened|crafting the|looking at the prices|does not ask the customer|does not name a|ask the customer to take a step)\b", lowered):
         return "The section describes the task instead of answering it."
     if re.search(r"\b(does not imply|do not imply|service name that|hours or availability)\b", lowered):
         return "The line repeats the instruction instead of answering it."
@@ -1111,6 +1111,10 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         if len(lowered.strip()) < 20:
             return "The call to action is too short to use."
     elif key == "advert":
+        headline = re.search(r"headline\s*:\s*(.+)", body or "", re.I)
+        title = headline.group(1).strip() if headline else ""
+        if re.search(r"\bcost guide\b", title, re.I) or len(title) > 80:
+            return "The headline copies a page title. Write a short promise."
         if _sells_avoided(body, objective):
             return "The call to action asks for the alternative the service avoids."
         match = re.search(r"call to action\s*:\s*(.+)", body or "", re.I)
