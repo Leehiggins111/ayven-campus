@@ -417,7 +417,7 @@ def narration_reason(line: str) -> str:
     if "mortgage" in lowered or "loan-to-value" in lowered:
         return "The line is about a mortgage, which this request does not ask for."
     if re.search(
-        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|finished lines|answered\s*:)\b",
+        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|previous line was|finished lines|answered\s*:|availability claim|not stored|do not mention hours)\b",
         lowered,
     ):
         return "The line repeats the instruction instead of answering it."

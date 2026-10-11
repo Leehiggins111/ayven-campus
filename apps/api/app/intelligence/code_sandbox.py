@@ -153,6 +153,8 @@ def _tests_are_meaningful(source: str) -> bool:
         return False
     if all(re.fullmatch(r"True|1|''|\"\"", item.strip()) for item in asserts):
         return False
+    if all("__file__" in item for item in asserts):
+        return False
     return True
 
 

@@ -386,6 +386,19 @@ assert True
     _files, _launch, weak = classify_program(clear)
     assert _files == {}
     assert "cannot fail" in weak.lower()
+    weak_file = """FILE: main.py
+print(2+3)
+FILE: test_main.py
+import main
+assert main.__file__ != 'test_main.py'
+"""
+    _files, _launch, file_reason = classify_program(weak_file)
+    assert _files == {}
+    assert "cannot fail" in file_reason.lower()
+    echoed = "Headline: The previous line was an availability claim and is not stored."
+    from app.intelligence.deliverable import section_rejection
+    echo_reason = section_rejection("advert", echoed, "", DOOR)
+    assert "instruction" in echo_reason.lower()
 
 
 def test_a_rejected_plan_keeps_the_repaired_sections_and_the_failed_check():

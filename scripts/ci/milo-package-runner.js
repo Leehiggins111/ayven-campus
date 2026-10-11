@@ -217,7 +217,10 @@ function runPrelude(milo, vars) {
     const file = path.join(vars.temp, `prelude-${chosen.selected.indexOf(step)}.ps1`);
     fs.writeFileSync(file, script, "utf8");
     const cwd = step.cwd ? path.resolve(milo, step.cwd) : milo;
-    const result = runPwsh(["-File", file], cwd);
+    const result = runPwsh(["-File", file], cwd, {
+      CAMPUS_DIR: vars.campus || process.env.CAMPUS_DIR || "",
+      CAMPUS_SRC: vars.campus || process.env.CAMPUS_DIR || "",
+    });
     fs.rmSync(file, { force: true });
     const output = forwardOutput(result);
     if (result.status !== 0) {
@@ -417,7 +420,7 @@ async function main() {
     fail("token", "missing");
     process.exit(1);
   }
-  const vars = { workspace: path.dirname(milo), miloSha, temp };
+  const vars = { workspace: path.dirname(milo), miloSha, temp, campus };
   const campusLink = path.join(milo, "campus");
   if (campus && milo && !fs.existsSync(campusLink)) {
     try {
