@@ -833,6 +833,13 @@ def test_owner_review_rejects_meta_echo_and_a_single_part_price(monkeypatch):
         objective,
     )
     assert full_quote
+    businesses = section_rejection(
+        "target customer",
+        "UK businesses requiring temporary coffee solutions without long-term commitments.",
+        "Rental coffee machines from £10 a week.",
+        coffee,
+    )
+    assert businesses == ""
     meta_cta = section_rejection(
         "call to action",
         'ask for a quote" might be tricky because it could imply a quote, but in this context it is for the rental.',

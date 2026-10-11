@@ -423,7 +423,9 @@ def narration_reason(line: str) -> str:
     compact = re.sub(r"\s+", "", lowered)
     if re.search(r"(.{1,4})\1{6,}", compact):
         return "The line is repeated characters, not a sentence."
-    if re.search(r"\b(let's|let’s|i think|we need to|the user|they need me|service words|kind of buyer|in this context|might be tricky|without avoiding|full damage)\b", lowered):
+    if re.search(r"\b(let's|let’s|i think|we need to|the user|they need me|service words|kind of buyer|in this context|might be tricky|without avoiding|full damage|not a step|can you help me)\b", lowered):
+        return "The line is model self-talk, not a sentence the owner can use."
+    if re.search(r"\bask\s+\d+\b", lowered):
         return "The line is model self-talk, not a sentence the owner can use."
     if re.search(r"\b(name a customer|name a problem|name the owner|name two opened|crafting the|looking at the prices)\b", lowered):
         return "The section describes the task instead of answering it."
@@ -615,7 +617,7 @@ def _advert_from_lines(lines: list[str]) -> str:
                 headline, body, cta = content, "", ""
             elif label == "body" and headline and not body:
                 body = content
-            elif label == "call to action" and headline and body and not cta:
+            elif label == "call to action" and headline and body:
                 cta = content
             if headline and body and cta:
                 break
@@ -625,7 +627,7 @@ def _advert_from_lines(lines: list[str]) -> str:
             continue
         if headline and body and not cta and _advert_content_ok("call to action", stripped):
             cta = stripped
-            break
+            continue
     if not (headline and body and cta) and len(plain) >= 3:
         headline, body, cta = plain[0], plain[1], plain[2]
     if not (headline and body and cta):
@@ -794,6 +796,9 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
     """A readable reason this check failed. Empty when the section passes."""
     if not (raw or "").strip():
         return "The model returned nothing."
+    raw = _without_service_area(raw, objective)
+    if not raw.strip():
+        return "The section invents a service area. The request says not to."
     leaked = _example_leak(raw, objective, blob)
     if leaked:
         return leaked
@@ -827,6 +832,8 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return _body_rejection(cleaned) or "The section did not pass the sentence check."
     if _unsupported_percent(cleaned, blob):
         return "The section states a percentage that is not on an opened page."
+    if _invented_saving(cleaned, blob):
+        return "The section states a saving that is not on an opened page."
     if _invented_service_area(cleaned, objective):
         return "The section invents a service area. The request says not to."
     if _confirm_request(cleaned):
@@ -846,6 +853,7 @@ _BUYERS = (
     "office", "renter", "buyer", "cafe", "restaurant", "hotel", "school",
     "couple", "occupier", "developer", "shop", "clinic", "pub", "venue",
     "company", "firm", "studio", "resident", "people", "person", "client",
+    "business", "businesses",
 )
 _PROBLEM_BURDEN = (
     "cost", "expensive", "longer", "disruption", "waste", "budget", "delay",
@@ -878,7 +886,7 @@ _OWNER_ACTIONS = (
     "count", "draft", "publish", "phone", "email", "list", "choose", "check",
     "collect", "decide", "photograph", "call", "meet", "read", "ask", "record",
     "book", "research", "scope", "note", "post", "reach", "start", "use",
-    "send", "share",
+    "send", "share", "target", "outreach",
 )
 _CONFIRM_REQUEST = re.compile(
     r"\b(?:could you confirm|can you confirm|please confirm if|confirm if this|"
@@ -891,6 +899,10 @@ _CONFIRM_REQUEST = re.compile(
 
 def _has_word(text: str, word: str) -> bool:
     return bool(re.search(rf"\b{re.escape(word)}s?\b", text or "", re.I))
+
+
+def _has_action(text: str, word: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(word)}(?:s|ed|ing)?\b", text or "", re.I))
 
 
 def _confirm_request(text: str) -> bool:
@@ -1078,7 +1090,7 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         if re.search(r"three lines|headline\s*:|call to action\s*:", lowered):
             return "The section describes the advert format instead of a channel."
         named = [word for word in _CHANNELS if _has_word(lowered, word)]
-        actions = [word for word in _OWNER_ACTIONS if _has_word(lowered, word) and word not in named]
+        actions = [word for word in _OWNER_ACTIONS if _has_action(lowered, word) and word not in named]
         if not named or not (actions or "through" in lowered):
             return "The section does not name a channel and an action."
     elif key == "next steps":
@@ -1119,6 +1131,32 @@ def _invented_service_area(text: str, objective: str) -> bool:
     if re.search(r"\b(unknown|unresolved|not stated|not known|do not invent|no service area|limitation|boundar)\b", text or "", re.I):
         return False
     return True
+
+
+def _invented_saving(text: str, blob: str) -> bool:
+    """A saving is a claim. It has to be on an opened page."""
+    if not re.search(r"\bsave(?:s|d)?\b|\bsaving\b", text or "", re.I):
+        return False
+    return not re.search(r"\bsave(?:s|d)?\b|\bsaving\b", blob or "", re.I)
+
+
+def _without_service_area(text: str, objective: str) -> str:
+    """Drop a sentence that invents a service area. A stated gap stays."""
+    if not re.search(r"do not invent a service area", objective or "", re.I):
+        return text or ""
+    kept = []
+    for part in re.split(r"(?<=[.!?])\s+|;\s*", text or ""):
+        piece = part.strip()
+        if not piece:
+            continue
+        if re.search(r"\bservice areas?\b", piece, re.I) and not re.search(
+            r"\b(unknown|unresolved|not stated|not known|do not invent|no service area|limitation|boundar)\b",
+            piece,
+            re.I,
+        ):
+            continue
+        kept.append(piece if re.search(r"[.!?]$", piece) else piece + ".")
+    return " ".join(kept)
 
 
 def _unsupported_percent(text: str, blob: str) -> bool:

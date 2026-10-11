@@ -1391,13 +1391,13 @@ def _section_jobs(objective: str) -> tuple:
         ("service", "Service", "Write one sentence. Name the service." + shared, "The service "),
         ("target customer", "Target customer", "Write one sentence. Name the customer." + shared, "The customer is "),
         ("problem", "Problem", "Write one sentence. Name the problem." + shared, "The problem is "),
-        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer." + shared, "The offer "),
+        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs." + shared, "The offer "),
         ("competitor and market research", "Competitor and market research", "Write two sentences. Name two opened pages. State the £ figure each page gives." + shared, "Opened pages state "),
         ("pricing", "Pricing", "Write one assumption line for each part. Label each part. Copy a £ figure from the price list when that list prices the part. Write not stated on an opened page only when it does not. Parts: " + labeled + "." + shared, "Assumption: "),
         ("channels", "Channels", "Write one sentence. Name the channel. Say what the owner does there." + shared, "Customers are reached through "),
         ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\n" + shared, ""),
         ("call to action", "Call to action", "Write one sentence. Ask the customer to take a step." + shared, "Ask "),
-        ("next steps", "Next steps", "Write one sentence. Name the owner's next action." + shared, "The owner "),
+        ("next steps", "Next steps", "Write one sentence. Name the owner's next action. Do not name a service area." + shared, "The owner phones "),
         ("assumptions", "Assumptions", "Write one sentence. Name one assumption." + shared, "The plan assumes "),
         ("unresolved", "Unresolved", "Write one sentence. Name one open fact." + shared, "Still open: "),
     )
@@ -1480,10 +1480,38 @@ def _section_prompt(instruction: str, attempt: int, reason: str, prices: str) ->
     return f"{lead}{prices}"
 
 
+def _price_copy_hint(objective: str, blob: str) -> str:
+    """The £ figure to copy for each part. A missing figure stays not stated."""
+    from .deliverable import _item_present, covered_items
+
+    lines = []
+    for item in covered_items(objective):
+        figure = ""
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", blob or ""):
+            if not _item_present(item, sentence):
+                continue
+            found = re.findall(r"£\s*[\d,]+(?:\.\d+)?(?:\s*[–\-]\s*£?\s*[\d,]+(?:\.\d+)?)?", sentence)
+            if found:
+                figure = found[0]
+                break
+        if figure:
+            lines.append(f"{item}: copy {figure} and do not change the numbers")
+        else:
+            lines.append(f"{item}: not stated on an opened page")
+    if not lines:
+        return ""
+    return "Copy these figures. Do not average a range and do not write a number that is not here.\n" + "\n".join(lines) + "\n"
+
+
 def _write_one_section(programme: Programme, key: str, title: str, instruction: str, prefill: str = "", attempt: int = 1, reason: str = "") -> tuple[str, str, dict]:
+    from .deliverable import evidence_blob
+
+    blob = evidence_blob((programme.research or {}).get("evidence"))
+    hint = _price_copy_hint(programme.objective, blob) if key == "pricing" else ""
     prices = (
         f"\nOpened pages:\n{_opened_index(programme) or 'None.'}\n"
         f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+        f"{hint}"
     )
     user = _section_prompt(instruction, attempt, reason, prices)
     limit, stop = _section_budget(key, attempt)
