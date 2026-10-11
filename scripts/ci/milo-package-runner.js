@@ -546,7 +546,12 @@ async function main() {
     process.exit(1);
   }
   const acceptanceFailed = acceptOut.split(/\r?\n/).some((line) => /^FAIL\b/i.test(line.trim()));
-  if (accepted.status !== 0 || acceptanceFailed) process.exit(1);
+  if (accepted.status !== 0 || acceptanceFailed) {
+    const names = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).slice(0, 40).join(",") : "missing");
+    say(`FAIL layout: ${names(packageDir).slice(0, 400)}`);
+    say(`FAIL evidence: ${names(evidence).slice(0, 400)}`);
+    process.exit(1);
+  }
 }
 
 if (require.main === module) {
