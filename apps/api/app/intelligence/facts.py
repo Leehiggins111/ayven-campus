@@ -105,7 +105,7 @@ def _fact_row(url: str, title: str, sentence: str, text: str = "") -> dict:
 
 def _bare_price(sentence: str) -> bool:
     """A figure whose sentence does not already say what it buys."""
-    if re.search(r"\b(per\s+[a-z]+|small|medium|large|full groom|a week)\b", sentence or "", re.I):
+    if re.search(r"\b(per\s+[a-z]+|small|medium|large|full groom|a week|week)\b|/week", sentence or "", re.I):
         return False
     words = re.findall(r"[A-Za-z]+", sentence or "")
     if len(words) >= 12 and re.search(
@@ -132,9 +132,32 @@ _DIRECTORY = re.compile(
 _LOUD_PROMISE = re.compile(r"24-hour|24/7|free home visit", re.I)
 
 
+def _first_listed_price(quote: str) -> str:
+    """A breed list or a tariff keeps the first price. A package stays whole."""
+    quote = quote or ""
+    amounts = re.findall(r"£\s*\d", quote)
+    if len(amounts) < 3 or re.search(r"\bpackages?\b", quote, re.I):
+        return quote
+    from .deliverable import _rate_card
+
+    if len(amounts) < 5 and not _rate_card(quote):
+        return quote
+    named = re.search(
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s+(£\s*\d[\d,]*(?:\.\d+)?\+?(?:/week)?)",
+        quote,
+    )
+    if named:
+        return f"{named.group(1)} {named.group(2)}"
+    money = re.search(r"£\s*\d[\d,]*(?:\.\d+)?\+?(?:/week)?", quote)
+    if not money:
+        return quote
+    start = quote.rfind(" ", 0, max(0, money.start() - 24))
+    return quote[start + 1 if start >= 0 else 0 : money.end()].strip(" -:,")
+
+
 def _price_table(fact: dict) -> bool:
     """A row of materials and prices is not one offer."""
-    return len(re.findall(r"£\s*\d", fact.get("quote") or "")) >= 5
+    return len(re.findall(r"£\s*\d", _first_listed_price(fact.get("quote") or ""))) >= 5
 
 
 def _spec_sheet(fact: dict) -> bool:
@@ -146,7 +169,7 @@ def _spec_sheet(fact: dict) -> bool:
 def _rate_card_quote(fact: dict) -> bool:
     from .deliverable import _rate_card
 
-    return bool(_rate_card(fact.get("quote") or ""))
+    return bool(_rate_card(_first_listed_price(fact.get("quote") or "")))
 
 
 def _repair_service(fact: dict) -> bool:
@@ -255,6 +278,12 @@ def extract_facts(evidence: list[dict] | None) -> list[dict]:
                 ):
                     sentence = sentence.rstrip() + " " + nxt
                 row = _fact_row(url, title, sentence, text)
+                row["quote"] = _first_listed_price(row["quote"])
+                amount = _MONEY.search(row["quote"] or "")
+                if amount:
+                    row["quantity"] = amount.group(0)
+                unit = _UNIT.search(row["quote"] or "")
+                row["unit"] = unit.group(0) if unit else ""
                 if not row["unit"] and _bare_price(row["quote"]):
                     row["quote"] = (
                         row["quote"].rstrip(".")
@@ -569,7 +598,7 @@ def _without_spec(quote: str) -> str:
 
 def _market_line(fact: dict) -> str:
     """The opened quote, the site, and the citation, as one sentence. No amount is added."""
-    quote = _clip_quote(_without_spec(_first_band(fact.get("quote") or "")))
+    quote = _clip_quote(_without_spec(_first_band(_first_listed_price(fact.get("quote") or ""))))
     host = _host(fact.get("source") or "")
     cite = f"[{fact['id']}]"
     entity = re.sub(r"\s+", " ", fact.get("entity") or "").strip()

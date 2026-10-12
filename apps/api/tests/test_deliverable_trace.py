@@ -1684,3 +1684,62 @@ def test_owner_review_rejects_a_thin_plan():
     assert "does not give the size" in priced
     assert priced.lower().count("assumption") == 1
     assert "[F" not in priced.split("Assumption:", 1)[-1]
+
+
+def test_one_business_under_two_labels_is_not_two_competitors():
+    """Refresh Kitchen and Refresh Your Kitchen are one business. A cost guide is not the second."""
+    from app.intelligence.deliverable import section_rejection
+
+    body = (
+        'Refresh Kitchen states "Refresh Your Kitchen can transform a kitchen for £950." (refreshkitchen.co.uk).\n'
+        'bestbuilders states "door replacement costs £10 to £40 per standard door." (www.bestbuilders.co.uk).'
+    )
+    blob = (
+        "https://refreshkitchen.co.uk/ £950\n"
+        "https://www.bestbuilders.co.uk/guides/costs/kitchen-door-replacement-cost £10 £40 per standard door"
+    )
+    objective = "The service replaces kitchen doors, and it avoids a full kitchen replacement."
+    assert "fewer than two" in section_rejection("competitor and market research", body, blob, objective)
+
+
+def test_a_breed_price_list_keeps_one_offer():
+    """A page of breed prices is one offer, and the competitor section still cites that £."""
+    from app.intelligence.deliverable import evidence_blob, section_rejection
+    from app.intelligence.facts import extract_facts, repair_before_gate
+
+    evidence = [{
+        "source_url": "https://www.bluedogmobile.co.uk/prices",
+        "source_title": "Blue Dog Mobile Grooming",
+        "extracted_content": (
+            "Prices by Dog Breed A Afghan Hound £95+ Airedale Terrier £73 Beagle £48 "
+            "Border Collie £63 Bichon Frise £58"
+        ),
+    }, {
+        "source_url": "https://www.themobilegroomroom.co.uk/",
+        "source_title": "The Mobile Groom Room",
+        "extracted_content": "The Mobile Groom Room offers a convenient dog grooming service at your door.",
+    }]
+    facts = extract_facts(evidence)
+    quote = facts[0]["quote"]
+    assert quote.count("£") == 1
+    assert "95" in quote
+    assert "48" not in quote
+    objective = (
+        "The service grooms dogs at the customer's home or in a van, and it is not a kennel."
+    )
+    blob = evidence_blob(evidence)
+    repaired = repair_before_gate(
+        "competitor and market research",
+        "Groom & Zoom offers a door-to-door service.",
+        facts,
+        objective,
+        blob,
+    )
+    assert "£95" in repaired
+    assert "£48" not in repaired and "£73" not in repaired
+    assert "kennel" in repaired.lower()
+    assert not section_rejection("competitor and market research", repaired, blob, objective)
+    priced = repair_before_gate("pricing", "£48 to £95 for different breeds.", facts, objective, blob)
+    assert "£95" in priced and "assumption" in priced.lower()
+    assert "£48" not in priced
+    assert not section_rejection("pricing", priced, blob, objective)

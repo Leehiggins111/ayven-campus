@@ -1823,7 +1823,18 @@ _WHEN = re.compile(
 )
 
 
-def _competitor_names(body: str) -> list[str]:
+def _guide_host(host: str, blob: str) -> bool:
+    """A cost-guide URL is not a competitor."""
+    host = (host or "").lower()
+    if not host:
+        return False
+    for url in re.findall(r"https?://[^\s)>\"]+", blob or "", re.I):
+        if host in url.lower() and guide_page(url, ""):
+            return True
+    return False
+
+
+def _competitor_names(body: str, blob: str = "") -> list[str]:
     """Named businesses whose sentence also says what they offer."""
     found: list[str] = []
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
@@ -1841,14 +1852,26 @@ def _competitor_names(body: str) -> list[str]:
                 continue
             names.append(phrase.lower())
         for host in _HOST_IN_TEXT.findall(sentence):
-            if market_report_page(host, ""):
+            if market_report_page(host, "") or _guide_host(host, blob):
                 continue
             hosts.append(host.lower())
-        chosen = names if len(names) >= 2 else (names[:1] or hosts[:1])
+        chosen = names[:1] or hosts[:1]
         for name in chosen:
+            if any(_same_business(name, kept) for kept in found):
+                continue
             if name not in found:
                 found.append(name)
     return found
+
+
+def _same_business(left: str, right: str) -> bool:
+    """Two labels for one company, such as Refresh Kitchen and Refresh Your Kitchen."""
+    stop = {"your", "the", "and", "uk"}
+    a = [word for word in (left or "").split() if word not in stop]
+    b = [word for word in (right or "").split() if word not in stop]
+    if not a or not b or a[0] != b[0]:
+        return False
+    return set(a) <= set(b) or set(b) <= set(a)
 
 
 def _offer_differs(body: str, objective: str) -> bool:
@@ -1919,7 +1942,7 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         priced = _competitor_prices(body, blob)
         if priced:
             return priced
-        if len(_competitor_names(body)) < 2:
+        if len(_competitor_names(body, blob)) < 2:
             return "The competitor section names fewer than two competitors and what each offers."
         if not _offer_differs(body, objective):
             return "The competitor section does not say how this service differs."
