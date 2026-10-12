@@ -1811,9 +1811,12 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             ):
                 use_prefill = "The owner uses "
                 use_instruction = instruction + " Do not claim that the service is available at all hours."
-            elif key == "channels" and attempt > 1 and "names the person" in (rejected.get(key) or "").lower():
+            elif key == "channels" and attempt > 1 and (
+                "names the person" in (rejected.get(key) or "").lower()
+                or "comes from an opened page" in (rejected.get(key) or "").lower()
+            ):
                 use_prefill = "The owner uses "
-                use_instruction = instruction + " Do not name the person who wrote the request."
+                use_instruction = instruction + " Do not name the person who wrote the request. Do not use a business name from an opened page."
             elif key == "next steps" and attempt > 1 and "names the person" in (rejected.get(key) or "").lower():
                 use_prefill = "In the first week the owner "
                 use_instruction = instruction + " Do not name the person who wrote the request."

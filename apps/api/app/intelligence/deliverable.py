@@ -683,8 +683,13 @@ def _advert_content_ok(label: str, content: str) -> bool:
     if _narration_line(content):
         return False
     lowered = content.lower()
-    if any(phrase in lowered for phrase in _ADVERT_BAD):
-        return False
+    for phrase in _ADVERT_BAD:
+        if " " in phrase or phrase.startswith("["):
+            hit = phrase in lowered
+        else:
+            hit = bool(re.search(rf"\b{re.escape(phrase)}\b", lowered))
+        if hit:
+            return False
     if lowered.rstrip(" .:") in {"headline", "body", "call to action"}:
         return False
     return True
@@ -915,7 +920,7 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
         for candidate in candidates:
             parts = [
                 part for part in re.findall(r"[a-z0-9]+", candidate.lower())
-                if part not in {"s", "the", "and", "for", "uk", "at", "your", "our"} and len(part) > 1
+                if part not in {"s", "the", "and", "for", "uk", "at", "your", "our", "new"} and len(part) > 1
             ]
             stems = {word[:-1] if word.endswith("s") and len(word) > 4 else word for word in words}
             if len(parts) < 2 or all(
