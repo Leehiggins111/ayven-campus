@@ -791,12 +791,11 @@ def _use_stated_unit(text: str, facts: list[dict] | None) -> str:
 
 
 def _pricing_section(text: str, facts: list[dict] | None, objective: str, *, skip_title_only: bool = False) -> str:
-    """Up to three opened £ lines, then one Assumption. The model's worksheet is not reused.
+    """Up to three opened £ lines, plus the assumption line the model already wrote.
 
     A copied request, a page title, and a new £ figure are not the section.
+    The method sentence is not written here.
     """
-    from .deliverable import covered_items, measurements_still_needed
-
     priced = [fact for fact in (facts or []) if "£" in (fact.get("quantity") or "")]
     priced.sort(key=lambda fact: (0 if fact.get("unit") else 1, 0 if fact.get("business") else 1, 1 if fact.get("title_only") else 0))
     lines = []
@@ -820,18 +819,9 @@ def _pricing_section(text: str, facts: list[dict] | None, objective: str, *, ski
             continue
         seen.add(key)
         lines.append(line)
-    items = covered_items(objective)
-    needed = measurements_still_needed(objective)
-    lowered = (objective or "").lower()
-    if items or needed:
-        assumption = _pricing_method(items, needed, facts)
-    elif re.search(r"\brent", lowered):
-        assumption = "Assumption: the weekly price is set after seeing the site and which machine is wanted."
-    elif "kennel" in lowered:
-        assumption = "Assumption: the price is set after seeing the animal."
-    else:
-        assumption = f"Assumption: the price for {_service_topic(objective)} is set after measuring."
-    lines.append(assumption)
+    assumption = _model_assumption(text)
+    if assumption:
+        lines.append(assumption)
     return "\n".join(lines).strip()
 
 
@@ -850,35 +840,12 @@ def _and_the(parts: list[str]) -> str:
     return _plain_and([part if part.lower().startswith("the ") else f"the {part}" for part in parts])
 
 
-def _pricing_method(items: list[str], needed: list[str], facts: list[dict] | None) -> str:
-    """How the measured inputs become a price. A unit is used only when a fact states it."""
-    blob = " ".join(f"{fact.get('unit') or ''} {fact.get('quote') or ''}" for fact in facts or [])
-    per_door = bool(re.search(r"per\s+(?:standard\s+|kitchen\s+)?doors?\b", blob, re.I))
-    without_square = re.sub(r"per\s+square\s+(?:metre|meter)s?", " ", blob, flags=re.I)
-    per_metre = bool(re.search(r"per\s+(?:linear\s+)?(?:metre|meter)s?\b", without_square, re.I))
-    bits = []
-    seen = set()
-    for item in items:
-        stem = item[:-1] if item.endswith("s") and len(item) > 4 else item
-        if stem in seen:
-            continue
-        seen.add(stem)
-        if stem == "door" and per_door:
-            bits.append("price each door from the opened per door figures")
-        elif "worktop" in item and per_metre:
-            bits.append("price the worktop per metre from the measured length and material")
-        elif "worktop" in item:
-            bits.append("price the worktop from the measured length and material")
-        elif stem == "handle":
-            bits.append("count the handles")
-        else:
-            bits.append(f"price the {item} from the measurements")
-    if not bits:
-        bits.append("price the work from the measurements")
-    measure = ""
-    if needed:
-        measure = " Measure " + _and_the(needed) + " before a price is written."
-    return "Assumption: " + _plain_and(bits) + "." + measure
+def _model_assumption(text: str) -> str:
+    """The assumption line the model already wrote. A repair does not compose a new one."""
+    for line in (text or "").splitlines():
+        if line.strip().lower().startswith("assumption:"):
+            return line.strip()
+    return ""
 
 
 def _service_topic(objective: str) -> str:
@@ -1071,24 +1038,8 @@ def _repair_next_steps(objective: str) -> str:
 
 
 def _repair_offer(objective: str) -> str:
-    from .deliverable import covered_items, measurements_still_needed
-
-    package = _cover_phrase(objective)
-    lowered = (objective or "").lower()
-    items = covered_items(objective)
-    needed = measurements_still_needed(objective)
-    if re.search(r"\bfull (?:kitchen )?replacement\b", lowered) and len(items) >= 2:
-        visit = f" The visit measures {_and_the(needed)}." if needed else ""
-        return f"The package replaces {_and_the(items)}.{visit} It differs from a full replacement."
-    if "kennel" in lowered:
-        contrast = "a kennel"
-    elif re.search(r"\brent", lowered):
-        contrast = "buying the machine outright"
-    elif re.search(r"\bfull (?:kitchen )?replacement\b", lowered):
-        contrast = "a full replacement"
-    else:
-        contrast = "the longer alternative"
-    return f"The offer is a package covering {package}, and it differs from {contrast}."
+    """The model writes the offer. A repair may reject this section, not replace it."""
+    return ""
 
 
 def _difference(objective: str) -> str:

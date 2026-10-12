@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -128,21 +132,104 @@ def _objective_for(request: dict, parent_id: str) -> str:
     return str(obs.get("understood_objective") or request["objective"])
 
 
+def _api_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "apps" / "api"
+
+
+def _http_json(method: str, url: str, body: dict | None = None, timeout: float = 60) -> dict:
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:300]
+        raise RuntimeError(f"{method} {url} HTTP {exc.code}: {detail}") from exc
+
+
+def _wait_health(base: str, timeout: float = 60) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            _http_json("GET", base + "/health", timeout=3)
+            return
+        except Exception:
+            time.sleep(0.5)
+    raise RuntimeError("Campus API did not answer /health")
+
+
+def _start_api() -> tuple:
+    """The process Milo embeds: uvicorn app.main:app, then POST /milo/jobs."""
+    port = int(os.environ.get("AYVEN_EVAL_PORT", "8877"))
+    base = f"http://127.0.0.1:{port}"
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
+        cwd=_api_dir(),
+        env=os.environ.copy(),
+    )
+    return proc, base
+
+
+def _stop_api(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+_JOB_TERMINAL = {"COMPLETED", "FAILED", "UNRESOLVED", "AWAITING_APPROVAL", "REPAIRING"}
+
+
+def _run_milo_job(base: str, request: dict) -> dict:
+    """Submit through the installed Milo route and read the result Milo stores."""
+    created = _http_json("POST", base + "/milo/jobs", {"objective": request["objective"], "title": request["title"]})
+    project_id = created.get("project_id") or ""
+    if not project_id:
+        raise RuntimeError("POST /milo/jobs did not return a project_id")
+    answered = False
+    deadline = time.time() + float(os.environ.get("AYVEN_EVAL_JOB_BUDGET_S", "5400"))
+    last: dict = {}
+    while time.time() < deadline:
+        last = _http_json("GET", base + f"/milo/jobs/{project_id}", timeout=60)
+        state = last.get("workflow_state") or ""
+        if state == "AWAITING_CLARIFICATION" and request.get("answer") and not answered:
+            package_id = last.get("package_id") or ""
+            if not package_id:
+                raise RuntimeError("clarification was waiting and the job had no package_id")
+            _http_json("POST", base + f"/work-packages/{package_id}/clarification", {"answer": request["answer"]})
+            answered = True
+            time.sleep(2)
+            continue
+        if state in _JOB_TERMINAL:
+            return last
+        if state == "AWAITING_CLARIFICATION" and not request.get("answer"):
+            return last
+        time.sleep(8)
+    raise TimeoutError(f"milo job {project_id} stayed at {last.get('workflow_state') or last.get('status')}")
+
+
 def run_pipeline(request: dict, out_dir: Path) -> dict:
-    from app.intelligence.execution import answer_clarification, run_objective
     from app.intelligence.store import package
 
     from scripts.model_eval.score import call_timing, score_plan
 
+    proc, base = _start_api()
     started = time.time()
-    project_id = _insert_project(request["objective"], request["title"])
-    parent_id = run_objective(project_id, request["objective"], None)
-    row = package(parent_id) or {}
-    if request.get("answer") and (row.get("workflow_state") or "") == "AWAITING_CLARIFICATION":
-        answer_clarification(parent_id, request["answer"])
+    try:
+        _wait_health(base)
+        status = _run_milo_job(base, request)
+    finally:
+        _stop_api(proc)
     wall = round(time.time() - started, 1)
+    project_id = status.get("project_id") or ""
+    parent_id = status.get("package_id") or ""
+    plan = status.get("result") or ""
     rows = _rows(project_id)
-    plan = _draft_text(rows)
     evidence, pages = _evidence_text(parent_id)
     objective = _objective_for(request, parent_id)
     try:
@@ -168,6 +255,8 @@ def run_pipeline(request: dict, out_dir: Path) -> dict:
     result = {
         "id": request["id"],
         "status": "completed",
+        "entry": "POST /milo/jobs",
+        "workflow_state": status.get("workflow_state") or "",
         "wall_s": wall,
         "project_id": project_id,
         "package_id": parent_id,
@@ -180,7 +269,7 @@ def run_pipeline(request: dict, out_dir: Path) -> dict:
     (out_dir / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(
         (
-            f"eval {request['id']} status=completed gate={scored['gate_pass']} "
+            f"eval {request['id']} entry=POST /milo/jobs status=completed gate={scored['gate_pass']} "
             f"job_s={wall:.0f} load_s={timing['load_s']:.0f} "
             f"prompt_tps={timing['prompt_tokens_per_second']} gen_tps={timing['generation_tokens_per_second']} "
             f"calls={timing['model_calls']} retries={timing['retries']} timeouts={timing['timeouts']}"

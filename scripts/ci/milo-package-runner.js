@@ -441,16 +441,7 @@ async function main() {
     process.exit(1);
   }
   const vars = { workspace: path.dirname(milo), miloSha, temp, campus };
-  if (campus && milo) {
-    for (const dest of [path.join(milo, "campus"), path.join(milo, "campus-src"), path.join(path.dirname(milo), "campus-src")]) {
-      if (fs.existsSync(dest)) continue;
-      try {
-        fs.symlinkSync(campus, dest, "junction");
-      } catch {
-        // The embed step can still use CAMPUS_DIR when the link cannot be created.
-      }
-    }
-  }
+  linkCampus(milo, campus);
   const preludeOk = runPrelude(milo, vars);
   const discovered = discover([work, milo, campus, temp, process.env.RUNNER_TEMP || ""]);
   if (!preludeOk || !discovered.unpacked || !discovered.python) {
@@ -477,6 +468,12 @@ async function main() {
     reportFailure("assemble", assembleOut);
     process.exit(1);
   }
+  const bundle = campusRenderMatches(packageDir, campus);
+  if (!bundle.ok) {
+    fail("bundle", bundle.reason);
+    process.exit(1);
+  }
+  say(`PASS bundle ${bundle.reason}`);
   const seedScript = path.join(milo, "scripts", "windows", "seed-sample-databases.js");
   const [miloDb, campusDb] = seedArguments(fs.existsSync(seedScript) ? fs.readFileSync(seedScript, "utf8") : "", packageDir);
   const seeded = runNode([
@@ -569,6 +566,63 @@ if (require.main === module) {
   });
 }
 
+function linkCampus(milo, campus) {
+  if (!campus || !milo || !fs.existsSync(campus)) return [];
+  const linked = [];
+  const dests = [path.join(milo, "campus"), path.join(milo, "campus-src"), path.join(path.dirname(milo), "campus-src")];
+  for (const dest of dests) {
+    if (path.resolve(dest) === path.resolve(campus)) continue;
+    try {
+      if (fs.existsSync(dest)) {
+        const current = fs.lstatSync(dest).isSymbolicLink() ? fs.realpathSync(dest) : "";
+        if (current && path.resolve(current) === path.resolve(campus)) continue;
+        fs.rmSync(dest, { recursive: true, force: true });
+      }
+      fs.symlinkSync(campus, dest, process.platform === "win32" ? "junction" : "dir");
+      linked.push(dest);
+    } catch {
+      // Assemble-Package still receives -CampusSrc when the link cannot be created.
+    }
+  }
+  return linked;
+}
+
+function bundledRender(packageDir) {
+  const found = [];
+  const walk = (dir, depth) => {
+    if (!dir || depth > 8 || !fs.existsSync(dir)) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, depth + 1);
+      else if (entry.name === "render.py") found.push(full);
+    }
+  };
+  walk(packageDir, 0);
+  return found;
+}
+
+function campusRenderMatches(packageDir, campusDir) {
+  const source = path.join(campusDir || "", "apps", "api", "app", "intelligence", "render.py");
+  const marker = "Facts come from the request or from a page that was opened";
+  if (!campusDir || !fs.existsSync(source)) return { ok: false, reason: "campus render.py is missing" };
+  const expected = fs.readFileSync(source, "utf8");
+  const found = bundledRender(packageDir);
+  if (!found.length) return { ok: false, reason: "render.py was not copied into the package" };
+  const stale = found.filter((file) => {
+    const text = fs.readFileSync(file, "utf8");
+    return text !== expected || !text.includes(marker) || !text.includes("Target customer");
+  });
+  if (stale.length) return { ok: false, reason: `stale render.py ${stale.map((file) => path.relative(packageDir, file)).join(",")}` };
+  return { ok: true, reason: `${found.length} render.py` };
+}
+
 module.exports = {
   parseWorkflowSteps,
   selectSteps,
@@ -579,4 +633,6 @@ module.exports = {
   checksumHex,
   diagnosticLines,
   seedArguments,
+  linkCampus,
+  campusRenderMatches,
 };

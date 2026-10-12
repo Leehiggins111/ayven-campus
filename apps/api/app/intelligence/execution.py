@@ -740,6 +740,16 @@ class Programme:
         facts = self._facts()
         completion = score_task(self.task_class, render_parent(facts, self.audits, decision), self.research, self.quote)
         findings = render_parent(facts, self.audits, decision, completion)
+        if self.task_class == "business_research" and drafts and (drafts[0] or "").strip():
+            body = drafts[0].strip()
+            table_facts = self.research.get("fact_table") or []
+            if table_facts and not body.startswith("Facts:"):
+                index = ["Facts:"]
+                for fact in table_facts:
+                    quote = re.sub(r"\s+", " ", fact.get("quote") or "")
+                    index.append(f"[{fact.get('id')}] {fact.get('source') or ''} {fact.get('quantity') or 'none'} {quote}"[:400])
+                body = "\n".join(index) + "\n\n" + body
+            findings = body if body.endswith("\n") else body + "\n"
         verification = verify(self.objective, self.task_class, all_claims, self.research)
         quality = quality_score(self.task_class, all_claims, self.research, verification, "ACCEPT", self.quote)
         save_verification(self.parent_id, "manager", MANAGER, decision, {

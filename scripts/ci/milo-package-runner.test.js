@@ -68,6 +68,30 @@ test("expressions are substituted and logs stay narrow", () => {
   assert.equal(lines.some((line) => line.includes("$")), false);
 });
 
+test("a vendored campus tree is replaced by the checkout, and a stale render.py fails", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "milo-link-"));
+  const campus = path.join(root, "campus");
+  const milo = path.join(root, "milo");
+  const render = path.join(campus, "apps", "api", "app", "intelligence");
+  fs.mkdirSync(render, { recursive: true });
+  fs.mkdirSync(path.join(milo, "campus", "old"), { recursive: true });
+  const source = "def _business_plan():\n    return 'Facts come from the request or from a page that was opened\\nTarget customer'\n";
+  fs.writeFileSync(path.join(render, "render.py"), source);
+  fs.writeFileSync(path.join(milo, "campus", "render.py"), "old briefing\n");
+  const linked = runner.linkCampus(milo, campus);
+  assert.equal(linked.length > 0, true);
+  assert.equal(fs.readFileSync(path.join(milo, "campus", "apps", "api", "app", "intelligence", "render.py"), "utf8"), source);
+  const packaged = path.join(root, "package");
+  fs.mkdirSync(path.join(packaged, "app"), { recursive: true });
+  fs.writeFileSync(path.join(packaged, "app", "render.py"), "old briefing\n");
+  const stale = runner.campusRenderMatches(packaged, campus);
+  assert.equal(stale.ok, false);
+  fs.writeFileSync(path.join(packaged, "app", "render.py"), source);
+  const fresh = runner.campusRenderMatches(packaged, campus);
+  assert.equal(fresh.ok, true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("sample database arguments are files the seed script can replace", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "seed-args-"));
   const [miloDb, campusDb] = runner.seedArguments(

@@ -54,9 +54,9 @@ def _door_section(user: str) -> str:
         )
     if "Do not invent a £ figure" in user:
         return (
-            "Assumption: doors — not stated as a durable price, so the kitchen doors are counted on a visit.\n"
-            "Assumption: worktops — not stated on an opened page.\n"
-            "Assumption: handles — not stated on an opened page."
+            "Assumption: price each door from the measured door count, price the worktop from the measured length and material, "
+            "and count the handles. Measure the kitchen size, the door count, the door size, the worktop length, "
+            "the worktop material, and the handle count before a price is written."
         )
     if "Name the channel." in user:
         return "Customers are reached through local search in the first week, where the owner posts one note about replacing kitchen doors, worktops and handles."
@@ -289,3 +289,38 @@ def test_door_job_then_coffee_job_share_nothing(monkeypatch):
     assert any("door" in query.lower() or "worktop" in query.lower() for query in door_obs.get("queries") or [])
     assert coffee_obs.get("queries")
     assert all("coffee" in query.lower() or "rental" in query.lower() for query in coffee_obs.get("queries") or [])
+    assert all("uk" in query.lower() for query in coffee_obs.get("queries") or [])
+
+
+def test_a_uk_search_keeps_the_region_and_a_location_dump_is_not_stored():
+    from app.intelligence.research import _location_dump, plan_queries
+
+    planned, source = plan_queries("business_research", COFFEE)
+    assert source == "objective-fallback"
+    assert planned
+    assert all("uk" in query.lower() for query in planned)
+    assert _location_dump('{"locations":[{"lat": 42.9, "lng": -88.0, "city": "Hales Corners"}]}') is True
+    assert _location_dump("We rent coffee machines in the UK from 31 pounds a week.") is False
+
+
+def test_the_installed_job_route_is_milo_jobs():
+    """Milo submits POST /milo/jobs. The eval and the package call that route."""
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as client:
+        created = client.post("/milo/jobs", json={"objective": "Create a business launch plan.", "title": "alba"})
+        assert created.status_code == 200
+        project_id = created.json()["project_id"]
+        status = {}
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            status = client.get(f"/milo/jobs/{project_id}").json()
+            if status.get("workflow_state") == "AWAITING_CLARIFICATION":
+                break
+            time.sleep(0.2)
+    assert status.get("workflow_state") == "AWAITING_CLARIFICATION"
+    assert status.get("package_id")

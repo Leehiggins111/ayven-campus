@@ -30,6 +30,8 @@ jobs:
       AYVEN_SUPERVISOR_MODEL: qwen3:4b
       AYVEN_MANAGER_MODEL: qwen3:4b
       AYVEN_PLAN_MODEL: qwen3:8b
+      AYVEN_ALLOW_CODE: "1"
+      AYVEN_RESEARCH_MODE: live
       OLLAMA_MAX_LOADED_MODELS: "1"
     steps:
       - name: Mask build token

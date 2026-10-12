@@ -127,6 +127,33 @@ def _queries_cover_anchor(queries: list[str], objective: str) -> bool:
     return any(_blob_has_term(term, blob) for term in anchors)
 
 
+def _stamp_region(queries: list[str], objective: str) -> list[str]:
+    """A UK request keeps UK on every search. The model does not get to drop the place."""
+    from .deliverable import region_token
+
+    region = region_token(objective)
+    if not region:
+        return list(queries or [])
+    stamped = []
+    for query in queries or []:
+        text = (query or "").strip()
+        if not text:
+            continue
+        if region.lower() not in text.lower():
+            text = f"{text} {region}".strip()[:180]
+        if text not in stamped:
+            stamped.append(text)
+    return stamped
+
+
+def _location_dump(text: str) -> bool:
+    """A places payload is not a business page. Latitude fields are the signal."""
+    raw = text or ""
+    if raw.count("{") < 2:
+        return False
+    return bool(re.search(r'"(?:lat|lng|latitude|longitude)"\s*:', raw, re.I))
+
+
 def generic_from_objective(objective: str) -> list[str]:
     """Queries from the brief only. No task-class table and no exam seed list.
 
@@ -157,7 +184,7 @@ def generic_from_objective(objective: str) -> list[str]:
         fallback = objective.strip()[:160]
         if not reject_search_query(fallback, objective):
             queries.append(fallback)
-    return queries[:8]
+    return _stamp_region(queries[:8], objective)
 
 
 def _normalise_queries(raw) -> list[str]:
@@ -225,7 +252,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                         planned.append(extra)
             if planned:
                 _put_service_queries_first(planned, objective)
-                return planned[:8], "model"
+                return _stamp_region(planned[:8], objective), "model"
             return generic_from_objective(objective), "objective-fallback"
         except Exception:
             return generic_from_objective(objective), "objective-fallback"
@@ -265,7 +292,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                             planned.append(extra)
                 if planned:
                     _put_service_queries_first(planned, objective)
-                    return planned[:8], "model"
+                    return _stamp_region(planned[:8], objective), "model"
             except Exception:
                 pass
     return generic_from_objective(objective), "objective-fallback"
@@ -835,6 +862,18 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 source_title=page.get("title") or "", error="js_wall", extracted_content="",
                 timestamp=page.get("retrieved_at") or now(),
                 metadata={"mode": mode, "evidence_level": "unusable", "attempts": attempts, "js_only": True, "browser": decision["action"]},
+            )
+        if _location_dump(text):
+            return ToolResult(
+                tool="fetch_page",
+                status="error",
+                query=query,
+                source_url=page.get("url") or u,
+                source_title=page.get("title") or h.get("title") or "",
+                error="location_dump",
+                extracted_content="",
+                timestamp=page.get("retrieved_at") or now(),
+                metadata={"mode": mode, "evidence_level": "none", "relevant": False, "freshness": "UNRESOLVED", "round": depth},
             )
         extract = _relevant(text, query)
         tokens = re.findall(r"[a-z0-9]{4,}", query.lower())

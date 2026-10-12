@@ -229,9 +229,9 @@ def _door_section(user: str) -> str:
         )
     if "Do not invent a £ figure" in user:
         return (
-            "Assumption: doors — not stated as a durable price, so the kitchen doors are counted on a visit.\n"
-            "Assumption: worktops — not stated on an opened page.\n"
-            "Assumption: handles — not stated on an opened page."
+            "Assumption: price each door from the measured door count, price the worktop from the measured length and material, "
+            "and count the handles. Measure the kitchen size, the door count, the door size, the worktop length, "
+            "the worktop material, and the handle count before a price is written."
         )
     if "Name the channel." in user:
         return "Customers are reached through local search in the first week, where the owner posts one note about replacing kitchen doors, worktops and handles."
@@ -459,7 +459,7 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
         "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
         "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
         "competitor and market research": "Kitchen Door Co (https://doors.example/replace) states kitchen doors are £10 to £40 [F1].\nRefresh Kit (https://refreshkit.co.uk/offer) can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nThis service differs by replacing kitchen doors, worktops and handles rather than a full replacement.",
-        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nhttps://refreshkit.co.uk/offer can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nAssumption: doors, worktops, handles — what still has to be measured: kitchen size, door count, door size, worktop length, worktop material, and handle count.",
+        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nhttps://refreshkit.co.uk/offer can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nAssumption: price each door from the opened per door figures, price the worktop from the measured length and material, and count the handles. Measure the kitchen size, the door count, the door size, the worktop length, the worktop material, and the handle count before a price is written.",
         "channels": "Households are reached through local search in the first week, where the owner posts one finished kitchen and asks for a reply.",
         "advert": "",
         "call to action": "Ask for a visit and a written scope before any booking is made.",
@@ -1434,7 +1434,7 @@ def test_a_channels_availability_claim_is_retried_and_the_plan_can_keep_the_repa
         "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
         "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
         "competitor and market research": "Kitchen Door Co (https://doors.example/replace) states kitchen doors are £10 to £40 [F1].\nRefresh Kit (https://refreshkit.co.uk/offer) can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nThis service differs by replacing kitchen doors, worktops and handles rather than a full replacement.",
-        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nhttps://refreshkit.co.uk/offer can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nAssumption: doors, worktops, handles — what still has to be measured: kitchen size, door count, door size, worktop length, worktop material, and handle count.",
+        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nhttps://refreshkit.co.uk/offer can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nAssumption: price each door from the opened per door figures, price the worktop from the measured length and material, and count the handles. Measure the kitchen size, the door count, the door size, the worktop length, the worktop material, and the handle count before a price is written.",
         "channels": "",
         "advert": "Headline: Fresh kitchen doors\nBody: The service replaces kitchen doors, worktops and handles and differs from a full replacement.\nCall to action: Ask for a visit.",
         "call to action": "Ask for a visit and a written scope before any booking is made.",
@@ -1529,9 +1529,9 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     assert "fewer than two" in section_rejection("competitor and market research", repaired, blob, objective)
     pricing = "The price is set after measuring demand."
     priced = repair_before_gate("pricing", pricing, facts, objective, blob)
-    assert "£1,000" in priced
-    assert "Assumption:" in priced
-    assert section_rejection("pricing", priced, blob, objective) == ""
+    assert priced == pricing
+    assert "weekly price is set" not in priced.lower()
+    assert section_rejection("pricing", priced, blob, objective)
     assert repair_before_gate("pricing", "", facts, objective, blob) == ""
     channels = "Customers are reached through 6wresearch.com, where the owner posts one note."
     reached = repair_before_gate("channels", channels, facts, objective, blob)
@@ -1578,8 +1578,8 @@ def test_a_related_product_code_is_not_the_price():
     objective = "Prepare a UK business briefing for a coffee machine rental company."
     priced = repair_before_gate("pricing", "The price is set after measuring.", facts, objective, evidence_blob(evidence))
     assert "Jura" not in priced
-    assert "£2.70" in priced
-    assert section_rejection("pricing", priced, evidence_blob(evidence), objective) == ""
+    assert "weekly price is set" not in priced.lower()
+    assert section_rejection("pricing", priced, evidence_blob(evidence), objective)
 
 
 def test_a_title_scrap_ending_in_and_is_not_the_competitor():
@@ -1683,9 +1683,8 @@ def test_a_later_page_price_is_not_crowded_out_by_titles(monkeypatch):
         "Assumption: What still has to be measured: kitchen size, door count, door size, worktop length, worktop material, handle count."
     )
     repaired = repair_before_gate("pricing", pricing, labeled, objective, blob)
-    assert "£950" in repaired
-    assert "refreshkitchen.co.uk" in repaired
-    assert section_rejection("pricing", repaired, blob, objective) == ""
+    assert "price each door" not in repaired
+    assert section_rejection("pricing", repaired, blob, objective)
 
 
 def test_an_empty_model_search_still_opens_the_service_query(monkeypatch):
@@ -1770,12 +1769,9 @@ def test_owner_review_rejects_a_thin_plan():
     cited = "Assumption: prices range from £1,000 to £12,000 [F1]."
     assert "cited fact" in section_rejection("pricing", cited, blob, objective)
     priced = repair_before_gate("pricing", "The price is set after measuring.", facts, objective, blob)
-    assert "£950" in priced
-    assert " | " not in priced
-    assert "11.80" in priced
-    assert "does not give the size" in priced
-    assert priced.lower().count("assumption") == 1
-    assert "[F" not in priced.split("Assumption:", 1)[-1]
+    assert priced == "The price is set after measuring."
+    assert "price each door" not in priced
+    assert section_rejection("pricing", priced, blob, objective)
 
 
 def test_one_business_under_two_labels_is_not_two_competitors():
@@ -1832,9 +1828,8 @@ def test_a_breed_price_list_keeps_one_offer():
     assert "kennel" in repaired.lower()
     assert not section_rejection("competitor and market research", repaired, blob, objective)
     priced = repair_before_gate("pricing", "£48 to £95 for different breeds.", facts, objective, blob)
-    assert "£95" in priced and "assumption" in priced.lower()
-    assert "£48" not in priced
-    assert not section_rejection("pricing", priced, blob, objective)
+    assert "price is set after seeing the animal" not in priced.lower()
+    assert section_rejection("pricing", priced, blob, objective)
 
 
 def test_a_title_that_states_a_unit_keeps_that_unit():
@@ -1894,10 +1889,15 @@ def test_a_package_offer_names_what_the_visit_measures():
     generic = "The offer is a package covering doors, worktops, handles, and it differs from a full replacement."
     assert "generic" in section_rejection("offer and positioning", generic, "", DOOR)
     fixed = repair_before_gate("offer and positioning", generic, [], DOOR, "")
-    assert "doors" in fixed and "worktops" in fixed and "handles" in fixed
-    assert "door count" in fixed and "worktop length" in fixed
-    assert "differs" in fixed
-    assert section_rejection("offer and positioning", fixed, "", DOOR) == ""
+    assert "The package replaces" not in fixed
+    assert "The visit measures" not in fixed
+    assert section_rejection("offer and positioning", fixed, "", DOOR)
+    written = (
+        "The package replaces the doors, the worktops, and the handles. "
+        "The visit measures the kitchen size, the door count, the door size, the worktop length, "
+        "the worktop material, and the handle count. It differs from a full replacement."
+    )
+    assert section_rejection("offer and positioning", written, "", DOOR) == ""
     short = "The offer is a package covering a coffee machine, and it differs from buying outright."
     coffee = "The service is coffee machine rental. Buying outright is the alternative."
     assert section_rejection("offer and positioning", short, "", coffee) == ""
@@ -1987,16 +1987,16 @@ def test_pricing_names_a_method_and_uses_a_unit_only_when_the_page_states_it():
     facts = extract_facts(evidence)
     blob = evidence_blob(evidence)
     priced = repair_before_gate("pricing", "The price is set after measuring.", facts, DOOR, blob)
-    assumption = priced.split("Assumption:", 1)[-1]
-    assert "price each door" in assumption
-    assert "per door" in assumption
-    assert "worktop" in assumption and "length" in assumption
-    assert "handle" in assumption
-    assert "kitchen size" in assumption and "door count" in assumption
-    assert "per metre" not in assumption.lower() and "per meter" not in assumption.lower()
-    assert "£" not in assumption
-    assert priced.lower().count("assumption") == 1
-    assert section_rejection("pricing", priced, blob, DOOR) == ""
+    assert "price each door" not in priced
+    assert "Measure the kitchen size" not in priced
+    assert section_rejection("pricing", priced, blob, DOOR)
+    written = (
+        "Best Builders (bestbuilders.co.uk) kitchen door replacement costs £10-£40 per standard door, excluding handles [F1].\n"
+        "Assumption: price each door from the opened per door figures, price the worktop from the measured length and material, and count the handles. "
+        "Measure the kitchen size, the door count, the door size, the worktop length, the worktop material, and the handle count before a price is written."
+    )
+    assert "per metre" not in written.lower()
+    assert section_rejection("pricing", written, blob, DOOR) == ""
     bare = (
         "https://www.bestbuilders.co.uk/guides/costs/kitchen-door-replacement-cost states £10-£40 per standard door, excluding handles [F1].\n"
         "Assumption: doors, worktops, handles — what still has to be measured: kitchen size, door count, door size, "
