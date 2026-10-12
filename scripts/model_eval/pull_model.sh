@@ -51,7 +51,19 @@ if [ "$avail_kb" -lt "$need_kb" ]; then
 fi
 
 pull_start=$(date +%s)
-ollama pull "$MODEL"
+pulled=0
+for attempt in 1 2 3 4; do
+  if ollama pull "$MODEL"; then
+    pulled=1
+    break
+  fi
+  echo "ollama pull failed on attempt ${attempt}"
+  sleep $((attempt * 20))
+done
+if [ "$pulled" != "1" ]; then
+  echo "ollama pull failed"
+  exit 1
+fi
 pull_end=$(date +%s)
 ollama show "$MODEL" > "$OUT/ollama-show.txt" || true
 PIP_S="${PIP_S:-}" OLLAMA_INSTALL_S="$((install_end - install_start))" PULL_S="$((pull_end - pull_start))" python3 scripts/model_eval/record_setup.py
