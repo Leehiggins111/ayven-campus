@@ -269,7 +269,8 @@ _REPORT_HOSTS = (
     "researchandmarkets",
 )
 _GUIDE_TITLE = re.compile(
-    r"\b(how to|cost to|cost guide|market size|market report|industry report|cagr)\b",
+    r"\b(how to|how much|cost to|cost guide|price guide|price breakdown|full price guide|"
+    r"market size|market report|industry report|cagr)\b",
     re.I,
 )
 
@@ -286,11 +287,18 @@ def market_report_page(url: str = "", title: str = "", text: str = "") -> bool:
     return False
 
 
+def listing_page(url: str = "") -> bool:
+    """A task marketplace is not a business that sells the service."""
+    return "airtasker.com" in (url or "").lower()
+
+
 def guide_page(url: str = "", title: str = "") -> bool:
     """A how-to or a cost guide is not a competitor's own offer."""
     if market_report_page(url, title):
         return True
-    if re.search(r"/(guides?|blog|news)/", url or "", re.I):
+    if re.search(r"/(guides?|blog|news|costs|cost-guides|posts?)/", url or "", re.I):
+        return True
+    if re.search(r"how-much|cost-guide|price-guide", url or "", re.I):
         return True
     return bool(_GUIDE_TITLE.search(title or ""))
 
@@ -749,7 +757,7 @@ def owner_section(kind: str, text: str) -> str:
         picked = [
             sentence for sentence in sentences
             if "£" in sentence or "http" in sentence.lower() or re.search(
-                r"\b(differs?|rather|instead|unlike|offers?|hires?|sells?|charges?)\b",
+                r"\b(differs?|rather|instead|unlike|offers?|hires?|rents?|rental|sells?|supply|supplies|installs?|charges?|replaces?|replacement|services?)\b",
                 sentence,
                 re.I,
             )
@@ -1633,6 +1641,16 @@ def claim_mismatch(sentence: str, blob: str) -> str:
             return _mismatch_against(sentence, _page_text(blob, holders[0]))
         return ""
     if len(named) > 1:
+        hosts = {re.sub(r"^https?://", "", url, flags=re.I).split("/")[0].lower() for url in named}
+        if len(hosts) == 1:
+            holders = [
+                url for url in named
+                if any(_pound_supported(amount, _page_text(blob, url)) for amount in _pound_amounts(sentence))
+            ]
+            if len(holders) == 1:
+                return _mismatch_against(sentence, _page_text(blob, holders[0]))
+            if holders:
+                return _mismatch_against(sentence, "\n".join(_page_text(blob, url) for url in holders))
         pieces = re.split(r"\b(?:and|while|whereas)\b", sentence or "", flags=re.I)
         clauses: list[str] = []
         for piece in pieces:
@@ -1738,7 +1756,7 @@ def _headline_problem(title: str) -> str:
 
 
 _OFFER_VERB = re.compile(
-    r"\b(offers?|hires?|hiring|rents?|rental|sells?|supplies|charges?|package|respray|paints?|painting|replaces?|replacement)\b",
+    r"\b(offers?|hires?|hiring|rents?|rental|sells?|supply|supplies|installs?|charges?|package|services?|respray|paints?|painting|replaces?|replacement)\b",
     re.I,
 )
 _HOST_IN_TEXT = re.compile(r"\b(?:[a-z0-9-]+\.)+(?:co\.uk|com|org|net|example)\b", re.I)

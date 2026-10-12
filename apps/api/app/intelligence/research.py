@@ -595,9 +595,9 @@ def research(
                         filtered.append({"url": hit.get("url"), "reason": "noise", "rerank_score": hit.get("rerank_score")})
                         failures.append({"query": query, "stage": "relevance", "url": hit.get("url") or "", "error": "noise_rejected"})
                         continue
-                    from .deliverable import market_report_page
+                    from .deliverable import listing_page, market_report_page
 
-                    if market_report_page(hit.get("url") or "", hit.get("title") or ""):
+                    if market_report_page(hit.get("url") or "", hit.get("title") or "") or listing_page(hit.get("url") or ""):
                         filtered.append({"url": hit.get("url"), "reason": "market_report", "rerank_score": hit.get("rerank_score")})
                         failures.append({"query": query, "stage": "relevance", "url": hit.get("url") or "", "error": "market_report"})
                         continue
