@@ -82,7 +82,7 @@ def _short_business_name(part: str) -> str:
     """K9 Clippers from a long title such as K9 Clippers Mobile Dog Grooming."""
     generic = {
         "mobile", "dog", "grooming", "groom", "price", "prices", "service", "services",
-        "cost", "costs", "uk", "the", "home", "near", "our",
+        "cost", "costs", "uk", "the", "home", "near", "our", "groomer",
     }
     kept = []
     for word in (part or "").split():
@@ -134,6 +134,8 @@ def _bare_price(sentence: str) -> bool:
     """A figure whose sentence does not already say what it buys."""
     if re.search(r"\b(per\s+[a-z]+|small|medium|large|full groom|a week|week)\b|/week", sentence or "", re.I):
         return False
+    if re.search(r"£\s*\d[\d,]*(?:\.\d+)?\s+(?:for|of)\s+\S", sentence or "", re.I):
+        return False
     words = re.findall(r"[A-Za-z]+", sentence or "")
     if len(words) >= 12 and re.search(
         r"\b(transform|replace|rent|hire|install|package|cost|charge|from|week|door|machine)\b",
@@ -169,11 +171,21 @@ def _first_listed_price(quote: str) -> str:
 
     if len(amounts) < 5 and not _rate_card(quote):
         return quote
+    labelled = re.search(
+        r"([^:\n]{0,80}:\s*[A-Za-z]*\s*£\s*\d[\d,]*(?:\.\d+)?\+?)",
+        quote,
+    )
+    if labelled:
+        left, _, right = labelled.group(1).partition(":")
+        words = [word for word in left.split() if re.match(r"[A-Z]", word)]
+        kept = words[-2:] or words[-1:]
+        if kept:
+            return re.sub(r"\s+", " ", " ".join(kept) + ":" + right).strip()
     named = re.search(
         r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s+(£\s*\d[\d,]*(?:\.\d+)?\+?(?:/week)?)",
         quote,
     )
-    if named:
+    if named and named.group(1).lower() != "from":
         return f"{named.group(1)} {named.group(2)}"
     money = re.search(r"£\s*\d[\d,]*(?:\.\d+)?\+?(?:/week)?", quote)
     if not money:
@@ -213,6 +225,10 @@ def _proper_name(entity: str) -> bool:
     if not 1 <= len(words) <= 4 or _NOT_A_NAME.search(entity):
         return False
     if any(re.fullmatch(r"[A-Za-z]", word) for word in words):
+        return False
+    if any(not re.fullmatch(r"[A-Za-z0-9']+", word) for word in words):
+        return False
+    if re.search(r"\d", entity) and not re.fullmatch(r"[A-Z]\d(?:\s+[A-Z][a-z']+)+", entity):
         return False
     plain = re.findall(r"[A-Za-z']+", entity)
     generic = {"mobile", "dog", "grooming", "groom", "price", "prices", "service", "services", "cost", "costs", "uk", "the"}
@@ -1076,6 +1092,20 @@ def _cites_directory(text: str, facts: list[dict] | None) -> bool:
     return False
 
 
+def _title_fragment(text: str) -> bool:
+    """A title scrap such as a place list is not the business name."""
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("(") or stripped.lower().startswith("this service"):
+            continue
+        label = re.split(r"\s+\(", stripped, maxsplit=1)[0].strip(" -")
+        if not label or "£" in label or "[" in label:
+            continue
+        if not _proper_name(label):
+            return True
+    return False
+
+
 def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective: str, blob: str) -> str:
     """Name the page on a cited £, and finish a pricing or advert line the model almost wrote.
 
@@ -1099,7 +1129,9 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
             if better and not section_rejection(key, better, blob, objective):
                 return better
         if key == "competitor and market research" and (
-            re.search(r"copying those offers", named or "", re.I) or _cites_directory(named, facts)
+            re.search(r"copying those offers", named or "", re.I)
+            or _cites_directory(named, facts)
+            or _title_fragment(named)
         ):
             better = _competitor_lines(named, facts, objective, blob)
             if better and better != named and not section_rejection(key, better, blob, objective):
@@ -1132,7 +1164,9 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
 
         lines = [line for line in named.splitlines() if line.strip() and not _echoes_objective(line, objective)]
         repaired = "\n".join(lines).strip()
-    elif key == "problem" and ("concrete problem" in lowered or "promises" in lowered):
+    elif key == "problem" and (
+        "concrete problem" in lowered or "promises" in lowered or "instruction" in lowered or "the task" in lowered
+    ):
         repaired = _repair_problem(objective)
     elif key == "service" and "comes from an opened page" in lowered:
         repaired = _repair_service_line(objective)
@@ -1144,8 +1178,8 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
         repaired = _repair_next_steps(objective)
     elif key == "offer and positioning":
         repaired = _repair_offer(objective)
-    elif key == "call to action" and "promises" in lowered:
-        repaired = f"Contact us and ask about a visit for {_service_topic(objective)}."
+    elif key == "call to action" and ("promises" in lowered or "instruction" in lowered or "the task" in lowered):
+        repaired = f"Ask for a visit and a written scope for {_service_topic(objective)}."
     if section_rejection(key, repaired, blob, objective):
         return named
     return repaired

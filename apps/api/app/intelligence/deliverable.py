@@ -530,7 +530,7 @@ def narration_reason(line: str, objective: str = "", blob: str = "") -> str:
     if "mortgage" in lowered or "loan-to-value" in lowered:
         return "The line is about a mortgage, which this request does not ask for."
     if re.search(
-        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|previous line was|finished lines|answered\s*:|availability claim|not stored|do not mention hours)\b",
+        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|previous line was|finished lines|answered\s*:|availability claim|not stored|do not mention hours|finish the sentence|ask the reader)\b",
         lowered,
     ):
         return "The line repeats the instruction instead of answering it."
@@ -1765,10 +1765,6 @@ def _rate_card(body: str) -> str:
         if re.search(r"\bpackages?\b", sentence, re.I):
             continue
         if re.search(r"\b(?:per\s+[a-z]+|a\s+(?:session|week|day))\b", sentence, re.I):
-            continue
-        if menu >= 3:
-            return "The section pastes a price list. State one offer in a sentence."
-        if re.search(r"\b(small|medium|large)\b", sentence, re.I):
             continue
         return "The section pastes a price list. State one offer in a sentence."
     return ""
