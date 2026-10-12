@@ -913,7 +913,7 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
         for candidate in candidates:
             parts = [
                 part for part in re.findall(r"[a-z0-9]+", candidate.lower())
-                if part not in {"s", "the", "and", "for", "uk", "at"} and len(part) > 1
+                if part not in {"s", "the", "and", "for", "uk", "at", "your", "our"} and len(part) > 1
             ]
             if len(parts) < 2 or all(part in words for part in parts):
                 continue

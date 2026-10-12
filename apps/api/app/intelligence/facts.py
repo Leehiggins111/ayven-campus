@@ -136,6 +136,13 @@ def _bare_price(sentence: str) -> bool:
         return False
     if re.search(r"£\s*\d[\d,]*(?:\.\d+)?\s+(?:for|of)\s+\S", sentence or "", re.I):
         return False
+    before = (sentence or "").split("£", 1)[0]
+    generic = {
+        "from", "starting", "only", "just", "about", "around", "price", "prices",
+        "cost", "costs", "the", "a", "an", "at", "for",
+    }
+    if any(word.lower() not in generic for word in re.findall(r"[A-Za-z]+", before)):
+        return False
     words = re.findall(r"[A-Za-z]+", sentence or "")
     if len(words) >= 12 and re.search(
         r"\b(transform|replace|rent|hire|install|package|cost|charge|from|week|door|machine)\b",
@@ -267,6 +274,12 @@ def _offer_sentence(text: str) -> str:
         if len(words) >= 8 and caps / len(words) >= 0.45:
             continue
         if _DIRECTORY.search(sentence):
+            continue
+        if re.search(
+            r"\b(here you will find|everything you need to know|about me|welcome to|run by|gallery)\b",
+            sentence,
+            re.I,
+        ):
             continue
         prose = bool(re.search(r"\b(we|our|your|with|without|you|is|are|who|I)\b", sentence))
         if _OFFER_HINT.search(sentence) and prose:
@@ -629,14 +642,24 @@ def _first_band(quote: str) -> str:
     return head.strip(" -:,")
 
 
+def _without_model_code(quote: str) -> str:
+    """A catalogue code after the price is not what the business offers."""
+    return re.sub(
+        r"(£\s*\d[\d,]*(?:\.\d+)?(?:/(?:week|day))?)\s+(?:[A-Z]{2,}(?:\s+[A-Z0-9]{2,})*|[A-Z]{1,4}\d+)\b.*",
+        r"\1",
+        quote or "",
+    ).strip(" -:,")
+
+
 def _without_spec(quote: str) -> str:
     """A machine's dimensions and option menu are not the offer. Keep the price."""
+    quote = _without_model_code(quote)
     if not re.search(r"\d+\s*w\s*x\s*\d+", quote or "", re.I) and (quote or "").count(" - ") < 3:
         return quote
     cut = (quote or "").find(" - ")
     head = quote[:cut] if cut > 20 else quote
     head = re.sub(r"\d+\s*w\s*x\s*\d+.*", "", head, flags=re.I)
-    return head.strip(" -:,")
+    return _without_model_code(head)
 
 
 def _market_line(fact: dict) -> str:
@@ -804,7 +827,17 @@ def _service_headline(objective: str, blob: str = "") -> str:
     from .deliverable import borrowed_service_name, _headline_problem
 
     topic = _service_topic(objective)
-    for headline in (f"Measure {topic}, then set the price", "A visit, then a written scope"):
+    lowered = (objective or "").lower()
+    if re.search(r"\brent", lowered):
+        article = "" if topic.startswith(("a ", "the ")) else "a "
+        written = f"Rent {article}{topic} instead of buying"
+    elif "kennel" in lowered:
+        written = "At the customer's home, not a kennel"
+    elif re.search(r"\bfull (?:kitchen )?replacement\b", lowered):
+        written = f"Replace {topic} without a full replacement"
+    else:
+        written = "A visit, then a written scope"
+    for headline in (written, "A visit, then a written scope"):
         if _headline_problem(headline) or (blob and borrowed_service_name(headline, objective, blob)):
             continue
         return headline
@@ -843,7 +876,12 @@ def _repair_advert(text: str, objective: str, blob: str) -> str:
         return text
     if not body or "£" in body or re.search(r"upfront cost|free home", body or "", re.I):
         body = _advert_body(objective)
-    if borrowed_service_name(headline, objective, blob) or _bad_headline(headline) or _LOUD_PROMISE.search(headline) or re.search(r"\bno upfront\b|\bupfront costs?\b", headline or "", re.I):
+    if (
+        borrowed_service_name(headline, objective, blob)
+        or _bad_headline(headline)
+        or _LOUD_PROMISE.search(headline)
+        or re.search(r"\bno upfront\b|\bupfront costs?\b|\bmeasure\b.+\bset the price\b", headline or "", re.I)
+    ):
         headline = _service_headline(objective, blob)
     if borrowed_service_name(body, objective, blob):
         body = _advert_body(objective)
@@ -889,6 +927,28 @@ def _bad_headline(headline: str) -> bool:
     from .deliverable import _headline_problem
 
     return bool(_headline_problem(headline))
+
+
+_OWNER_CHANNEL = re.compile(
+    r"\b(online platforms?|potential customers|partnerships|direct outreach|industry reports?)\b",
+    re.I,
+)
+
+
+def _customer_ask(text: str) -> str:
+    """A call to action asks the customer. An owner channel plan is not that ask."""
+    kept = []
+    seen = set()
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
+        sentence = sentence.strip()
+        if not sentence or _OWNER_CHANNEL.search(sentence):
+            continue
+        key = re.sub(r"\s+", " ", sentence.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(sentence)
+    return "\n".join(kept).strip()
 
 
 def _thin_channel(text: str) -> bool:
@@ -1004,7 +1064,13 @@ def _competitor_lines(text: str, facts: list[dict] | None, objective: str, blob:
     others = [fact for fact in businesses if not fact.get("quantity")]
     named = [
         fact for fact in others
-        if _OFFER_HINT.search(fact.get("quote") or "") and (_proper_name(fact.get("entity") or "") or _sentence_names_business(fact.get("quote") or ""))
+        if _OFFER_HINT.search(fact.get("quote") or "")
+        and not re.search(
+            r"here you will find|about me|everything you need to know|run by|\bgallery\b",
+            fact.get("quote") or "",
+            re.I,
+        )
+        and (_proper_name(fact.get("entity") or "") or _sentence_names_business(fact.get("quote") or ""))
     ]
     from .deliverable import anchor_terms
 
@@ -1017,7 +1083,10 @@ def _competitor_lines(text: str, facts: list[dict] | None, objective: str, blob:
     named.sort(key=lambda fact: (
         -_anchor_hits(fact),
         1 if _LOUD_PROMISE.search(fact.get("quote") or "") else 0,
-        0 if re.search(r"\b(we supply|we install|we replace|we offer|packages? (?:start|usually))\b", fact.get("quote") or "", re.I) else 1,
+        1 if re.search(r"\b(decade|years of experience|experience,)\b", fact.get("quote") or "", re.I) else 0,
+        1 if (fact.get("quote") or "").strip().endswith("?") else 0,
+        0 if re.search(r"\bservice\b", fact.get("quote") or "", re.I) else 1,
+        0 if re.search(r"\b(we supply|we install|we replace|we offer|we provide|packages? (?:start|usually))\b", fact.get("quote") or "", re.I) else 1,
         0 if re.search(r"\b(rent|rental|hire|hiring|replac)", fact.get("quote") or "", re.I) else 1,
         1 if (fact.get("quote") or "").lower().startswith("welcome") else 0,
         0 if _proper_name(fact.get("entity") or "") else 1,
@@ -1118,6 +1187,12 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
     from .deliverable import section_rejection
 
     named = name_the_page(text, facts)
+    if key == "call to action":
+        asked = _customer_ask(named)
+        if asked and asked != named:
+            named = asked
+        elif not asked and _OWNER_CHANNEL.search(text or ""):
+            named = f"Ask for a visit and a written scope for {_service_topic(objective)}."
     if key == "pricing":
         stated = _use_stated_unit(named, facts)
         if stated and stated != named and not section_rejection(key, stated, blob, objective):

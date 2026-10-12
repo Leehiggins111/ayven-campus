@@ -1556,6 +1556,65 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     assert section_rejection("advert", kept, blob, objective) == ""
 
 
+def test_a_catalogue_code_is_not_the_offer():
+    """Starting from £31/week BESTIR BM50 is a price. The model code is not the offer."""
+    from app.intelligence.facts import extract_facts
+
+    facts = extract_facts([{
+        "source_url": "https://www.fullhousecoffee.com/",
+        "source_title": "Office Coffee Machine Rental UK | Full House Coffee",
+        "extracted_content": (
+            "Starting From £31.00/week BESTIR BM50 - 100 Cups Per Day - Fresh Milk - "
+            "304w x 572h x 559d Discover our range of commercial coffee machines."
+        ),
+    }])
+    from app.intelligence.facts import _market_line
+
+    line = _market_line(facts[0])
+    assert "£31.00" in line
+    assert "BESTIR" not in line
+    assert "304w" not in line
+
+
+def test_a_call_to_action_drops_the_owner_channel_plan():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import repair_before_gate
+
+    objective = "Prepare a UK business briefing for a coffee machine rental company."
+    raw = (
+        "Contact us today to start your coffee rental journey. "
+        "Reach out to potential customers through direct outreach, online platforms, and partnerships."
+    )
+    repaired = repair_before_gate("call to action", raw, [], objective, "")
+    assert "online platforms" not in repaired.lower()
+    assert "Contact us today" in repaired
+    assert section_rejection("call to action", repaired, "", objective) == ""
+
+
+def test_your_doorstep_is_not_the_business_name():
+    from app.intelligence.deliverable import borrowed_service_name
+
+    blob = "https://example.co.uk/\nProfessional Care at Your Doorstep\nA home visit."
+    assert borrowed_service_name("Book a visit at your doorstep.", "A home visit service.", blob) == ""
+
+
+def test_a_rejected_rent_headline_is_a_customer_phrase():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import repair_before_gate
+
+    objective = "Prepare a UK business briefing for a coffee machine rental company."
+    advert = (
+        "Headline: Reliable Coffee, No Upfront Cost\n"
+        "Body: Rent a commercial coffee machine without buying one.\n"
+        "Call to action: Contact us and ask about a visit."
+    )
+    fixed = repair_before_gate("advert", advert, [], objective, "")
+    assert "Measure" not in fixed
+    assert "Upfront" not in fixed
+    assert "Rent a coffee machine instead of buying" in fixed
+    assert section_rejection("advert", fixed, "", objective) == ""
+
+
 def test_a_later_page_price_is_not_crowded_out_by_titles(monkeypatch):
     from app.intelligence.deliverable import evidence_blob, section_rejection
     from app.intelligence.facts import extract_facts, label_relevance, repair_before_gate
