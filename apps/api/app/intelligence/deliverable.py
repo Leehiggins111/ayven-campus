@@ -917,7 +917,11 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
                 part for part in re.findall(r"[a-z0-9]+", candidate.lower())
                 if part not in {"s", "the", "and", "for", "uk", "at", "your", "our"} and len(part) > 1
             ]
-            if len(parts) < 2 or all(part in words for part in parts):
+            stems = {word[:-1] if word.endswith("s") and len(word) > 4 else word for word in words}
+            if len(parts) < 2 or all(
+                part in words or (part[:-1] if part.endswith("s") and len(part) > 4 else part) in stems
+                for part in parts
+            ):
                 continue
             if all(part in _NOT_A_BORROWED_NAME for part in parts):
                 continue
@@ -963,7 +967,7 @@ def _pricing_omits_page_figure(body: str, blob: str) -> str:
         return ""
     if any(_number_on_page(re.sub(r"[£\s,]", "", amount), body or "") for amount in amounts):
         return ""
-    return "An opened page states a £ figure. The pricing section does not use it."
+    return f"An opened page states '{amounts[0]}'. The pricing section does not use it."
 
 
 def page_line_for_check(reason: str, blob: str) -> str:
@@ -1104,7 +1108,7 @@ _CONTRAST = (
 )
 _CHANNELS = (
     "search", "leaflet", "facebook", "instagram", "google", "referral",
-    "directory", "email", "flyer", "poster", "marketplace", "nextdoor",
+    "directory", "email", "flyer", "poster", "marketplace", "nextdoor", "showroom",
     "press", "website", "seo", "social", "checkatrade", "gumtree",
     "neighbour", "neighbor", "whatsapp", "phone", "radio", "linkedin", "youtube",
     "mailshot", "mail",
@@ -1850,11 +1854,18 @@ def _competitor_names(body: str, blob: str = "") -> list[str]:
             if market_report_page("", phrase):
                 continue
             names.append(phrase.lower())
+        for match in re.finditer(
+            r"\b([A-Z][a-z]{5,})\s+(?:provides|offers|offer|charges|sells|rents|replaces)\b",
+            sentence,
+        ):
+            token = match.group(1).lower()
+            if token not in _NOT_COMPETITOR and token not in names:
+                names.append(token)
         for host in _HOST_IN_TEXT.findall(sentence):
             if market_report_page(host, "") or _guide_host(host, blob):
                 continue
             hosts.append(host.lower())
-        chosen = names[:1] or hosts[:1]
+        chosen = names[:2] or hosts[:1]
         for name in chosen:
             if any(_same_business(name, kept) for kept in found):
                 continue
@@ -1929,7 +1940,7 @@ def _generic_offer(body: str, objective: str) -> bool:
 
 
 _PACKAGE_METHOD = re.compile(
-    r"\b(?:price each|priced from|price the|per door|per standard door)\b",
+    r"\b(?:price each|priced from|price the|per door|per standard door|price is determined|determined by the number|calculated based on)\b",
     re.I,
 )
 _SHOUTED_HEADING = re.compile(r"\b[A-Z]{2,}(?:\s+[A-Z]{2,}){2,}\b")

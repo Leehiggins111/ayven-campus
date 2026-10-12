@@ -1592,8 +1592,10 @@ def _check_for_model(reason: str) -> str:
         return "Name what the package includes, what the visit measures, and how it differs."
     if "turn the measurements" in lowered:
         return "State how the measured inputs become a price. Use a unit only when a fact states that unit. The Assumption line has no £ figure."
-    if "without a valid" in lowered:
+    if "without a valid" in lowered or "had no [f#]" in lowered:
         return "Cite the fact as [F#] and use that fact's quantity, unit, and quote. An Assumption line has no £ figure."
+    if "does not use it" in lowered:
+        return "Cite the opened £ figure as [F#] on its own line. Then write an Assumption line for the method, with no £ figure."
     return text
 
 
@@ -1821,6 +1823,8 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             else:
                 written = cited
                 reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw if not written else written, blob, programme.objective)
+            if reason and "£" in (raw or "") and "£" not in (written or ""):
+                reason = "The £ line had no [F#], so it was not stored. Cite that fact as [F#] and keep the quantity and the unit."
             meta = dict(meta or {})
             meta["reason"] = reason
             _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept", attempt=attempt)
