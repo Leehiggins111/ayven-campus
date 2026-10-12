@@ -357,26 +357,47 @@ def _append_priced(text: str, facts: list[dict] | None) -> str:
     return "\n".join(lines[:8]).strip()
 
 
-def _label_pricing(text: str, objective: str) -> str:
-    """An opened £ figure stays a market reference. The method is an Assumption with no new £."""
-    from .deliverable import covered_items, measurements_still_needed, _item_present
+def _pricing_section(text: str, facts: list[dict] | None, objective: str) -> str:
+    """Market references, then one Assumption line that names every part and what to measure.
 
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if not any("assumption" in line.lower() for line in lines):
-        lines.append(f"Assumption: the price for {_service_topic(objective)} is set after measuring.")
-    body = "\n".join(lines)
-    for item in covered_items(objective):
-        labeled = False
-        for line in lines:
-            if _item_present(item, line) and "assumption" in line.lower():
-                labeled = True
-                break
-        if not labeled:
-            lines.append(f"Assumption: {item} — not stated as its own figure, set after measuring.")
-    body = "\n".join(lines)
+    A copied request, a false 'not stated', and a worksheet row are not the section.
+    """
+    from .deliverable import covered_items, measurements_still_needed, _echoes_objective
+
+    kept = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or _echoes_objective(line, objective):
+            continue
+        if _PROMISE_LINE.search(line) or re.search(r"\bnot stated\b|includes none|offers no unit", line, re.I):
+            continue
+        kept.append(line)
+    present = "\n".join(kept).replace(",", "")
+    markets = []
+    for fact in [fact for fact in (facts or []) if fact.get("quantity")][:2]:
+        numbers = [re.sub(r"[£\s,]", "", amount) for amount in re.findall(r"£\s*\d[\d,]*(?:\.\d+)?", fact["quantity"])]
+        if numbers and all(number in present for number in numbers):
+            continue
+        markets.append(_market_line(fact))
+    items = covered_items(objective)
     needed = measurements_still_needed(objective)
-    if any("£" in line for line in lines) and needed and any(item not in body.lower() for item in needed):
-        lines.append("Assumption: what still has to be measured: " + ", ".join(needed) + ".")
+    if items or needed:
+        detail = []
+        if items:
+            detail.append(", ".join(items))
+        if needed:
+            detail.append("what still has to be measured: " + ", ".join(needed))
+        assumption = "Assumption: " + " — ".join(detail) + "."
+    else:
+        assumption = f"Assumption: the price for {_service_topic(objective)} is set after measuring."
+    lines = []
+    for line in kept:
+        if "measur" in line.lower() and "£" not in line:
+            lines.append(line)
+            break
+    lines.extend(markets)
+    if not any("assumption" in line.lower() and all(item in line.lower() for item in items) for line in lines):
+        lines.append(assumption)
     return "\n".join(lines[:8]).strip()
 
 
@@ -485,19 +506,14 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
         return named
     repaired = named
     lowered = reason.lower()
-    if key in {"competitor and market research", "pricing"} and "£" in reason:
-        if key == "competitor and market research":
-            named = "\n".join(
-                line for line in named.splitlines()
-                if line.strip() and not re.search(r"includes none|offers no unit", line, re.I)
-            ).strip()
+    if key == "pricing":
+        repaired = _pricing_section(named, facts, objective)
+    elif key == "competitor and market research" and "£" in reason:
+        named = "\n".join(
+            line for line in named.splitlines()
+            if line.strip() and not re.search(r"includes none|offers no unit", line, re.I)
+        ).strip()
         repaired = _append_priced(named, facts)
-        if key == "pricing":
-            repaired = _label_pricing(repaired, objective)
-    elif key == "pricing" and "assumption" in lowered:
-        repaired = _label_pricing(_append_priced(named, facts), objective)
-    elif key == "pricing" and "every part" in lowered:
-        repaired = _label_pricing(named, objective)
     elif "repeats the objective" in lowered:
         from .deliverable import _echoes_objective
 
