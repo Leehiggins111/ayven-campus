@@ -501,6 +501,8 @@ def narration_reason(line: str, objective: str = "", blob: str = "") -> str:
     lowered = stripped.lower()
     if re.fullmatch(r"\d+\.?", lowered):
         return "The line is a bare number, not a sentence."
+    if re.fullmatch(r"\[f\d+\]\.?", lowered):
+        return "The line is only a citation."
     if lowered in {"unresolved.", "this is unresolved.", "this is unresolved", "a full sentence.", "a full sentence"}:
         return "The line only says unresolved."
     if lowered.startswith(("unresolved -", "unresolved:")):

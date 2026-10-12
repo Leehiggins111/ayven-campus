@@ -1556,6 +1556,35 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     assert section_rejection("advert", kept, blob, objective) == ""
 
 
+def test_a_related_product_code_is_not_the_price():
+    """Jura W8 on a related-products strip is not the rental offer."""
+    from app.intelligence.deliverable import evidence_blob, section_rejection
+    from app.intelligence.facts import extract_facts, repair_before_gate
+
+    evidence = [{
+        "source_url": "https://www.fullhousecoffee.com/2026/05/how-much-does-it-cost-to-rent-a-coffee-machine",
+        "source_title": "How much does it cost to rent a coffee machine",
+        "extracted_content": "Related Products Starting From £18.00/week Jura W8 - 50 Cups Per Day - 295w x 416h x 444d",
+    }, {
+        "source_url": "https://www.nationwidecoffee.co.uk/",
+        "source_title": "From £2.70 Per Day | Nationwide Coffee",
+        "extracted_content": "Commercial coffee machines are available for rent or purchase.",
+    }]
+    facts = extract_facts(evidence)
+    objective = "Prepare a UK business briefing for a coffee machine rental company."
+    priced = repair_before_gate("pricing", "The price is set after measuring.", facts, objective, evidence_blob(evidence))
+    assert "Jura" not in priced
+    assert "£2.70" in priced
+    assert section_rejection("pricing", priced, evidence_blob(evidence), objective) == ""
+
+
+def test_a_title_scrap_ending_in_and_is_not_the_competitor():
+    from app.intelligence.facts import _proper_name
+
+    assert _proper_name("Single Bean and") is False
+    assert _proper_name("Hale and Murray") is True
+
+
 def test_a_catalogue_code_is_not_the_offer():
     """Starting from £31/week BESTIR BM50 is a price. The model code is not the offer."""
     from app.intelligence.facts import extract_facts

@@ -93,6 +93,8 @@ def _short_business_name(part: str) -> str:
         kept.append(word)
         if len(kept) == 3:
             break
+    if any(word.lower() in {"and", "or"} for word in kept):
+        return ""
     candidate = " ".join(kept)
     if candidate and _proper_name(candidate):
         return candidate
@@ -212,6 +214,11 @@ def _spec_sheet(fact: dict) -> bool:
     return bool(re.search(r"\d+\s*w\s*x\s*\d+", quote, re.I))
 
 
+def _product_widget(fact: dict) -> bool:
+    """A related-products strip is not the business's offer."""
+    return bool(re.search(r"\brelated products?\b", fact.get("quote") or "", re.I))
+
+
 def _rate_card_quote(fact: dict) -> bool:
     from .deliverable import _rate_card
 
@@ -234,6 +241,8 @@ def _proper_name(entity: str) -> bool:
     if any(re.fullmatch(r"[A-Za-z]", word) for word in words):
         return False
     if any(not re.fullmatch(r"[A-Za-z0-9']+", word) for word in words):
+        return False
+    if words[-1].lower() in {"and", "or", "of", "the", "for", "with"}:
         return False
     if re.search(r"\d", entity) and not re.fullmatch(r"[A-Z]\d(?:\s+[A-Z][a-z']+)+", entity):
         return False
@@ -645,7 +654,7 @@ def _first_band(quote: str) -> str:
 def _without_model_code(quote: str) -> str:
     """A catalogue code after the price is not what the business offers."""
     return re.sub(
-        r"(£\s*\d[\d,]*(?:\.\d+)?(?:/(?:week|day))?)\s+(?:[A-Z]{2,}(?:\s+[A-Z0-9]{2,})*|[A-Z]{1,4}\d+)\b.*",
+        r"(£\s*\d[\d,]*(?:\.\d+)?(?:/(?:week|day))?)\s+(?:[A-Z]{2,}(?:\s+[A-Z0-9]{2,})*|[A-Z][A-Za-z]*\s+[A-Z]{0,4}\d+)\b.*",
         r"\1",
         quote or "",
     ).strip(" -:,")
@@ -759,6 +768,7 @@ def _pricing_section(text: str, facts: list[dict] | None, objective: str, *, ski
         if (
             _price_table(fact)
             or _rate_card_quote(fact)
+            or _product_widget(fact)
             or (skip_title_only and fact.get("title_only"))
             or (fact.get("directory") and any(not item.get("directory") for item in priced))
         ):
@@ -1149,6 +1159,21 @@ def _opened_price_line(facts: list[dict] | None, used_hosts: set[str]) -> str:
     return ""
 
 
+def _cites_guide(text: str, facts: list[dict] | None) -> bool:
+    """A cost-guide host in the competitor section is not a competitor."""
+    from .deliverable import guide_page
+
+    lowered = (text or "").lower()
+    for fact in facts or []:
+        source = fact.get("source") or ""
+        if not guide_page(source, ""):
+            continue
+        host = _host(source).removeprefix("www.")
+        if host and host in lowered:
+            return True
+    return False
+
+
 def _cites_directory(text: str, facts: list[dict] | None) -> bool:
     """A directory page is not a competitor that sells the service."""
     lowered = (text or "").lower()
@@ -1159,6 +1184,15 @@ def _cites_directory(text: str, facts: list[dict] | None) -> bool:
         if host and host in lowered:
             return True
     return False
+
+
+def _without_bare_citations(text: str) -> str:
+    """A line that is only [F2] is not a sentence."""
+    kept = [
+        line for line in (text or "").splitlines()
+        if not re.fullmatch(r"\s*\[F\d+\]\.?\s*", line, re.I)
+    ]
+    return "\n".join(kept).strip()
 
 
 def _title_fragment(text: str) -> bool:
@@ -1186,7 +1220,7 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
         return text
     from .deliverable import section_rejection
 
-    named = name_the_page(text, facts)
+    named = name_the_page(_without_bare_citations(text), facts)
     if key == "call to action":
         asked = _customer_ask(named)
         if asked and asked != named:
@@ -1206,6 +1240,7 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
         if key == "competitor and market research" and (
             re.search(r"copying those offers", named or "", re.I)
             or _cites_directory(named, facts)
+            or _cites_guide(named, facts)
             or _title_fragment(named)
         ):
             better = _competitor_lines(named, facts, objective, blob)
@@ -1218,6 +1253,16 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
         ):
             better = _repair_advert(named, objective, blob)
             if better and better != named and not section_rejection(key, better, blob, objective):
+                return better
+        if key == "pricing" and re.search(r"\brelated products?\b|\b[A-Z][a-z]+\s+[A-Z]{0,4}\d+\b", named or ""):
+            better = _pricing_section(named, facts, objective)
+            if section_rejection(key, better, blob, objective):
+                better = _pricing_section(named, facts, objective, skip_title_only=True)
+            if better and not section_rejection(key, better, blob, objective):
+                return better
+        if key == "problem" and re.search(r"\bthe owner needs to\b|\b20\d{2}\b.+\bcosts?\b", named or "", re.I):
+            better = _repair_problem(objective)
+            if better and not section_rejection(key, better, blob, objective):
                 return better
         if key == "next steps" and not re.search(r"\b(phone|phones|visit|measure)\b", named or "", re.I):
             better = _repair_next_steps(objective)
