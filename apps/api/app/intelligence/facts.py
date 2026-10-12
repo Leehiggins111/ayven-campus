@@ -1013,9 +1013,10 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
     elif "repeats the objective" in lowered:
         from .deliverable import _echoes_objective
 
-        lines = [line for line in named.splitlines() if line.strip() and not _echoes_objective(line, objective)]
-        stripped = "\n".join(lines).strip()
-        # A leftover sentence is not a new offer. Keep the model's text so the retry reports the echo.
+        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", named) if part.strip()]
+        kept = [sentence for sentence in sentences if not _echoes_objective(sentence, objective)]
+        stripped = "\n".join(kept).strip()
+        # Drop only the copied sentence. If what remains still fails, report the echo.
         if not stripped or section_rejection(key, stripped, blob, objective):
             return named
         repaired = stripped

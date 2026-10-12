@@ -532,7 +532,7 @@ def narration_reason(line: str, objective: str = "", blob: str = "") -> str:
     if "mortgage" in lowered or "loan-to-value" in lowered:
         return "The line is about a mortgage, which this request does not ask for."
     if re.search(
-        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|previous line was|finished lines|answered\s*:|availability claim|not stored|do not mention hours|finish the sentence)\b",
+        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|previous line was|finished lines|answered\s*:|availability claim|not stored|do not mention hours|finish the sentence|finishes the sentence|might finish)\b",
         lowered,
     ):
         return "The line repeats the instruction instead of answering it."
@@ -1108,14 +1108,14 @@ _ASK = re.compile(
 _CONTRAST = (
     "differ", "rather", "instead", "without", "against", "compared", "unlike",
     "alternative", "avoids", "avoid", "shorter", "keeps", "stays", "in place",
-    "leaves",
+    "leaves", "leaving",
 )
 _CHANNELS = (
     "search", "leaflet", "facebook", "instagram", "google", "referral",
     "directory", "email", "flyer", "poster", "marketplace", "nextdoor", "showroom",
     "press", "website", "seo", "social", "checkatrade", "gumtree",
     "neighbour", "neighbor", "whatsapp", "phone", "radio", "linkedin", "youtube",
-    "mailshot", "mail",
+    "mailshot", "mail", "workshop",
 )
 _OWNER_ACTIONS = (
     "confirm", "contact", "open", "write", "visit", "compare", "measure",

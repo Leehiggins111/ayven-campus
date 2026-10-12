@@ -1488,7 +1488,7 @@ def _section_jobs(objective: str) -> tuple:
         ("problem", "Problem", "Write one or two sentences. Name the problem." + shared, "The problem is "),
         ("offer and positioning", "Offer and positioning", "Write two or three sentences. Name the offer. Name what the package includes, what it leaves out, and what the visit measures. Say how it differs. Do not write only that the offer is a package covering the parts. Do not invent a price. Do not use a business name that appears only on an opened page." + shared, ""),
         ("competitor and market research", "Competitor and market research", "Write two or three sentences. Name two UK businesses from the fact table. name one opened page for each business. Paraphrase what each offers. Keep the citation, the quantity, and the unit. If the fact states pay on completion or what the price excludes, say that in the same sentence. Do not copy a run of the page's words. Then say how this service differs. Do not paste a page title or an opened-sources dump. Do not start a line with a heading from the page. A market report or a how-to guide is not a competitor. Do not invent a name." + shared, "Two businesses offer "),
-        ("pricing", "Pricing", "Write one line for each market reference. Cite it as [F#] and use that fact's quantity, unit, and what it includes. If the fact states pay on completion or what the price excludes, say that in the same sentence. If the fact does not give the size, the material, or the unit, say so in that sentence. Do not paste a page title. Then start each remaining line with Assumption. An Assumption line states how the measured inputs become a price, has no [F#], and has no £ figure. Use a unit only when a fact states that unit. When no fact states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, ""),
+        ("pricing", "Pricing", "Write one line for each market reference. Do not start with the request. The first line cites one fact whose quantity is a £ figure. Copy that quantity, its unit, and its [F#]. If the fact states pay on completion or what the price excludes, say that in the same sentence. If the fact does not give the size, the material, or the unit, say so in that sentence. Do not paste a page title. Then start each remaining line with Assumption. An Assumption line states how the measured inputs become a price, has no [F#], and has no £ figure. Use a unit only when a fact states that unit. When no fact states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, ""),
         ("channels", "Channels", "Write one sentence for this business. Name the channel. Name the place the owner uses, the action they take there, and the first week or the first month. The place and the action have to fit this service, so the same sentence would not fit a different trade. Do not say online platforms, industry reports, conduct market research, or asks for a reply. Do not name a competitor's business as the channel. Do not name the person who wrote the request. Do not mention hours." + shared, ""),
         ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\nThe headline is a complete phrase under 10 words. Do not start the headline with Ask about.\nDo not use a business name that appears only on an opened page.\n" + shared, ""),
         ("call to action", "Call to action", "Write one sentence. Ask the reader to get in touch. Do not name the person who wrote the request. Do not use a business name that appears only on an opened page." + shared, "Ask "),
@@ -1573,7 +1573,7 @@ def _check_for_model(reason: str) -> str:
     if "does not ask the customer" in lowered or "names the person who wrote" in lowered:
         return "Ask the reader to get in touch. Do not name the person who wrote the request."
     if "repeats the objective" in lowered:
-        return "Do not copy the request. Name what the package includes, what the visit measures, and how it differs."
+        return "Do not copy the request. Write this section in your own sentences."
     if "the claim does not" in lowered:
         return "Use that page's £ figure and the condition stated with it, such as pay on completion or what the price excludes. Keep the citation. Paraphrase. Do not copy a run of the page's words."
     if "shared form" in lowered:
@@ -1735,6 +1735,8 @@ def _advert_saved_lines(raw: str) -> tuple[str, str]:
         if label == "body" and not body:
             body = content
         elif label == "call to action" and not cta:
+            if re.search(r"free quote|free consultation|in one day|same day|guaranteed", content, re.I):
+                continue
             cta = content
     return body, cta
 
@@ -1827,7 +1829,9 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             else:
                 written = cited
                 reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw if not written else written, blob, programme.objective)
-            if (
+            if reason and raw_reason and "promises '" in raw_reason.lower():
+                reason = raw_reason
+            elif (
                 reason
                 and "£" in (raw or "")
                 and "£" not in (written or "")
