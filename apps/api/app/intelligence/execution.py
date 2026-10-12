@@ -1726,6 +1726,10 @@ def _cite_and_repair(programme: Programme, key: str, text: str, blob: str, raw: 
     source = f"{raw or ''}\n{text or ''}"
     if re.search(r"24/7|always ready", source, re.I):
         return cited
+    if not cited.strip() and key == "call to action" and re.search(
+        r"free consultation|free quote|guaranteed|same-day|same day|in one day", source, re.I
+    ):
+        cited = "Ask for a visit and a written scope before any booking is made."
     from .facts import repair_before_gate
 
     return repair_before_gate(key, cited, _ensure_facts(programme), programme.objective, blob)

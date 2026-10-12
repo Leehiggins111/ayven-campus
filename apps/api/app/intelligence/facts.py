@@ -72,9 +72,25 @@ def _sentence_list(text: str) -> list[str]:
     return [part.strip() for part in parts if part.strip()]
 
 
+def _fact_row(url: str, title: str, sentence: str) -> dict:
+    amount = _MONEY.search(sentence or "")
+    unit = _UNIT.search(sentence or "")
+    included = _INCLUDED.search(sentence or "")
+    return {
+        "source": url,
+        "entity": _entity(title, url),
+        "quote": re.sub(r"\s+", " ", sentence or "").strip()[:280],
+        "quantity": amount.group(0) if amount else "",
+        "unit": unit.group(0) if unit else "",
+        "included": included.group(0).strip() if included else "",
+        "relevance": "unlabeled",
+    }
+
+
 def extract_facts(evidence: list[dict] | None) -> list[dict]:
-    """One row per price sentence. A page with no £ figure contributes its title only."""
-    facts: list[dict] = []
+    """Price sentences first. A title fills a spare row only after every £ figure is in."""
+    priced: list[dict] = []
+    titles: list[dict] = []
     for item in evidence or []:
         if not isinstance(item, dict):
             continue
@@ -83,25 +99,16 @@ def extract_facts(evidence: list[dict] | None) -> list[dict]:
         text = str(item.get("extracted_content") or item.get("text") or "")
         if not url.startswith("http"):
             continue
-        entity = _entity(title, url)
-        priced = [sentence for sentence in _sentence_list(text) if _MONEY.search(sentence)]
-        chosen = priced[:2] or ([title] if title else [])
-        for sentence in chosen:
-            amount = _MONEY.search(sentence)
-            unit = _UNIT.search(sentence)
-            included = _INCLUDED.search(sentence)
-            facts.append({
-                "id": f"F{len(facts) + 1}",
-                "source": url,
-                "entity": entity,
-                "quote": re.sub(r"\s+", " ", sentence).strip()[:280],
-                "quantity": amount.group(0) if amount else "",
-                "unit": unit.group(0) if unit else "",
-                "included": included.group(0).strip() if included else "",
-                "relevance": "unlabeled",
-            })
-            if len(facts) >= 12:
-                return facts
+        found = [sentence for sentence in _sentence_list(text) if _MONEY.search(sentence)]
+        if found:
+            for sentence in found[:2]:
+                priced.append(_fact_row(url, title, sentence))
+        elif title:
+            titles.append(_fact_row(url, title, title))
+    facts = []
+    for row in (priced + titles)[:12]:
+        row["id"] = f"F{len(facts) + 1}"
+        facts.append(row)
     return facts
 
 
@@ -152,7 +159,7 @@ def label_relevance(facts: list[dict], objective: str, complete) -> list[dict]:
     kept = []
     for fact in facts:
         fact["relevance"] = labels.get(fact["id"], "unlabeled")
-        if fact["relevance"] == "not relevant":
+        if fact["relevance"] == "not relevant" and not fact.get("quantity"):
             continue
         kept.append(fact)
     if not kept:
@@ -398,29 +405,34 @@ def _service_headline(objective: str, blob: str = "") -> str:
 def _repair_advert(text: str, objective: str, blob: str) -> str:
     from .deliverable import _ASK, borrowed_service_name, owner_section, section_rejection
 
+    def parts(source: str) -> tuple[str, str, str]:
+        headline = body = cta = ""
+        for line in (source or "").splitlines():
+            match = re.match(r"^(headline|body|call to action)\s*:\s*(.*)$", line.strip(), re.I)
+            if not match or not match.group(2).strip():
+                continue
+            label = match.group(1).lower()
+            content = match.group(2).strip()
+            if label == "headline" and not headline:
+                headline = content
+            elif label == "body" and not body:
+                body = content
+            elif label == "call to action" and not cta:
+                cta = content
+        return headline, body, cta
+
+    headline, body, cta = parts(text)
     cleaned = owner_section("advert", text)
-    if not cleaned:
-        return text
-    headline = body = cta = ""
-    for line in cleaned.splitlines():
-        match = re.match(r"^(headline|body|call to action)\s*:\s*(.+)$", line.strip(), re.I)
-        if not match:
-            continue
-        label = match.group(1).lower()
-        content = match.group(2).strip()
-        if label == "headline":
-            headline = content
-        elif label == "body":
-            body = content
-        else:
-            cta = content
-    if not (headline and body and cta):
+    if cleaned:
+        h2, b2, c2 = parts(cleaned)
+        headline, body, cta = headline or h2, body or b2, cta or c2
+    if not (headline and body):
         return text
     if borrowed_service_name(headline, objective, blob):
         headline = _service_headline(objective, blob)
     if borrowed_service_name(body, objective, blob):
         body = f"The offer covers {_service_topic(objective)}, and the price is set after measuring."
-    if not _ASK.search(cta) or borrowed_service_name(cta, objective, blob):
+    if not cta or not _ASK.search(cta) or _PROMISE_LINE.search(cta) or borrowed_service_name(cta, objective, blob):
         cta = "Contact us and ask about a visit."
     rebuilt = f"Headline: {headline}\nBody: {body}\nCall to action: {cta}"
     if section_rejection("advert", rebuilt, blob, objective):
@@ -474,6 +486,11 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
     repaired = named
     lowered = reason.lower()
     if key in {"competitor and market research", "pricing"} and "£" in reason:
+        if key == "competitor and market research":
+            named = "\n".join(
+                line for line in named.splitlines()
+                if line.strip() and not re.search(r"includes none|offers no unit", line, re.I)
+            ).strip()
         repaired = _append_priced(named, facts)
         if key == "pricing":
             repaired = _label_pricing(repaired, objective)

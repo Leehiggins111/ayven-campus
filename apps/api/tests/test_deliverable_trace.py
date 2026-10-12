@@ -1515,6 +1515,55 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     assert "Kitchen Renovations" not in fixed
     assert "Contact us" in fixed
     assert section_rejection("advert", fixed, blob_with_title, objective) == ""
+    promised = (
+        "Headline: Refresh the kitchen you already have\n"
+        "Body: The offer covers coffee machine rental and differs from buying outright.\n"
+        "Call to action: Contact us today to get a free quote."
+    )
+    kept = repair_before_gate("advert", promised, facts, objective, blob)
+    assert "free quote" not in kept.lower()
+    assert "Contact us and ask about a visit" in kept
+    assert section_rejection("advert", kept, blob, objective) == ""
+
+
+def test_a_later_page_price_is_not_crowded_out_by_titles(monkeypatch):
+    from app.intelligence.deliverable import evidence_blob, section_rejection
+    from app.intelligence.facts import extract_facts, label_relevance, repair_before_gate
+
+    pages = [
+        {
+            "source_url": f"https://example.com/p{i}",
+            "source_title": f"Kitchen page {i} title",
+            "extracted_content": "No price is written on this page.",
+        }
+        for i in range(12)
+    ]
+    pages.append({
+        "source_url": "https://refreshkitchen.co.uk/",
+        "source_title": "Refresh Kitchen",
+        "extracted_content": "PAY ON COMPLETION Refresh Your Kitchen can transform your kitchen in one day for only £950.",
+    })
+    facts = extract_facts(pages)
+    assert facts[0]["quantity"] == "£950"
+    monkeypatch.setenv("AYVEN_LLM_STUB", "0")
+
+    def complete(*_args, **_kwargs):
+        return "\n".join(f"F{i} not relevant" for i in range(1, 13)), 1, {}
+
+    labeled = label_relevance(facts, "The service replaces kitchen doors.", complete)
+    assert any("950" in (fact.get("quantity") or "") for fact in labeled)
+    objective = (
+        "The service replaces kitchen doors, worktops and handles, and it avoids a full kitchen replacement."
+    )
+    blob = evidence_blob(pages)
+    pricing = (
+        "The price is set after measuring.\n"
+        "Assumption: What still has to be measured: kitchen size, door count, door size, worktop length, worktop material, handle count."
+    )
+    repaired = repair_before_gate("pricing", pricing, labeled, objective, blob)
+    assert "£950" in repaired
+    assert "refreshkitchen.co.uk" in repaired
+    assert section_rejection("pricing", repaired, blob, objective) == ""
 
 
 def test_an_empty_model_search_still_opens_the_service_query(monkeypatch):
