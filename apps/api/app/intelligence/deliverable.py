@@ -1022,6 +1022,10 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return "The section asks the reader to confirm the request."
     if _echoes_objective(cleaned, objective):
         return "The section repeats the objective instead of answering it."
+    if key == "problem":
+        promised = unsupported_promise(cleaned, objective, blob)
+        if promised:
+            return promised
     if key in {"service", "offer and positioning", "advert", "call to action", "channels"}:
         borrowed = borrowed_service_name(cleaned, objective, blob)
         if borrowed:

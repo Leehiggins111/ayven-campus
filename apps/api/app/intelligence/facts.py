@@ -764,6 +764,19 @@ def _repair_advert(text: str, objective: str, blob: str) -> str:
     return rebuilt
 
 
+def _repair_service_line(objective: str) -> str:
+    """The request's own service. A name taken from an opened page is not used."""
+    phrase = _cover_phrase(objective)
+    lowered = (objective or "").lower()
+    if re.search(r"\brent", lowered):
+        return f"The service rents {phrase} instead of selling one."
+    if "kennel" in lowered:
+        return f"The service provides {phrase} at the customer's home rather than in a kennel."
+    if re.search(r"\bfull (?:kitchen )?replacement\b", lowered):
+        return f"The service replaces {phrase}, and it avoids a full replacement."
+    return f"The service provides {phrase}."
+
+
 def _repair_problem(objective: str) -> str:
     """The burden named in the request, when the model described the market instead."""
     lowered = (objective or "").lower()
@@ -772,7 +785,7 @@ def _repair_problem(objective: str) -> str:
         return f"The problem is that a kennel is inconvenient compared with {topic} at home."
     if re.search(r"\bfull (?:kitchen )?replacement\b", lowered):
         return f"The problem is the cost and disruption of a full replacement for {topic}."
-    return f"The problem is the cost and the inconvenience of buying {topic} outright."
+    return f"The problem is the cost and the inconvenience of buying {_cover_phrase(objective)} outright."
 
 
 def _bad_headline(headline: str) -> bool:
@@ -1029,8 +1042,10 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
 
         lines = [line for line in named.splitlines() if line.strip() and not _echoes_objective(line, objective)]
         repaired = "\n".join(lines).strip()
-    elif key == "problem" and "concrete problem" in lowered:
+    elif key == "problem" and ("concrete problem" in lowered or "promises" in lowered):
         repaired = _repair_problem(objective)
+    elif key == "service" and "comes from an opened page" in lowered:
+        repaired = _repair_service_line(objective)
     elif key == "advert":
         repaired = _repair_advert(named, objective, blob)
     elif key == "channels":
