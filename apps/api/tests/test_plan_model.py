@@ -103,13 +103,13 @@ def test_prompts_do_not_tell_the_model_which_figure_to_copy(monkeypatch):
     _fill_plan_sections(programme, sections, "Replacement doors are £10 to £40.")
     assert seen
     assert all("Copy these figures" not in user for user in seen)
-    assert any("Prices stated on opened pages" in user for user in seen)
+    assert all("Prices stated on opened pages" not in user for user in seen)
+    assert any("Facts:" in user and "[F1]" in user for user in seen)
     full = _section_evidence(programme)
     monkeypatch.setenv("AYVEN_EVIDENCE_PACK", "compact")
     compact = _section_evidence(programme)
-    assert full != compact
+    assert full == compact
     assert "£10" in compact
-    assert "Prices stated on opened pages" not in compact
     assert "Name the service." in seen[0] or any("Do not invent a £ figure" in user for user in seen)
 
 

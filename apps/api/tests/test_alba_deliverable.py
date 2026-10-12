@@ -494,8 +494,8 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         "Target customer": "Local UK homeowners who want the cabinets painted rather than ripped out.",
         "Problem": "Replacing a kitchen costs more and takes longer when the units themselves are still sound.",
         "Offer and positioning": "The offer is an on-site cabinet painting service, which differs from a showroom replacement because the existing kitchen stays.",
-        "Competitor and market research": "Example-painter lists kitchen painting at £80 to £100, and that opened page is not this service.",
-        "Pricing": "ASSUMPTION: plan around £80 to £100 from the opened painting page, because a visit still has to see the units.",
+        "Competitor and market research": "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1].",
+        "Pricing": "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1].\nAssumption: the price is set after a visit still has to see the units.",
         "Channels": "Homeowners nearby are reached through local search and a short conversation about painting their cabinets. Nothing was sent.",
         "Advert": "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope.",
         "Call to action": "Ask for a visit and a written scope before any booking. Nothing was sent.",
@@ -534,7 +534,7 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
     assert "towns to cover" in published
     assert plan_sections_filled(
         published,
-        "https://example-painter.example/kitchen-painting-prices costs £80 to £100",
+        "https://example-painter.example/kitchen-painting-prices\nProfessional kitchen cabinet painting costs £80 to £100 in the UK.",
     ) is True
 
 
@@ -655,8 +655,8 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
         ("Name the customer.", "Local UK homeowners who want the cabinets painted rather than ripped out."),
         ("Name the problem.", "Painting the cabinets costs less and takes less time than replacing the kitchen."),
         ("Name the offer.", "The offer is cabinet painting, and the existing kitchen stays in place."),
-        ("name one opened page", "Example-painter lists kitchen painting at £80 to £100."),
-        ("Do not invent a £ figure", "Assumption: plan around £80 to £100 from the opened kitchen painting page, because a visit still has to see the units."),
+        ("name one opened page", "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1]."),
+        ("Do not invent a £ figure", "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1].\nAssumption: the price is set after a visit still has to see the units."),
         ("three lines", "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope."),
         ("Ask the reader to get in touch", "Ask for a visit and a written scope before any booking."),
         ("Name the owner's next action.", "Next, the owner confirms the towns to cover, then books the visit."),
@@ -684,5 +684,5 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
     assert "Headline:" in published
     assert plan_sections_filled(
         published,
-        "https://example-painter.example/kitchen-painting-prices costs £80 to £100",
+        "https://example-painter.example/kitchen-painting-prices\nProfessional kitchen cabinet painting costs £80 to £100 in the UK.",
     ) is True

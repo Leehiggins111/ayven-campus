@@ -783,6 +783,8 @@ class Programme:
             "filtered_results": self.research.get("filtered") or [],
             "targets": self.research.get("targets") or [],
             "failures": self.research.get("failures") or [],
+            "research_budget": self.research.get("budget") or {},
+            "research_gaps": self.research.get("gaps") or [],
             "supervisor_decisions": [{k: audit[k] for k in ("focus", "decision", "advisory")} for audit in self.audits],
             "manager_decision": decision,
             "resolution": self.resolution,
@@ -1385,26 +1387,17 @@ def _employee_user(programme: Programme, child: dict) -> str:
             "The offer says what is sold and how that differs from the alternatives named in the request. Use differs, instead, or without.\n"
             "Write each section once. Do not repeat a sentence. Do not narrate. Do not say I, let me, let's, I think, we need to, or the user.\n"
             "Do not quote a sentence from the objective. Do not name a person. Do not name a trade this request does not name.\n"
-            "Use only the service in this request and the pages opened for this request.\n"
-            "A £ figure is copied from an opened page in that page's own words, and the same sentence names that page. "
-            "Do not add a unit, a product, or an exclusion the page does not use. "
-            "A £ figure that is not on an opened page is allowed only on a line that starts with Assumption.\n"
-            "Pricing starts with Assumption: and names each part. A £ figure on an opened page is a market reference, not a price for this service, unless that page states the size or the spec. "
-            "Use the page's own words. Write not stated only when no opened page states a £ figure for that part. "
+            "Use only the service in this request and the facts below.\n"
+            "A sentence that states a number or a competitor name must cite [F#] and use that fact's quote. "
+            "A recommendation may not contain a number or a name.\n"
+            "An Assumption line states the method and has no £ figure. "
+            "Write not stated only when no fact states a £ figure for that part. "
             "On its own Assumption line, name what still has to be measured.\n"
-            "Competitor research names an opened page and the £ figure in that page's own words, in the same sentence.\n"
+            "Do not use a promise the request or the cited fact does not state.\n"
             "Write the advert lines. Do not describe the format.\n"
             "End with: Nothing was sent.\n\n"
             f"Request:\n{programme.objective[:800]}\n\n"
-            + (
-                f"Opened pages and prices:\n{_compact_facts(programme) or 'None.'}\n"
-                if evidence_pack_mode() == "compact"
-                else (
-                    f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
-                    f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
-                    + (f"\n{_component_price_block(programme)}\n" if _component_price_block(programme) else "")
-                )
-            )
+            + _section_evidence(programme)
         )
     return (
         "Ayven tool runtime. When you need a tool, emit a line "
@@ -1480,8 +1473,8 @@ def _section_jobs(objective: str) -> tuple:
         ("target customer", "Target customer", "Write one sentence. Name the customer." + shared, "The customer is "),
         ("problem", "Problem", "Write one or two sentences. Name the problem." + shared, "The problem is "),
         ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs. Do not use a business name that appears only on an opened page." + shared, "The offer "),
-        ("competitor and market research", "Competitor and market research", "Write two sentences. In each sentence name one opened page by its site and state the £ figure in that page's own words. Do not add a unit or a product the page does not use. Do not use a £ figure that is not written on that page." + shared, "Opened pages state "),
-        ("pricing", "Pricing", "Write one line for each part. Start each line with Assumption. A £ figure on an opened page is a market reference. Use that page's own words for the product, the unit, and any exclusion. Do not add a unit or a product the page does not use. When no opened page states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, "Assumption: "),
+        ("competitor and market research", "Competitor and market research", "Write one sentence for each fact you use. Cite it as [F#] and name one opened page by that fact. Use that fact's quote, quantity, unit, and what it includes. Do not add a unit or a product the quote does not use." + shared, "Opened pages state "),
+        ("pricing", "Pricing", "Write one line for each market reference. Cite it as [F#] and use that fact's quote, quantity, unit, and what it includes. Then start each remaining line with Assumption. An Assumption line states the method and has no £ figure, for example the price is set after measuring. When no fact states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, "Assumption: "),
         ("channels", "Channels", "Write one sentence. Name the channel. Use a website, search, or a directory, and say what the owner does there. Do not name a competitor's business as the channel. Do not mention hours." + shared, "Customers are reached through "),
         ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\nDo not use a business name that appears only on an opened page.\n" + shared, ""),
         ("call to action", "Call to action", "Write one sentence. Ask the reader to get in touch. Do not name the person who wrote the request. Do not use a business name that appears only on an opened page." + shared, "Ask "),
@@ -1567,6 +1560,8 @@ def _check_for_model(reason: str) -> str:
         return "Ask the reader to get in touch. Do not name the person who wrote the request."
     if "does not name a channel" in lowered:
         return "Name a website, search, or a directory, and the action the owner takes there. Do not name a competitor's business as the channel."
+    if "without a valid" in lowered:
+        return "Cite the fact as [F#] and use that fact's quantity, unit, and quote. An Assumption line has no £ figure."
     return text
 
 
@@ -1616,22 +1611,37 @@ def _compact_facts(programme: Programme) -> str:
     return "\n".join(lines)
 
 
-def _section_evidence(programme: Programme, key: str = "") -> str:
-    if evidence_pack_mode() == "compact":
-        block = f"\nOpened pages and prices:\n{_compact_facts(programme) or 'None.'}\n"
-    else:
-        block = (
-            f"\nOpened pages:\n{_opened_index(programme) or 'None.'}\n"
-            f"Prices stated on opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n"
+def _ensure_facts(programme: Programme) -> list[dict]:
+    """Extract the fact table once. The model labels relevance when a model is available."""
+    if programme.research.get("facts_labeled") and isinstance(programme.research.get("fact_table"), list):
+        return programme.research.get("fact_table") or []
+    from .facts import extract_facts, label_relevance
+
+    facts = extract_facts(programme.research.get("evidence") or [])
+
+    def complete(role, system, user, max_tokens=240, plain=True, plan=True):
+        return _complete(
+            role, system, user, max_tokens=max_tokens, programme=programme,
+            package_id=getattr(programme, "parent_id", "") or "", plain=plain, plan=plan,
         )
+
+    facts = label_relevance(facts, programme.objective, complete)
+    programme.research["fact_table"] = facts
+    programme.research["facts_labeled"] = True
+    return facts
+
+
+def _section_evidence(programme: Programme, key: str = "") -> str:
+    """The writing prompt gets the fact table and the request. Not the raw page text."""
+    from .facts import render_fact_table
+
+    block = "\n" + render_fact_table(_ensure_facts(programme))
     if key == "pricing":
-        parts = _component_price_block(programme)
-        if parts:
-            block += (
-                f"\n{parts}\n"
-                "Use the page's own words for the product, the unit, and any exclusion. "
-                "Write not stated only for a part whose line says no opened page states a £ figure.\n"
-            )
+        block += (
+            "Cite [F#] on every market reference. Use that fact's own words for the quantity, the unit, and what it includes. "
+            "An Assumption line states the method and has no £ figure. "
+            "When no fact states a £ figure for a part, write not stated.\n"
+        )
     return block
 
 
@@ -1704,6 +1714,12 @@ def _clean_headline(raw: str) -> str:
     return ""
 
 
+def _prepare_cited(programme: Programme, text: str) -> str:
+    from .facts import enforce_citations
+
+    return enforce_citations(text or "", _ensure_facts(programme), programme.objective)
+
+
 def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict:
     """Ask for each missing section on its own, at most three times. Return the reason each check still failed."""
     jobs = _section_jobs(programme.objective)
@@ -1711,7 +1727,7 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
         raw = sections.get(key) or ""
         if not raw.strip():
             continue
-        cleaned = _section_body(raw, key, programme.objective)
+        cleaned = _prepare_cited(programme, _section_body(raw, key, programme.objective))
         if cleaned and not _section_missing(key, cleaned, blob, programme.objective):
             sections[key] = cleaned
         else:
@@ -1745,7 +1761,20 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
                 headline = _clean_headline(raw)
                 if headline:
                     written = f"Headline: {headline}\nBody: {advert_rest[0]}\nCall to action: {advert_rest[1]}"
-            reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw if not written else written, blob, programme.objective)
+            cited = _prepare_cited(programme, written)
+            raw_reason = _section_drop_reason(key, raw or "", blob, programme.objective)
+            if written and not cited:
+                written = ""
+                if raw_reason and ("24/7" in raw_reason.lower() or "availability" in raw_reason.lower() or "promises" in raw_reason.lower()):
+                    reason = raw_reason
+                else:
+                    reason = "The lines stated a number or a name without a valid [F#]. They were not stored."
+            elif raw_reason and ("24/7" in (raw or "").lower() or "always ready" in (raw or "").lower()):
+                written = cited
+                reason = raw_reason
+            else:
+                written = cited
+                reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw if not written else written, blob, programme.objective)
             meta = dict(meta or {})
             meta["reason"] = reason
             _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept", attempt=attempt)
@@ -1791,8 +1820,9 @@ def _business_repair_user(programme: Programme, previous: str) -> str:
         "Channels and next steps: full sentences about how the owner reaches the customer for this request.\n"
         "End with: Nothing was sent.\n\n"
         f"Objective:\n{programme.objective}\n\n"
-        f"Opened pages:\n{_opened_index(programme) or 'None.'}\n\n"
-        f"Prices from opened pages:\n{_price_notes(programme) or 'No page stated a £ figure.'}\n\n"
+        f"{_section_evidence(programme)}"
+        "A sentence that states a number or a competitor name must cite [F#]. "
+        "An Assumption line has no £ figure.\n\n"
         f"Sentences already written, with the worksheet removed:\n{usable or 'None.'}\n"
     )
 

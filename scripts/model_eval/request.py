@@ -145,6 +145,10 @@ def run_pipeline(request: dict, out_dir: Path) -> dict:
     plan = _draft_text(rows)
     evidence, pages = _evidence_text(parent_id)
     objective = _objective_for(request, parent_id)
+    try:
+        obs = json.loads((package(parent_id) or {}).get("observability_json") or "{}")
+    except json.JSONDecodeError:
+        obs = {}
     ids = [parent_id] + [item.get("id") or "" for item in rows]
     attempts = _attempts(ids)
     scored = score_plan(plan, objective, evidence, attempts)
@@ -152,7 +156,14 @@ def run_pipeline(request: dict, out_dir: Path) -> dict:
     timing = call_timing(calls or attempts, attempts)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "plan.md").write_text(plan or "No plan was stored.\n", encoding="utf-8")
-    (out_dir / "evidence.json").write_text(json.dumps({"objective": objective, "pages": pages}, indent=2), encoding="utf-8")
+    (out_dir / "evidence.json").write_text(json.dumps({
+        "objective": objective,
+        "pages": pages,
+        "queries": obs.get("queries") or [],
+        "failures": obs.get("failures") or [],
+        "research_budget": obs.get("research_budget") or {},
+        "research_gaps": obs.get("research_gaps") or [],
+    }, indent=2), encoding="utf-8")
     (out_dir / "generations.json").write_text(json.dumps(attempts, indent=2), encoding="utf-8")
     result = {
         "id": request["id"],

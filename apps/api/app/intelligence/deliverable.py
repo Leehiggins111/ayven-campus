@@ -436,7 +436,7 @@ def _heading_name(line: str) -> bool:
     return False
 
 
-def narration_reason(line: str) -> str:
+def narration_reason(line: str, objective: str = "", blob: str = "") -> str:
     """Why this line cannot be stored. Empty when the line passes the check."""
     stripped = line.strip()
     if not stripped or _heading_name(stripped):
@@ -462,7 +462,9 @@ def narration_reason(line: str) -> str:
         return "The section describes the task instead of answering it."
     if re.search(r"\b(does not imply|do not imply|service name that|hours or availability)\b", lowered):
         return "The line repeats the instruction instead of answering it."
-    if "24/7" in lowered:
+    if "24/7" in lowered and "24/7" not in (objective or "").lower() and not (
+        "[f" in lowered and "24/7" in (blob or "").lower()
+    ):
         return "The line claims 24/7 availability. That claim is not stored."
     if "always ready" in lowered:
         return "The line claims the service is always ready. That claim is not stored."
@@ -710,7 +712,7 @@ def _narrated(text: str) -> bool:
     lowered = (text or "").lower()
     if any(phrase in lowered for phrase in _SCRATCH):
         return True
-    if any(phrase in lowered for phrase in ("mortgage", "loan-to-value", "24/7", "always ready", "monitoring system")):
+    if any(phrase in lowered for phrase in ("mortgage", "loan-to-value", "always ready", "monitoring system")):
         return True
     compact = re.sub(r"\s+", "", lowered)
     if re.search(r"(.{1,4})\1{6,}", compact):
@@ -847,19 +849,23 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
     return f"The name '{phrase}' comes from an opened page, not from the request."
 
 
-_UNSUPPORTED_PROMISES = ("free consultation", "free quote", "in one day", "same day")
+_UNSUPPORTED_PROMISES = ("free consultation", "free quote", "in one day", "same day", "same-day", "guaranteed")
 
 
 def unsupported_promise(body: str, objective: str, blob: str) -> str:
     """A competitor's offer is not a promise of the business being created."""
     objective_l = (objective or "").lower()
+    blob_l = (blob or "").lower()
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
         lowered = sentence.lower()
         if blob and _names_opened_page(sentence, blob):
             continue
         for phrase in _UNSUPPORTED_PROMISES:
-            if phrase in lowered and phrase not in objective_l:
-                return f"The section promises '{phrase}'. The request does not."
+            if phrase not in lowered or phrase in objective_l:
+                continue
+            if blob_l and phrase in blob_l and re.search(r"\[F\d+\]", sentence):
+                continue
+            return f"The section promises '{phrase}'. The request does not."
     return ""
 
 

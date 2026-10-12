@@ -446,8 +446,8 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
         "target customer": "The customer is a household that wants worn kitchen doors, worktops and handles replaced.",
         "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
         "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
-        "competitor and market research": "Opened pages state kitchen door prices of £10 to £40 at https://doors.example/replace.",
-        "pricing": "Assumption: doors — £10 to £40 on the opened page, a planning figure only.\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.\nAssumption: still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count.",
+        "competitor and market research": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].",
+        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.\nAssumption: still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count.",
         "channels": "Households are reached through local search, where the owner posts one finished kitchen and asks for a reply.",
         "advert": "",
         "call to action": "Ask for a visit and a written scope before any booking is made.",
@@ -471,8 +471,12 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
         return bad, 12, {"backend": "test", "finish_reason": "stop", "raw_response": bad}
 
     monkeypatch.setattr("app.intelligence.execution._complete", fake)
-    programme = SimpleNamespace(objective=DOOR, parent_id="", research={"evidence": []})
-    rejected = _fill_plan_sections(programme, sections, "https://doors.example/replace\nkitchen doors are £10 to £40")
+    programme = SimpleNamespace(objective=DOOR, parent_id="", research={"evidence": [{
+        "source_url": "https://doors.example/replace",
+        "source_title": "Kitchen doors",
+        "extracted_content": "kitchen doors are £10 to £40.",
+    }]})
+    rejected = _fill_plan_sections(programme, sections, "https://doors.example/replace\nkitchen doors are £10 to £40.")
     assert rejected == {}
     assert "24/7" not in sections["advert"]
     assert sections["advert"].startswith("Headline: Replacement of kitchen doors")
@@ -1090,13 +1094,12 @@ def test_pricing_prompt_is_shown_the_worktop_price_the_gate_counts():
     assert snippets["handles"] == ""
     programme = SimpleNamespace(objective=DOOR, research={"evidence": evidence})
     shown = _section_evidence(programme, "pricing")
-    assert "Market references found on opened pages." in shown
     assert "own words" in shown
     assert "Copy the £ figure" not in shown
-    assert "worktops:" in shown and "£950" in shown
-    assert "handles: no opened page states a £ figure." in shown
+    assert "£950" in shown and "refreshkitchen.co.uk" in shown
+    assert "not stated" in shown
     other = _section_evidence(programme, "problem")
-    assert "Market references found on opened pages." not in other
+    assert "not stated" not in other
     assert shown.startswith(other)
 
 
@@ -1320,7 +1323,7 @@ def test_section_prompts_share_one_evidence_prefix_and_a_short_reason_has_no_cou
     instruction = next(job[2] for job in _section_jobs(DOOR) if job[0] == "problem")
     user = _section_prompt(instruction, 1, "", problem)
     assert user.startswith(problem)
-    assert user.index("Opened pages:") < user.index("Name the problem.")
+    assert user.index("Facts:") < user.index("Name the problem.")
     pricing_job = next(job[2] for job in _section_jobs(DOOR) if job[0] == "pricing")
     assert "door count" in pricing_job and "worktop material" in pricing_job
     assert "alba" not in pricing_job.lower()
@@ -1403,8 +1406,8 @@ def test_a_channels_availability_claim_is_retried_and_the_plan_can_keep_the_repa
         "target customer": "The customer is a household that wants worn kitchen doors, worktops and handles replaced.",
         "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
         "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
-        "competitor and market research": "Opened pages state kitchen door prices of £10 to £40 at https://doors.example/replace.",
-        "pricing": "Assumption: doors — £10 to £40 on the opened page, a planning figure only.\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.\nAssumption: still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count.",
+        "competitor and market research": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].",
+        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.\nAssumption: still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count.",
         "channels": "",
         "advert": "Headline: Fresh kitchen doors\nBody: The service replaces kitchen doors, worktops and handles and differs from a full replacement.\nCall to action: Ask for a visit.",
         "call to action": "Ask for a visit and a written scope before any booking is made.",
@@ -1422,9 +1425,76 @@ def test_a_channels_availability_claim_is_retried_and_the_plan_can_keep_the_repa
         return "24/7 online availability.", 6, {"backend": "test", "finish_reason": "stop", "raw_response": "24/7 online availability."}
 
     monkeypatch.setattr("app.intelligence.execution._complete", fake)
-    programme = SimpleNamespace(objective=DOOR, parent_id="", research={"evidence": []})
-    rejected = _fill_plan_sections(programme, sections, "https://doors.example/replace\nkitchen doors are £10 to £40")
+    programme = SimpleNamespace(objective=DOOR, parent_id="", research={"evidence": [{
+        "source_url": "https://doors.example/replace",
+        "source_title": "Kitchen doors",
+        "extracted_content": "kitchen doors are £10 to £40.",
+    }]})
+    rejected = _fill_plan_sections(programme, sections, "https://doors.example/replace\nkitchen doors are £10 to £40.")
     assert rejected == {}
     assert "24/7" not in sections["channels"]
     assert "search" in sections["channels"]
     assert prefills[1] == "The owner uses "
+
+
+def test_a_fact_table_keeps_cited_quotes_and_drops_invented_names():
+    from app.intelligence.facts import enforce_citations, extract_facts
+
+    evidence = [{
+        "source_url": "https://www.bestbuilders.co.uk/guides/costs/kitchen-door-replacement-cost",
+        "source_title": "Kitchen Door Replacement Cost UK 2026",
+        "extracted_content": "In 2026, kitchen door replacement in the UK costs £10-£40 per standard door, excluding handles.",
+    }, {
+        "source_url": "https://www.nickarchibold.com/replacement-kitchen-doors-cost",
+        "source_title": "Cost To Replace Kitchen Doors",
+        "extracted_content": "Replacement kitchen doors and drawer fronts from £6,000 to £10,000, including new hinges and handles.",
+    }]
+    facts = extract_facts(evidence)
+    assert facts[0]["id"] == "F1"
+    assert facts[0]["quantity"]
+    assert "per standard door" in facts[0]["unit"]
+    assert "excluding handles" in facts[0]["included"]
+    assert facts[0]["source"].startswith("https://www.bestbuilders.co.uk/")
+    objective = "The service replaces kitchen doors, worktops and handles."
+    invented = "London Coffee Hub charges £150 per month, and the service is free and available 24/7."
+    assert enforce_citations(invented, facts, objective) == ""
+    opinion = "The owner posts on the website and asks the customer to get in touch."
+    assert enforce_citations(opinion, facts, objective) == opinion
+    cited = "Best Builders states a door price of £400 per square metre [F1]."
+    repaired = enforce_citations(cited, facts, objective)
+    assert "[F1]" in repaired
+    assert "£400" not in repaired
+    assert "£10" in repaired or "£10-£40" in repaired
+    assumption = "Assumption: the handle price is set after measuring the handle count."
+    assert enforce_citations(assumption, facts, objective) == assumption
+    promise = "The opened page offers the work in one day [F1]."
+    assert enforce_citations(promise, facts, objective) == ""
+
+
+def test_an_empty_model_search_still_opens_the_service_query(monkeypatch):
+    import app.intelligence.research as research_mod
+
+    calls = []
+
+    def search(query, limit=8):
+        calls.append(query)
+        if "coffee" in query and "rental" in query:
+            return [{"title": "Coffee machine rental", "url": "https://brew.example/rental", "snippet": "coffee machine rental prices", "rerank_score": 0.9}]
+        return [{"title": "no_results", "url": "", "snippet": query}]
+
+    def fetch(url):
+        return {"url": url, "title": "Coffee machine rental", "text": "Coffee machine rental from £19 per week.", "error": ""}
+
+    monkeypatch.setattr(research_mod, "plan_queries", lambda *_args, **_kwargs: (["zzzz unrelated"], "model"))
+    result = research_mod.research(
+        "business_research",
+        "Prepare a UK business briefing for a coffee machine rental company. Cover pricing.",
+        "pkg-fallback",
+        "research-e3",
+        max_rounds=1,
+        search_fn=search,
+        fetch_fn=fetch,
+    )
+    assert result["evidence"]
+    assert any("coffee" in query and "rental" in query for query in calls)
+    assert any("brew.example" in (item.get("source_url") or "") for item in result["evidence"])

@@ -487,6 +487,8 @@ def research(
     targets = extract_entities(objective)
     strict_seed = query_source == "model"
     pending = [{"kind": "search", "query": query, "depth": 1, "origin": "seed", "strict": strict_seed} for query in planned]
+    retried_search: set[str] = set()
+    service_fallback = False
     filtered: list[dict] = []
     if sink is not None:
         sink.clear()
@@ -567,6 +569,12 @@ def research(
                         query = shorter
                         searched.append(query)
                         search_result, raw_hits = _run_search(query, depth)
+                if search_result.status != "ok" and not evidence and query not in retried_search:
+                    retried_search.add(query)
+                    err = (search_result.error or search_result.status or "").lower()
+                    if any(token in err for token in ("timeout", "timed out", "429", "503")):
+                        time.sleep(1)
+                    search_result, raw_hits = _run_search(query, depth)
                 if search_result.status != "ok":
                     failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
                     continue
@@ -621,6 +629,27 @@ def research(
             if review_mode == "model" and "SUFFICIENT" in (review_text or "").upper() and evidence and not budget_hit:
                 later = [item for item in later if item.get("kind") != "search"]
                 budget_hit = budget_hit or ""
+        # One research round used to stop after an empty or timed-out search. The remaining
+        # time budget is spent on the service query instead of ending with no page.
+        if (
+            not evidence
+            and not service_fallback
+            and query_source == "model"
+            and not budget_hit
+            and time.monotonic() <= deadline
+        ):
+            from .deliverable import targeted_queries
+
+            service_fallback = True
+            for extra in targeted_queries(objective):
+                if extra in searched or any(item.get("query") == extra for item in later):
+                    continue
+                if len(searched) >= max_searches:
+                    budget_hit = "searches"
+                    break
+                later.append({"kind": "search", "query": extra, "depth": 1, "origin": "service-fallback", "strict": False})
+            if any(item.get("origin") == "service-fallback" for item in later) and round_no >= rounds:
+                rounds += 1
         pending = later
 
     gaps = list(review_gaps)
