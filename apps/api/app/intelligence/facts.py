@@ -909,7 +909,16 @@ def _competitor_lines(text: str, facts: list[dict] | None, objective: str, blob:
         fact for fact in others
         if _OFFER_HINT.search(fact.get("quote") or "") and (_proper_name(fact.get("entity") or "") or _sentence_names_business(fact.get("quote") or ""))
     ]
+    from .deliverable import anchor_terms
+
+    anchors = [term for term in anchor_terms(objective) if len(term) >= 4]
+
+    def _anchor_hits(fact: dict) -> int:
+        blob = f"{fact.get('entity') or ''} {fact.get('quote') or ''}".lower()
+        return sum(1 for term in anchors if term in blob)
+
     named.sort(key=lambda fact: (
+        -_anchor_hits(fact),
         1 if _LOUD_PROMISE.search(fact.get("quote") or "") else 0,
         0 if re.search(r"\b(we supply|we install|we replace|we offer|packages? (?:start|usually))\b", fact.get("quote") or "", re.I) else 1,
         0 if re.search(r"\b(rent|rental|hire|hiring|replac)", fact.get("quote") or "", re.I) else 1,
@@ -917,15 +926,12 @@ def _competitor_lines(text: str, facts: list[dict] | None, objective: str, blob:
         0 if _proper_name(fact.get("entity") or "") else 1,
     ))
 
-    from .deliverable import anchor_terms
-
-    anchors = [term for term in anchor_terms(objective) if len(term) >= 4]
-
     def _mentions_service(fact: dict) -> bool:
         blob = f"{fact.get('entity') or ''} {fact.get('quote') or ''}".lower()
         return any(term in blob for term in anchors)
 
     preferred = [fact for fact in priced if _mentions_service(fact)]
+    preferred.sort(key=lambda fact: -_anchor_hits(fact))
     pool = preferred or priced
     first = next((fact for fact in pool if fact.get("unit")), pool[0] if pool else None)
     candidates = named + [fact for fact in priced if fact is not first] + others

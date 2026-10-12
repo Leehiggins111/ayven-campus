@@ -211,7 +211,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
             if planned:
                 for extra in targeted_queries(objective):
                     if "company" in extra.lower() and extra not in planned:
-                        planned.append(extra)
+                        planned.insert(0, extra)
                 return planned[:8], "model"
             return generic_from_objective(objective), "objective-fallback"
         except Exception:
@@ -255,7 +255,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
 
                     for extra in _targeted(objective):
                         if "company" in extra.lower() and extra not in planned:
-                            planned.append(extra)
+                            planned.insert(0, extra)
                     return planned[:8], "model"
             except Exception:
                 pass

@@ -890,6 +890,14 @@ _IDENTITY = re.compile(
 )
 
 
+_NOT_A_BORROWED_NAME = {
+    "your", "our", "this", "that", "with", "from", "into",
+    "business", "businesses", "company", "service", "services",
+    "coffee", "machine", "machines", "commercial", "premium",
+    "rental", "solution", "solutions", "weekly", "flexible",
+}
+
+
 def borrowed_service_name(body: str, objective: str, blob: str) -> str:
     """A business name taken from an opened page is not this request's service."""
     words = set(re.findall(r"[a-z0-9]+", (objective or "").lower()))
@@ -897,15 +905,25 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
     found = []
     for match in _IDENTITY.finditer(blob or ""):
         phrase = re.sub(r"\s+", " ", match.group(0)).strip()
-        parts = [
-            part for part in re.findall(r"[a-z0-9]+", phrase.lower())
-            if part not in {"s", "the", "and", "for", "uk"} and len(part) > 1
-        ]
-        if len(parts) < 2 or all(part in words for part in parts):
-            continue
-        if phrase.lower() not in body_l:
-            continue
-        found.append(phrase)
+        candidates = [phrase]
+        if phrase.lower().startswith("at "):
+            candidates.append(phrase[3:].strip())
+        matched = ""
+        for candidate in candidates:
+            parts = [
+                part for part in re.findall(r"[a-z0-9]+", candidate.lower())
+                if part not in {"s", "the", "and", "for", "uk", "at"} and len(part) > 1
+            ]
+            if len(parts) < 2 or all(part in words for part in parts):
+                continue
+            if all(part in _NOT_A_BORROWED_NAME for part in parts):
+                continue
+            if candidate.lower() not in body_l:
+                continue
+            matched = candidate
+            break
+        if matched:
+            found.append(matched)
     if not found:
         return ""
     phrase = max(found, key=len)
