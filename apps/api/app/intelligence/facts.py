@@ -671,9 +671,45 @@ def _without_spec(quote: str) -> str:
     return _without_model_code(head)
 
 
+def _later_clause(quote: str) -> str:
+    """The sentence after a glued heading, when that sentence still carries the £."""
+    at_name = re.search(
+        r"\b(At\s+[A-Z][\w'&]*(?:\s+[A-Z][\w'&]*){0,4},\s+we\b.{12,})",
+        quote or "",
+    )
+    if at_name and at_name.start(1) > 24:
+        return at_name.group(1)
+    who = re.search(r"\b(?:who|that)\s+(can\s+.{12,})", quote or "", re.I)
+    if who and who.start(1) > 24:
+        return who.group(1)
+    later = re.search(
+        r"\b(Transform\b.{12,}|We\s+(?:replace|supply|install|offer|provide)\b.{12,})",
+        quote or "",
+        re.I,
+    )
+    if later and later.start(1) > 24:
+        return later.group(1)
+    return ""
+
+
+def _readable_quote(quote: str) -> tuple[str, str]:
+    """Drop a shouted heading. Keep the page's own sentence and any banner as a citation."""
+    quote = re.sub(r"\s+", " ", quote or "").strip()
+    banner = ""
+    match = re.match(r"^([A-Z]{2,}(?:\s+[A-Z]{2,})+)\s+", quote)
+    if match and len(match.group(1).split()) >= 2:
+        banner = match.group(1).lower()
+        quote = quote[match.end() :].strip()
+    shortened = _later_clause(quote)
+    if shortened and ("£" not in quote or "£" in shortened):
+        quote = shortened
+    return quote.strip(" .,;"), banner
+
+
 def _market_line(fact: dict) -> str:
     """The opened quote, the site, and the citation, as one sentence. No amount is added."""
     quote = _clip_quote(_without_spec(_first_band(_first_listed_price(fact.get("quote") or ""))))
+    quote, banner = _readable_quote(quote)
     host = _host(fact.get("source") or "")
     cite = f"[{fact['id']}]"
     entity = re.sub(r"\s+", " ", fact.get("entity") or "").strip()
@@ -683,7 +719,10 @@ def _market_line(fact: dict) -> str:
         prefix = f"{entity} ({shown}) " if shown else f"{entity} "
     elif shown and shown not in quote.lower():
         prefix = f"({shown}) "
-    return f"{prefix}{quote} {cite}.".strip()
+    body = f"{prefix}{quote}".strip()
+    if banner:
+        body = body.rstrip(" .,") + f", and the page says {banner}"
+    return f"{body} {cite}.".strip()
 
 
 def name_the_page(text: str, facts: list[dict] | None) -> str:
@@ -785,12 +824,7 @@ def _pricing_section(text: str, facts: list[dict] | None, objective: str, *, ski
     needed = measurements_still_needed(objective)
     lowered = (objective or "").lower()
     if items or needed:
-        detail = []
-        if items:
-            detail.append(", ".join(items))
-        if needed:
-            detail.append("what still has to be measured: " + ", ".join(needed))
-        assumption = "Assumption: " + " — ".join(detail) + "."
+        assumption = _pricing_method(items, needed, facts)
     elif re.search(r"\brent", lowered):
         assumption = "Assumption: the weekly price is set after seeing the site and which machine is wanted."
     elif "kennel" in lowered:
@@ -799,6 +833,52 @@ def _pricing_section(text: str, facts: list[dict] | None, objective: str, *, ski
         assumption = f"Assumption: the price for {_service_topic(objective)} is set after measuring."
     lines.append(assumption)
     return "\n".join(lines).strip()
+
+
+def _plain_and(parts: list[str]) -> str:
+    parts = [part for part in parts if part]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return ", ".join(parts[:-1]) + ", and " + parts[-1]
+
+
+def _and_the(parts: list[str]) -> str:
+    return _plain_and([part if part.lower().startswith("the ") else f"the {part}" for part in parts])
+
+
+def _pricing_method(items: list[str], needed: list[str], facts: list[dict] | None) -> str:
+    """How the measured inputs become a price. A unit is used only when a fact states it."""
+    blob = " ".join(f"{fact.get('unit') or ''} {fact.get('quote') or ''}" for fact in facts or [])
+    per_door = bool(re.search(r"per\s+(?:standard\s+|kitchen\s+)?doors?\b", blob, re.I))
+    without_square = re.sub(r"per\s+square\s+(?:metre|meter)s?", " ", blob, flags=re.I)
+    per_metre = bool(re.search(r"per\s+(?:linear\s+)?(?:metre|meter)s?\b", without_square, re.I))
+    bits = []
+    seen = set()
+    for item in items:
+        stem = item[:-1] if item.endswith("s") and len(item) > 4 else item
+        if stem in seen:
+            continue
+        seen.add(stem)
+        if stem == "door" and per_door:
+            bits.append("price each door from the opened per door figures")
+        elif "worktop" in item and per_metre:
+            bits.append("price the worktop per metre from the measured length and material")
+        elif "worktop" in item:
+            bits.append("price the worktop from the measured length and material")
+        elif stem == "handle":
+            bits.append("count the handles")
+        else:
+            bits.append(f"price the {item} from the measurements")
+    if not bits:
+        bits.append("price the work from the measurements")
+    measure = ""
+    if needed:
+        measure = " Measure " + _and_the(needed) + " before a price is written."
+    return "Assumption: " + _plain_and(bits) + "." + measure
 
 
 def _service_topic(objective: str) -> str:
@@ -970,27 +1050,8 @@ def _thin_channel(text: str) -> bool:
 
 
 def _channel_sentence(objective: str) -> str:
-    topic = _service_topic(objective)
-    lowered = (objective or "").lower()
-    if "kitchen" in lowered:
-        return (
-            "The owner posts on the website in the first week and phones two suppliers "
-            "to ask what a replacement door and a worktop cost."
-        )
-    if re.search(r"\brent", lowered):
-        return (
-            "The owner posts on the website in the first week and phones one office "
-            f"to ask which {topic} they want to rent."
-        )
-    if "kennel" in lowered:
-        return (
-            "The owner posts on the website in the first week and phones one customer "
-            "to book a home visit."
-        )
-    return (
-        f"The owner posts on the website in the first week and phones one customer "
-        f"to book a visit about {topic}."
-    )
+    """The model writes the channel. A shared sentence is not stored."""
+    return ""
 
 
 def _repair_channels(text: str, objective: str, blob: str) -> str:
@@ -1005,43 +1066,26 @@ def _repair_channels(text: str, objective: str, blob: str) -> str:
 
 
 def _repair_next_steps(objective: str) -> str:
-    from .deliverable import measurements_still_needed
-
-    topic = _service_topic(objective)
-    lowered = (objective or "").lower()
-    needed = measurements_still_needed(objective)
-    measure = ", the ".join(needed[:3]) if needed else "what the visit has to count"
-    if "kitchen" in lowered:
-        return (
-            "In the first week the owner phones two suppliers and writes down the published price "
-            "for the doors and the worktops. "
-            f"In the first month the owner visits one kitchen and measures the {measure}."
-        )
-    if re.search(r"\brent", lowered):
-        return (
-            f"In the first week the owner phones two rental companies and writes down the weekly price they publish for a {topic}. "
-            "In the first month the owner visits one office and sets the price after seeing the site."
-        )
-    if "kennel" in lowered:
-        return (
-            "In the first week the owner phones two businesses and writes down what a home visit includes. "
-            "In the first month the owner visits one customer and sets the price after seeing the animal."
-        )
-    return (
-        f"In the first week the owner phones two suppliers and writes down the published offer for {topic}. "
-        "In the first month the owner visits one customer and sets the price after measuring."
-    )
+    """The model writes the next steps. A shared plan is not stored."""
+    return ""
 
 
 def _repair_offer(objective: str) -> str:
+    from .deliverable import covered_items, measurements_still_needed
+
     package = _cover_phrase(objective)
     lowered = (objective or "").lower()
-    if re.search(r"\bfull (?:kitchen )?replacement\b", lowered):
-        contrast = "a full replacement"
-    elif "kennel" in lowered:
+    items = covered_items(objective)
+    needed = measurements_still_needed(objective)
+    if re.search(r"\bfull (?:kitchen )?replacement\b", lowered) and len(items) >= 2:
+        visit = f" The visit measures {_and_the(needed)}." if needed else ""
+        return f"The package replaces {_and_the(items)}.{visit} It differs from a full replacement."
+    if "kennel" in lowered:
         contrast = "a kennel"
     elif re.search(r"\brent", lowered):
         contrast = "buying the machine outright"
+    elif re.search(r"\bfull (?:kitchen )?replacement\b", lowered):
+        contrast = "a full replacement"
     else:
         contrast = "the longer alternative"
     return f"The offer is a package covering {package}, and it differs from {contrast}."

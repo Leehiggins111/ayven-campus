@@ -1873,6 +1873,53 @@ def _same_business(left: str, right: str) -> bool:
     return set(a) <= set(b) or set(b) <= set(a)
 
 
+def _shared_channel(body: str) -> bool:
+    """The sentence the engine used to store for every trade."""
+    return bool(re.search(r"posts on the website in the first week,? and phones", body or "", re.I))
+
+
+def _shared_steps(body: str) -> bool:
+    """The plan the engine used to store for every trade."""
+    return bool(re.search(
+        r"phones two suppliers and writes down the published price"
+        r"|phones two rental companies and writes down the weekly price"
+        r"|phones two businesses and writes down what a home visit"
+        r"|phones one office to ask which"
+        r"|phones one customer to book a (?:home )?visit",
+        body or "",
+        re.I,
+    ))
+
+
+def _generic_offer(body: str, objective: str) -> bool:
+    """One sentence that names the parts and a contrast, and nothing the visit measures."""
+    if len(covered_items(objective)) < 2 and not measurements_still_needed(objective):
+        return False
+    compact = re.sub(r"\s+", " ", (body or "")).strip()
+    return bool(re.fullmatch(
+        r"The offer is a package covering .+, and it differs from .+\.?",
+        compact,
+        re.I,
+    ))
+
+
+_PACKAGE_METHOD = re.compile(
+    r"\b(?:price each|priced from|price the|per door|per standard door)\b",
+    re.I,
+)
+_SHOUTED_HEADING = re.compile(r"\b[A-Z]{2,}(?:\s+[A-Z]{2,}){2,}\b")
+
+
+def _assumption_states_method(body: str, objective: str) -> bool:
+    """A package price names how the measured inputs become a price."""
+    if len(covered_items(objective)) < 2 and not measurements_still_needed(objective):
+        return True
+    lines = [line for line in (body or "").splitlines() if "assumption" in line.lower()]
+    if not lines:
+        return True
+    return any(_PACKAGE_METHOD.search(line) for line in lines)
+
+
 def _offer_differs(body: str, objective: str) -> bool:
     """A contrast word counts only when the request did not already use it."""
     for marker in _CONTRAST:
@@ -1904,7 +1951,11 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         missing_package = [item for item in covered_items(objective) if not _item_present(item, body)]
         if len(covered_items(objective)) >= 2 and missing_package:
             return "The offer does not name the package: " + ", ".join(missing_package) + "."
+        if _generic_offer(body, objective):
+            return "The offer is one generic sentence. Name what the package includes and what the visit measures."
     elif key == "channels":
+        if _shared_channel(body):
+            return "The section uses the shared form. Name an action that fits this business."
         if re.search(r"three lines|headline\s*:|call to action\s*:", lowered):
             return "The section describes the advert format instead of a channel."
         if re.search(r"\bindustry reports?\b|\bonline platforms?\b", lowered):
@@ -1914,6 +1965,8 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         if not named or not actions or not _WHEN.search(body or ""):
             return "The section does not name a channel, a practical action, and a timeframe."
     elif key == "next steps":
+        if _shared_steps(body):
+            return "The section uses the shared form. Name an action that fits this business."
         if "first practical action" in lowered or not any(_has_word(lowered, word) for word in _OWNER_ACTIONS):
             return "The next step repeats the service instead of an action the owner takes."
         if "first week" not in lowered or "first month" not in lowered:
@@ -1936,8 +1989,12 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
             return missing_measure
         if "£" in (body or "") and "assumption" not in lowered:
             return "Pricing has no assumption. State the method, with no new £ figure."
+        if not _assumption_states_method(body, objective):
+            return "Pricing lists references and does not state how to turn the measurements into a price."
         return ""
     elif key == "competitor and market research":
+        if _SHOUTED_HEADING.search(body or ""):
+            return "The competitor line starts with a page heading. Paraphrase it and keep the citation."
         priced = _competitor_prices(body, blob)
         if priced:
             return priced

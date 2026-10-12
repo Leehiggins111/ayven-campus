@@ -737,7 +737,8 @@ def test_owner_review_rejects_meta_echo_and_a_single_part_price(monkeypatch):
         "Assumption: doors — £10-£40 on the opened page, a planning figure only.\n"
         "Assumption: worktops — not stated on an opened page.\n"
         "Assumption: handles — not stated on an opened page.\n"
-        "Assumption: still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count.",
+        "Assumption: price the doors, the worktops, and the handles from those measurements. "
+        "Still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count.",
         "£10-£40",
         objective,
     )
@@ -1132,7 +1133,8 @@ _HOUSE = (
     "Replacement Kitchen Doors UK | Made to Measure | From £11.80 Replacement kitchens made EASY!"
 )
 _MEASURED = (
-    "Assumption: still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count."
+    "Assumption: price the doors, the worktops, and the handles from those measurements. "
+    "Still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count."
 )
 
 
@@ -1407,8 +1409,13 @@ def test_later_sentences_keep_the_customer_the_problem_and_the_offer():
     )
     assert "differs" in owner_section("offer and positioning", offer)
     assert section_rejection("offer and positioning", offer, "", "A home visit service.") == ""
-    channels = "The owner posts on the website in the first week and phones one organiser."
-    assert section_rejection("channels", channels, "", "") == ""
+    shared = "The owner posts on the website in the first week and phones one organiser."
+    assert "shared form" in section_rejection("channels", shared, "", "")
+    specific = (
+        "In the first week the owner lists the service on Checkatrade and posts before-and-after photos "
+        "in a local Facebook group."
+    )
+    assert section_rejection("channels", specific, "", "") == ""
     generic = "Online platforms, local directories, and word-of-mouth referrals."
     assert section_rejection("channels", generic, "", "")
     assert "24/7" in section_rejection("channels", "Customers are reached through 24/7 online availability.", "", "")
@@ -1528,11 +1535,8 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     assert repair_before_gate("pricing", "", facts, objective, blob) == ""
     channels = "Customers are reached through 6wresearch.com, where the owner posts one note."
     reached = repair_before_gate("channels", channels, facts, objective, blob)
-    assert "6wresearch" not in reached
-    assert "website" in reached
-    assert "first week" in reached
-    assert "industry report" not in reached.lower()
-    assert section_rejection("channels", reached, blob, objective) == ""
+    assert "posts on the website in the first week and phones" not in reached
+    assert section_rejection("channels", reached, blob, objective)
     advert = (
         "Headline: Expert Kitchen Renovations Without Full Replacement\n"
         "Body: The offer covers coffee machine rental and differs from buying outright.\n"
@@ -1852,3 +1856,150 @@ def test_a_title_that_states_a_unit_keeps_that_unit():
     assert "11.80" in missing[0]["quote"]
     assert "does not give the size" in missing[0]["quote"]
     assert "per " not in missing[0]["quote"].lower()
+
+
+def test_channels_and_next_steps_are_not_filled_from_a_shared_sentence():
+    """The same channel sentence for every trade is a template. The model writes it."""
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.execution import _section_jobs
+    from app.intelligence.facts import _channel_sentence, _repair_next_steps, repair_before_gate
+
+    assert _channel_sentence(DOOR) == ""
+    assert _repair_next_steps(DOOR) == ""
+    jobs = {job[0]: job for job in _section_jobs(DOOR)}
+    assert jobs["channels"][3] == ""
+    assert jobs["next steps"][3] == ""
+    assert jobs["offer and positioning"][3] == ""
+    prompt = " ".join(job[2] + job[3] for job in jobs.values()).lower()
+    assert "posts on the website in the first week and phones" not in prompt
+    assert "checkatrade" not in prompt
+    shared_steps = (
+        "In the first week the owner phones two suppliers and writes down the published price for the doors. "
+        "In the first month the owner visits one kitchen and measures the door count."
+    )
+    assert "shared form" in section_rejection("next steps", shared_steps, "", DOOR)
+    specific_steps = (
+        "In the first week the owner photographs one worn kitchen and writes down the door count. "
+        "In the first month the owner visits that kitchen and measures the worktop length."
+    )
+    assert section_rejection("next steps", specific_steps, "", DOOR) == ""
+    filled = repair_before_gate("channels", shared_steps, [], DOOR, "")
+    assert "posts on the website in the first week and phones" not in filled
+
+
+def test_a_package_offer_names_what_the_visit_measures():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import repair_before_gate
+
+    generic = "The offer is a package covering doors, worktops, handles, and it differs from a full replacement."
+    assert "generic" in section_rejection("offer and positioning", generic, "", DOOR)
+    fixed = repair_before_gate("offer and positioning", generic, [], DOOR, "")
+    assert "doors" in fixed and "worktops" in fixed and "handles" in fixed
+    assert "door count" in fixed and "worktop length" in fixed
+    assert "differs" in fixed
+    assert section_rejection("offer and positioning", fixed, "", DOOR) == ""
+    short = "The offer is a package covering a coffee machine, and it differs from buying outright."
+    coffee = "The service is coffee machine rental. Buying outright is the alternative."
+    assert section_rejection("offer and positioning", short, "", coffee) == ""
+
+
+def test_a_shouted_heading_is_paraphrased_with_the_citation():
+    from app.intelligence.deliverable import evidence_blob, section_rejection
+    from app.intelligence.facts import _market_line, extract_facts, repair_before_gate
+
+    shouted = {
+        "id": "F2",
+        "entity": "Refresh Your Kitchen",
+        "source": "https://refreshkitchen.co.uk/",
+        "quote": (
+            "PAY ON COMPLETION Refresh Your Kitchen are a Scottish based company "
+            "who can transform your kitchen in one day for only £950."
+        ),
+        "quantity": "£950",
+    }
+    line = _market_line(shouted)
+    assert not line.startswith("PAY")
+    assert "£950" in line
+    assert "[F2]" in line
+    assert "the page says pay on completion" in line.lower()
+    assert "can transform your kitchen" in line.lower()
+    guide = {
+        "id": "F1",
+        "entity": "",
+        "source": "https://www.bestbuilders.co.uk/guides/costs/kitchen-door-replacement-cost",
+        "quote": "In 2026, kitchen door replacement in the UK costs £10-£40 per standard door, excluding handles.",
+        "quantity": "£10-£40",
+        "unit": "per standard door",
+    }
+    guide_line = _market_line(guide)
+    assert "In 2026" in guide_line
+    assert "per standard door" in guide_line
+    assert "the page says" not in guide_line.lower()
+    glued = {
+        "id": "F3",
+        "entity": "Premier Kitchen Makeovers",
+        "source": "https://premierkitchenmakeovers.co.uk/",
+        "quote": (
+            "Upgrade Your Kitchen Easily with Stylish Replacement Doors and Worktops "
+            "Transform your kitchen with replacement doors and worktops."
+        ),
+        "quantity": "",
+    }
+    premier = _market_line(glued)
+    assert not premier.lower().startswith("upgrade your kitchen easily")
+    assert "Transform your kitchen" in premier
+    evidence = [{
+        "source_url": "https://refreshkitchen.co.uk/",
+        "source_title": "Refresh Kitchen",
+        "extracted_content": shouted["quote"],
+    }, {
+        "source_url": "https://joesdoors.example/replace",
+        "source_title": "Joe's Doors",
+        "extracted_content": "We replace your existing doors and worktops, with no need for a full refit.",
+    }]
+    facts = extract_facts(evidence)
+    pasted = (
+        "PAY ON COMPLETION Refresh Your Kitchen are a Scottish based company who can transform "
+        "your kitchen in one day for only £950.\n"
+        "Joe's Doors replace existing doors and worktops."
+    )
+    blob = evidence_blob(evidence)
+    assert "page heading" in section_rejection("competitor and market research", pasted, blob, DOOR)
+    rebuilt = repair_before_gate("competitor and market research", pasted, facts, DOOR, blob)
+    assert "PAY ON COMPLETION" not in rebuilt
+    assert "£950" in rebuilt
+    assert "pay on completion" in rebuilt.lower()
+
+
+def test_pricing_names_a_method_and_uses_a_unit_only_when_the_page_states_it():
+    from app.intelligence.deliverable import evidence_blob, section_rejection
+    from app.intelligence.facts import extract_facts, repair_before_gate
+
+    evidence = [{
+        "source_url": "https://www.bestbuilders.co.uk/guides/costs/kitchen-door-replacement-cost",
+        "source_title": "Kitchen Door Replacement Cost",
+        "extracted_content": "In 2026, kitchen door replacement in the UK costs £10-£40 per standard door, excluding handles.",
+    }, {
+        "source_url": "https://refreshkitchen.co.uk/",
+        "source_title": "Refresh Kitchen",
+        "extracted_content": "PAY ON COMPLETION Refresh Your Kitchen can transform your kitchen in one day for only £950.",
+    }]
+    facts = extract_facts(evidence)
+    blob = evidence_blob(evidence)
+    priced = repair_before_gate("pricing", "The price is set after measuring.", facts, DOOR, blob)
+    assumption = priced.split("Assumption:", 1)[-1]
+    assert "price each door" in assumption
+    assert "per door" in assumption
+    assert "worktop" in assumption and "length" in assumption
+    assert "handle" in assumption
+    assert "kitchen size" in assumption and "door count" in assumption
+    assert "per metre" not in assumption.lower() and "per meter" not in assumption.lower()
+    assert "£" not in assumption
+    assert priced.lower().count("assumption") == 1
+    assert section_rejection("pricing", priced, blob, DOOR) == ""
+    bare = (
+        "https://www.bestbuilders.co.uk/guides/costs/kitchen-door-replacement-cost states £10-£40 per standard door, excluding handles [F1].\n"
+        "Assumption: doors, worktops, handles — what still has to be measured: kitchen size, door count, door size, "
+        "worktop length, worktop material, and handle count."
+    )
+    assert "turn the measurements" in section_rejection("pricing", bare, blob, DOOR)
