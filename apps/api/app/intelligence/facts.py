@@ -65,11 +65,38 @@ def _entity(title: str, url: str, text: str = "") -> str:
             continue
         if _proper_name(part):
             proper.append(part)
+            continue
+        short = _short_business_name(part)
+        if short:
+            proper.append(short)
+    if len(proper) >= 2 and len(proper[-1].split()) == 1 and len(proper[-2].split()) >= 2:
+        proper = proper[:-1]
     if proper:
         return proper[-1][:80]
     host = re.sub(r"^https?://", "", url or "", flags=re.I).split("/")[0]
     label = host.lower().removeprefix("www.").split(".")[0]
     return label or "opened page"
+
+
+def _short_business_name(part: str) -> str:
+    """K9 Clippers from a long title such as K9 Clippers Mobile Dog Grooming."""
+    generic = {
+        "mobile", "dog", "grooming", "groom", "price", "prices", "service", "services",
+        "cost", "costs", "uk", "the", "home", "near", "our",
+    }
+    kept = []
+    for word in (part or "").split():
+        if word.lower() in generic:
+            if kept:
+                break
+            continue
+        kept.append(word)
+        if len(kept) == 3:
+            break
+    candidate = " ".join(kept)
+    if candidate and _proper_name(candidate):
+        return candidate
+    return ""
 
 
 def _numbers(text: str) -> list[float]:
@@ -295,12 +322,12 @@ def extract_facts(evidence: list[dict] | None) -> list[dict]:
                 bucket.append(row)
         elif title and _MONEY.search(title):
             amount = _MONEY.search(title).group(0)
-            row = _fact_row(
-                url,
-                title,
-                f"{amount}, and the page text does not give the size, the material, or the unit.",
-                text,
-            )
+            unit = _UNIT.search(title)
+            if unit:
+                sentence = f"{amount} {unit.group(0).lower()}."
+            else:
+                sentence = f"{amount}, and the page text does not give the size, the material, or the unit."
+            row = _fact_row(url, title, sentence, text)
             row["quantity"] = amount
             row["title_only"] = True
             row["business"] = business
@@ -651,6 +678,31 @@ def _append_priced(text: str, facts: list[dict] | None) -> str:
     return "\n".join(lines[:8]).strip()
 
 
+def _use_stated_unit(text: str, facts: list[dict] | None) -> str:
+    """A title that says per day is not a missing unit."""
+    lines = []
+    changed = False
+    for line in (text or "").splitlines():
+        if "does not give the size" not in line:
+            lines.append(line)
+            continue
+        numbers = [re.sub(r"[£\s,]", "", amount) for amount in re.findall(r"£\s*\d[\d,]*(?:\.\d+)?", line)]
+        replacement = ""
+        for fact in facts or []:
+            if not fact.get("unit"):
+                continue
+            fact_numbers = [re.sub(r"[£\s,]", "", amount) for amount in re.findall(r"£\s*\d[\d,]*(?:\.\d+)?", fact.get("quantity") or "")]
+            if numbers and fact_numbers and numbers[0] == fact_numbers[0]:
+                replacement = _market_line(fact)
+                break
+        if replacement and "does not give the size" not in replacement:
+            lines.append(replacement)
+            changed = True
+        else:
+            lines.append(line)
+    return "\n".join(lines).strip() if changed else text
+
+
 def _pricing_section(text: str, facts: list[dict] | None, objective: str, *, skip_title_only: bool = False) -> str:
     """Up to three opened £ lines, then one Assumption. The model's worksheet is not reused.
 
@@ -666,10 +718,10 @@ def _pricing_section(text: str, facts: list[dict] | None, objective: str, *, ski
         if len(lines) >= 3:
             break
         if (
-            fact.get("directory")
-            or _price_table(fact)
+            _price_table(fact)
             or _rate_card_quote(fact)
             or (skip_title_only and fact.get("title_only"))
+            or (fact.get("directory") and any(not item.get("directory") for item in priced))
         ):
             continue
         line = _market_line(fact)
@@ -998,12 +1050,11 @@ def _opened_price_line(facts: list[dict] | None, used_hosts: set[str]) -> str:
     priced = [
         fact for fact in (facts or [])
         if "£" in (fact.get("quantity") or "")
-        and not fact.get("directory")
         and not fact.get("title_only")
         and not _price_table(fact)
         and not _spec_sheet(fact)
     ]
-    priced.sort(key=lambda fact: (0 if fact.get("unit") else 1, 0 if fact.get("business") else 1))
+    priced.sort(key=lambda fact: (1 if fact.get("directory") else 0, 0 if fact.get("unit") else 1, 0 if fact.get("business") else 1))
     for fact in priced:
         if _host(fact.get("source") or "") in used_hosts:
             continue
@@ -1037,6 +1088,10 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
     from .deliverable import section_rejection
 
     named = name_the_page(text, facts)
+    if key == "pricing":
+        stated = _use_stated_unit(named, facts)
+        if stated and stated != named and not section_rejection(key, stated, blob, objective):
+            named = stated
     reason = section_rejection(key, named, blob, objective)
     if not reason:
         if key == "channels" and _thin_channel(named):

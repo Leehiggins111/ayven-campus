@@ -1743,3 +1743,24 @@ def test_a_breed_price_list_keeps_one_offer():
     assert "£95" in priced and "assumption" in priced.lower()
     assert "£48" not in priced
     assert not section_rejection("pricing", priced, blob, objective)
+
+
+def test_a_title_that_states_a_unit_keeps_that_unit():
+    """From £2.70 Per Day is per day. A title with no unit still says the unit is missing."""
+    from app.intelligence.facts import extract_facts
+
+    stated = extract_facts([{
+        "source_url": "https://www.nationwidecoffee.co.uk/",
+        "source_title": "UK's #1 Commercial Coffee Machines Supplier | From £2.70 Per Day | Nationwide Coffee",
+        "extracted_content": "Commercial coffee machines are available for rent or purchase.",
+    }])
+    assert stated[0]["quote"].lower().startswith("£2.70 per day")
+    assert "does not give the size" not in stated[0]["quote"]
+    missing = extract_facts([{
+        "source_url": "https://kitchenwarehouseltd.com/replacement-kitchen-doors",
+        "source_title": "Replacement Kitchen Doors UK | Made to Measure | From £11.80",
+        "extracted_content": "Replacement kitchens made EASY!",
+    }])
+    assert "11.80" in missing[0]["quote"]
+    assert "does not give the size" in missing[0]["quote"]
+    assert "per " not in missing[0]["quote"].lower()

@@ -183,6 +183,21 @@ def _normalise_queries(raw) -> list[str]:
     return cleaned[:8]
 
 
+def _put_service_queries_first(planned: list[str], objective: str) -> None:
+    """The company search runs first, then the price search, before other queries fill the page budget."""
+    from .deliverable import targeted_queries
+
+    wanted = [
+        extra for extra in targeted_queries(objective)
+        if "company" in extra.lower() or "price" in extra.lower()
+    ]
+    wanted.sort(key=lambda extra: 0 if "company" in extra.lower() else 1)
+    for extra in reversed(wanted):
+        if extra in planned:
+            planned.remove(extra)
+        planned.insert(0, extra)
+
+
 def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str], str]:
     """Model plans when one is actually available. Stub and no-model runs stay generic."""
     if task_class in ("trivial", "calculation"):
@@ -209,9 +224,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                     if extra not in planned:
                         planned.append(extra)
             if planned:
-                for extra in targeted_queries(objective):
-                    if "company" in extra.lower() and extra not in planned:
-                        planned.insert(0, extra)
+                _put_service_queries_first(planned, objective)
                 return planned[:8], "model"
             return generic_from_objective(objective), "objective-fallback"
         except Exception:
@@ -251,11 +264,7 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                         if extra not in planned:
                             planned.append(extra)
                 if planned:
-                    from .deliverable import targeted_queries as _targeted
-
-                    for extra in _targeted(objective):
-                        if "company" in extra.lower() and extra not in planned:
-                            planned.insert(0, extra)
+                    _put_service_queries_first(planned, objective)
                     return planned[:8], "model"
             except Exception:
                 pass

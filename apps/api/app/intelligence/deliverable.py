@@ -205,7 +205,8 @@ def usable_search_queries(items: list[str], objective: str = "") -> list[str]:
                 if quote not in kept:
                     kept.append(quote[:180])
             continue
-        short = (item or "").strip()[:180]
+        short = re.sub(r"[\"“”]", "", (item or "")).strip()
+        short = re.sub(r"\s+", " ", short)[:180]
         if short and short not in kept:
             kept.append(short)
     return kept[:8]
