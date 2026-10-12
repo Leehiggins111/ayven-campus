@@ -1500,10 +1500,11 @@ def test_a_fact_table_keeps_cited_quotes_and_drops_invented_names():
     opinion = "The owner posts on the website and asks the customer to get in touch."
     assert enforce_citations(opinion, facts, objective) == opinion
     cited = "Best Builders states a door price of £400 per square metre [F1]."
-    repaired = enforce_citations(cited, facts, objective)
-    assert "[F1]" in repaired
-    assert "£400" not in repaired
-    assert "£10" in repaired or "£10-£40" in repaired
+    assert enforce_citations(cited, facts, objective) == ""
+    kept = "Bestbuilders states kitchen door replacement costs £10 to £40 per standard door, excluding handles [F1]."
+    repaired = enforce_citations(kept, facts, objective)
+    assert repaired == kept
+    assert 'states "' not in repaired
     assumption = "Assumption: the handle price is set after measuring the handle count."
     assert enforce_citations(assumption, facts, objective) == assumption
     promise = "The opened page offers the work in one day [F1]."

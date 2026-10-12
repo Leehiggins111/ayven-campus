@@ -532,7 +532,7 @@ def narration_reason(line: str, objective: str = "", blob: str = "") -> str:
     if "mortgage" in lowered or "loan-to-value" in lowered:
         return "The line is about a mortgage, which this request does not ask for."
     if re.search(
-        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|previous line was|finished lines|answered\s*:|availability claim|not stored|do not mention hours|finish the sentence|ask the reader)\b",
+        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|previous line was|finished lines|answered\s*:|availability claim|not stored|do not mention hours|finish the sentence)\b",
         lowered,
     ):
         return "The line repeats the instruction instead of answering it."
@@ -1047,6 +1047,10 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         return "The section asks the reader to confirm the request."
     if _echoes_objective(cleaned, objective):
         return "The section repeats the objective instead of answering it."
+    if key in {"channels", "next steps", "advert", "offer and positioning", "service", "problem", "target customer"}:
+        named_owner = names_requester(cleaned, objective)
+        if named_owner:
+            return named_owner
     if key == "problem":
         promised = unsupported_promise(cleaned, objective, blob)
         if promised:

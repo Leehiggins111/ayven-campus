@@ -36,16 +36,6 @@ _PROMISES = (
     "in one day",
     "always ready",
 )
-_KEEP = {
-    "about", "after", "assumption", "based", "between", "business", "charge", "charged",
-    "charges", "cited", "count", "customer", "customers", "differ", "differs", "figure",
-    "figures", "kitchen", "known", "market", "measured", "measuring", "method", "opened",
-    "owner", "page", "pages", "price", "priced", "prices", "reference", "references",
-    "request", "service", "stated", "states", "still", "their", "there", "these", "this",
-    "using", "which", "would", "quote",
-}
-
-
 _GENERIC_TITLE = re.compile(
     r"\b(replacement|cost|guide|how much|price|prices|worktops|services|service|home|installed|welcome)\b",
     re.I,
@@ -535,35 +525,20 @@ def _derived(value: float, cited_values: list[float]) -> bool:
 
 
 def _matches(sentence: str, cited: list[dict], objective: str) -> bool:
+    """A paraphrase may use the model's own words. The number and the name must be the fact's."""
     quotes = " ".join(fact.get("quote") or "" for fact in cited)
-    sources = " ".join((fact.get("source") or "") + " " + (fact.get("entity") or "") for fact in cited)
     cited_values = _numbers(quotes)
     for value in _numbers(sentence):
         if not _derived(value, cited_values):
             return False
-    allowed = set(re.findall(r"[a-z0-9']+", f"{quotes} {sources} {objective}".lower())) | _KEEP
-    for word in re.findall(r"[a-z0-9']+", sentence.lower()):
-        if len(word) < 5 or word in allowed or word.startswith("f") and word[1:].isdigit():
-            continue
-        return False
     for name in _foreign_names(sentence, objective, cited):
         if name.lower() not in quotes.lower():
             return False
     return True
 
 
-def _repair(cited: list[dict]) -> str:
-    lines = []
-    for fact in cited:
-        quote = (fact.get("quote") or "").strip().strip('"')
-        if not quote:
-            continue
-        lines.append(f"{fact.get('entity') or 'The opened page'} states \"{quote}\" [{fact['id']}].")
-    return " ".join(lines)
-
-
 def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> str:
-    """Drop an uncited number or name. Repair a bad citation to the fact's own quote."""
+    """Drop an uncited number or name. A citation that does not match the fact is dropped, not rewritten."""
     table = facts or []
     kept = []
     for sentence in _sentence_list(text):
@@ -588,10 +563,6 @@ def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> st
         quoted = " ".join((fact.get("entity") or "") + " " + (fact.get("quote") or "") for fact in cited).lower()
         if _matches(sentence, cited, objective) and all(name.lower() in quoted for name in named):
             kept.append(sentence)
-        else:
-            repaired = _repair(cited)
-            if repaired:
-                kept.append(repaired)
     return "\n".join(kept).strip()
 
 
@@ -1043,7 +1014,11 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
         from .deliverable import _echoes_objective
 
         lines = [line for line in named.splitlines() if line.strip() and not _echoes_objective(line, objective)]
-        repaired = "\n".join(lines).strip()
+        stripped = "\n".join(lines).strip()
+        # A leftover sentence is not a new offer. Keep the model's text so the retry reports the echo.
+        if not stripped or section_rejection(key, stripped, blob, objective):
+            return named
+        repaired = stripped
     elif key == "problem" and (
         "concrete problem" in lowered or "promises" in lowered or "instruction" in lowered or "the task" in lowered
     ):
