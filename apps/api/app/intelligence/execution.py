@@ -1482,17 +1482,22 @@ def _section_jobs(objective: str) -> tuple:
         f"\nRequest: {brief}\n"
         "Finish the sentence for the owner. Do not quote the request. Do not describe this task.\n"
     )
+    # The request sentence is not repeated here. Copying it is what the echo check rejects.
+    own = (
+        f"\nService words: {labeled}.\n"
+        "Finish the sentence for the owner. Do not quote the request. Do not begin with the request's sentence. Do not describe this task.\n"
+    )
     return (
         ("service", "Service", "Write one sentence. Name the service. Use the request's own words. Do not use a business name that appears only on an opened page." + shared, "The service "),
         ("target customer", "Target customer", "Write one sentence. Name the customer." + shared, "The customer is "),
         ("problem", "Problem", "Write one or two sentences. Name the problem." + shared, "The problem is "),
-        ("offer and positioning", "Offer and positioning", "Write two or three sentences. Name the offer. Name what the package includes, what it leaves out, and what the visit measures. Say how it differs. Do not write only that the offer is a package covering the parts. Do not invent a price. Do not use a business name that appears only on an opened page." + shared, ""),
-        ("competitor and market research", "Competitor and market research", "Write two or three sentences. Name two UK businesses from the fact table. name one opened page for each business. Paraphrase what each offers. Keep the citation, the quantity, and the unit. If the fact states pay on completion or what the price excludes, say that in the same sentence. Do not copy a run of the page's words. Then say how this service differs. Do not paste a page title or an opened-sources dump. Do not start a line with a heading from the page. A market report or a how-to guide is not a competitor. Do not invent a name." + shared, "Two businesses offer "),
-        ("pricing", "Pricing", "Write one line for each market reference. Do not start with the request. The first line cites one fact whose quantity is a £ figure. Copy that quantity, its unit, and its [F#]. If the fact states pay on completion or what the price excludes, say that in the same sentence. If the fact does not give the size, the material, or the unit, say so in that sentence. Do not paste a page title. Then start each remaining line with Assumption. An Assumption line states how the measured inputs become a price, has no [F#], and has no £ figure. Use a unit only when a fact states that unit. When no fact states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, ""),
-        ("channels", "Channels", "Write one sentence for this business. Name the channel. Name the place the owner uses, the action they take there, and the first week or the first month. The place and the action have to fit this service, so the same sentence would not fit a different trade. Do not say online platforms, industry reports, conduct market research, or asks for a reply. Do not name a competitor's business as the channel. Do not name the person who wrote the request. Do not mention hours." + shared, ""),
-        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\nThe headline is a complete phrase under 10 words. Do not start the headline with Ask about.\nDo not use a business name that appears only on an opened page.\n" + shared, ""),
-        ("call to action", "Call to action", "Write one sentence. Ask the reader to get in touch. Do not name the person who wrote the request. Do not use a business name that appears only on an opened page." + shared, "Ask "),
-        ("next steps", "Next steps", "Write two sentences for this business. Name the owner's next action. In the first week, name one practical action and the place the owner does it. In the first month, name the next action. The actions have to fit this service, so the same sentences would not fit a different trade. Do not say conduct market research. Do not name a service area. Do not name a competitor's business as the place the owner goes. Do not name the person who wrote the request." + shared, ""),
+        ("offer and positioning", "Offer and positioning", "Write two or three sentences. Name the offer. Name what the package includes, what it leaves out, and what the visit measures. Say how it differs. Do not write only that the offer is a package covering the parts. Do not invent a price. Do not use a business name that appears only on an opened page." + own, ""),
+        ("competitor and market research", "Competitor and market research", "Write two or three sentences. Name two UK businesses from the fact table. name one opened page for each business. Paraphrase what each offers. Keep the citation, the quantity, and the unit. If the fact states pay on completion or what the price excludes, say that in the same sentence. Do not copy a run of the page's words. Then say how this service differs. Do not paste a page title or an opened-sources dump. Do not start a line with a heading from the page. A market report or a how-to guide is not a competitor. Do not invent a name." + own, "Two businesses offer "),
+        ("pricing", "Pricing", "Write one line for each market reference. Do not start with the request. The first line cites one fact whose quantity is a £ figure. Copy that quantity, its unit, and its [F#]. If the fact states pay on completion or what the price excludes, say that in the same sentence. If the fact does not give the size, the material, or the unit, say so in that sentence. Do not paste a page title. Then start each remaining line with Assumption. An Assumption line states how the measured inputs become a price, has no [F#], and has no £ figure. Use a unit only when a fact states that unit. When no fact states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + own, ""),
+        ("channels", "Channels", "Write one sentence for this business. Name the channel. Name the place the owner uses, the action they take there, and the first week or the first month. The place and the action have to fit this service, so the same sentence would not fit a different trade. Do not say online platforms, industry reports, conduct market research, or asks for a reply. Do not name a competitor's business as the channel. Do not name the person who wrote the request. Do not mention hours." + own, ""),
+        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\nThe headline is a complete phrase under 10 words. Do not start the headline with Ask about.\nThe call to action asks the customer to get in touch. Do not promise a free quote.\nDo not use a business name that appears only on an opened page.\n" + own, ""),
+        ("call to action", "Call to action", "Write one sentence. Ask the reader to get in touch. Do not name the person who wrote the request. Do not use a business name that appears only on an opened page." + own, "Ask "),
+        ("next steps", "Next steps", "Write two sentences for this business. Name the owner's next action. In the first week, name one practical action and the place the owner does it. In the first month, name the next action. The actions have to fit this service, so the same sentences would not fit a different trade. Do not say conduct market research. Do not name a service area. Do not name a competitor's business as the place the owner goes. Do not name the person who wrote the request." + own, ""),
         ("assumptions", "Assumptions", "Write one sentence. Name one assumption." + shared, "The plan assumes "),
         ("unresolved", "Unresolved", "Write one sentence. Name one open fact." + shared, "Still open: "),
     )
@@ -1721,7 +1726,7 @@ def _has_model_sentence(text: str) -> bool:
 
 def _advert_saved_lines(raw: str) -> tuple[str, str]:
     """Body and call to action that already pass, when the headline does not."""
-    from .deliverable import _advert_content_ok, _visible_answer
+    from .deliverable import _ASK, _advert_content_ok, _visible_answer
 
     body = cta = ""
     for line in _visible_answer(raw or "").splitlines():
@@ -1736,6 +1741,8 @@ def _advert_saved_lines(raw: str) -> tuple[str, str]:
             body = content
         elif label == "call to action" and not cta:
             if re.search(r"free quote|free consultation|in one day|same day|guaranteed", content, re.I):
+                continue
+            if not _ASK.search(content):
                 continue
             cta = content
     return body, cta
@@ -1802,6 +1809,12 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             ):
                 use_prefill = "The owner uses "
                 use_instruction = instruction + " Do not claim that the service is available at all hours."
+            elif key == "channels" and attempt > 1 and "names the person" in (rejected.get(key) or "").lower():
+                use_prefill = "The owner uses "
+                use_instruction = instruction + " Do not name the person who wrote the request."
+            elif key == "next steps" and attempt > 1 and "names the person" in (rejected.get(key) or "").lower():
+                use_prefill = "In the first week the owner "
+                use_instruction = instruction + " Do not name the person who wrote the request."
             elif key == "channels" and attempt > 1 and (
                 "does not name a channel" in (rejected.get(key) or "").lower()
                 or "shared form" in (rejected.get(key) or "").lower()
@@ -1829,7 +1842,9 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
             else:
                 written = cited
                 reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw if not written else written, blob, programme.objective)
-            if reason and raw_reason and "promises '" in raw_reason.lower():
+            if reason and raw_reason and (
+                "promises '" in raw_reason.lower() or "does not ask the customer" in raw_reason.lower()
+            ):
                 reason = raw_reason
             elif (
                 reason

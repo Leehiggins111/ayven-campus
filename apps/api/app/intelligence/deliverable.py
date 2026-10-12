@@ -532,7 +532,7 @@ def narration_reason(line: str, objective: str = "", blob: str = "") -> str:
     if "mortgage" in lowered or "loan-to-value" in lowered:
         return "The line is about a mortgage, which this request does not ask for."
     if re.search(
-        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|previous line was|finished lines|answered\s*:|availability claim|not stored|do not mention hours|finish the sentence|finishes the sentence|might finish)\b",
+        r"\b(?:1 sentence|one sentence|exactly three lines|output only the|previous answer was|previous line was|finished lines|answered\s*:|availability claim|not stored|do not mention hours|finish the sentence|finishes the sentence|might finish|might say)\b",
         lowered,
     ):
         return "The line repeats the instruction instead of answering it."
@@ -1121,7 +1121,7 @@ _OWNER_ACTIONS = (
     "confirm", "contact", "open", "write", "visit", "compare", "measure",
     "count", "draft", "publish", "phone", "email", "list", "choose", "check",
     "collect", "decide", "photograph", "call", "meet", "read", "ask", "record",
-    "book", "research", "scope", "note", "post", "reach", "start", "use",
+    "book", "research", "scope", "note", "post", "reach", "start", "use", "operate",
     "send", "share", "target", "outreach",
 )
 _CONFIRM_REQUEST = re.compile(
@@ -1649,6 +1649,8 @@ def _mismatch_against(sentence: str, source: str) -> str:
     claim = (sentence or "").lower()
     for phrase in _EXCLUSION_PHRASES:
         if phrase in span and phrase not in claim:
+            if phrase == "pay on completion" and "on completion" in claim:
+                continue
             return f"The opened page states '{phrase}' with the £ figure. The claim does not."
     return ""
 
@@ -1944,7 +1946,7 @@ def _generic_offer(body: str, objective: str) -> bool:
 
 
 _PACKAGE_METHOD = re.compile(
-    r"\b(?:price each|priced from|price the|per door|per standard door|price is determined|determined by the number|calculated based on)\b",
+    r"\b(?:price each|priced from|price the|per door|per standard door|price is determined|determined by the number|calculated based on|based on the number)\b",
     re.I,
 )
 _SHOUTED_HEADING = re.compile(r"\b[A-Z]{2,}(?:\s+[A-Z]{2,}){2,}\b")
