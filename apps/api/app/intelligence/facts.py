@@ -118,7 +118,7 @@ def _bare_price(sentence: str) -> bool:
 
 
 _OFFER_HINT = re.compile(
-    r"\b(offers?|replace|replacement|rents?|rental|hires?|installs?|supplies|services?|packages?|transform)\b",
+    r"\b(offers?|replace|replaced|replacing|replacement|rents?|rental|hires?|installs?|supplies|services?|packages?|transform)\b",
     re.I,
 )
 _NOT_A_NAME = re.compile(
@@ -141,6 +141,12 @@ def _spec_sheet(fact: dict) -> bool:
     """A machine's dimensions are not the offer."""
     quote = fact.get("quote") or ""
     return bool(re.search(r"\d+\s*w\s*x\s*\d+", quote, re.I))
+
+
+def _rate_card_quote(fact: dict) -> bool:
+    from .deliverable import _rate_card
+
+    return bool(_rate_card(fact.get("quote") or ""))
 
 
 def _repair_service(fact: dict) -> bool:
@@ -188,11 +194,16 @@ def _offer_sentence(text: str) -> str:
         sentence = re.sub(r"\s+", " ", sentence).strip()
         if len(sentence) < 32 or len(sentence) > 240 or _MONEY.search(sentence):
             continue
-        if sentence.count(" - ") >= 3 or sentence.count(" | ") >= 1:
+        if sentence.count(" - ") >= 2 or sentence.count(" | ") >= 1:
+            continue
+        words = re.findall(r"[A-Za-z][A-Za-z']*", sentence)
+        caps = sum(1 for word in words if word[:1].isupper())
+        if len(words) >= 8 and caps / len(words) >= 0.45:
             continue
         if _DIRECTORY.search(sentence):
             continue
-        if _OFFER_HINT.search(sentence):
+        prose = bool(re.search(r"\b(we|our|your|with|without|you|is|are|who|I)\b", sentence))
+        if _OFFER_HINT.search(sentence) and prose:
             names = _sentence_names_business(sentence)
             specific = re.search(r"\b(rent|rental|hire|hiring|replac)", sentence, re.I)
             if names and specific:
@@ -546,9 +557,19 @@ def _first_band(quote: str) -> str:
     return head.strip(" -:,")
 
 
+def _without_spec(quote: str) -> str:
+    """A machine's dimensions and option menu are not the offer. Keep the price."""
+    if not re.search(r"\d+\s*w\s*x\s*\d+", quote or "", re.I) and (quote or "").count(" - ") < 3:
+        return quote
+    cut = (quote or "").find(" - ")
+    head = quote[:cut] if cut > 20 else quote
+    head = re.sub(r"\d+\s*w\s*x\s*\d+.*", "", head, flags=re.I)
+    return head.strip(" -:,")
+
+
 def _market_line(fact: dict) -> str:
     """The opened quote, the site, and the citation, as one sentence. No amount is added."""
-    quote = _clip_quote(_first_band(fact.get("quote") or ""))
+    quote = _clip_quote(_without_spec(_first_band(fact.get("quote") or "")))
     host = _host(fact.get("source") or "")
     cite = f"[{fact['id']}]"
     entity = re.sub(r"\s+", " ", fact.get("entity") or "").strip()
@@ -615,7 +636,12 @@ def _pricing_section(text: str, facts: list[dict] | None, objective: str, *, ski
     for fact in priced:
         if len(lines) >= 3:
             break
-        if fact.get("directory") or _price_table(fact) or _spec_sheet(fact) or (skip_title_only and fact.get("title_only")):
+        if (
+            fact.get("directory")
+            or _price_table(fact)
+            or _rate_card_quote(fact)
+            or (skip_title_only and fact.get("title_only"))
+        ):
             continue
         line = _market_line(fact)
         if " | " in line or not line:
@@ -862,6 +888,7 @@ def _competitor_lines(text: str, facts: list[dict] | None, objective: str, blob:
         if fact.get("business") and fact.get("quote") and not fact.get("title_only")
         and not _price_table(fact) and not _repair_service(fact)
         and not _DIRECTORY.search(fact.get("quote") or "")
+        and not _rate_card_quote(fact)
     ]
     priced = [fact for fact in businesses if fact.get("quantity")]
     others = [fact for fact in businesses if not fact.get("quantity")]
@@ -907,11 +934,35 @@ def _competitor_lines(text: str, facts: list[dict] | None, objective: str, blob:
         lines = [_market_line(first), _market_line(second)]
         if any(" | " in line for line in lines):
             continue
+        if "£" not in "\n".join(lines):
+            extra = _opened_price_line(facts, {_host(first.get("source") or ""), _host(second.get("source") or "")})
+            if extra:
+                lines.append(extra)
         lines.append(_difference(objective))
         rebuilt = "\n".join(lines)
         if not section_rejection("competitor and market research", rebuilt, blob, objective):
             return rebuilt
     return text
+
+
+def _opened_price_line(facts: list[dict] | None, used_hosts: set[str]) -> str:
+    """One opened £ when the two businesses did not state a price."""
+    priced = [
+        fact for fact in (facts or [])
+        if "£" in (fact.get("quantity") or "")
+        and not fact.get("directory")
+        and not fact.get("title_only")
+        and not _price_table(fact)
+        and not _spec_sheet(fact)
+    ]
+    priced.sort(key=lambda fact: (0 if fact.get("unit") else 1, 0 if fact.get("business") else 1))
+    for fact in priced:
+        if _host(fact.get("source") or "") in used_hosts:
+            continue
+        line = _market_line(fact)
+        if line and "£" in line and " | " not in line:
+            return line
+    return ""
 
 
 def _cites_directory(text: str, facts: list[dict] | None) -> bool:

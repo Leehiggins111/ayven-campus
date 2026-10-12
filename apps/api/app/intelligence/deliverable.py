@@ -977,6 +977,8 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
     tariff = _rate_card(raw)
     if tariff:
         return tariff
+    if re.search(r"\d+\s*w\s*x\s*\d+", raw or "", re.I):
+        return "The section pastes a machine specification. State the offer in a sentence."
     leaked = _example_leak(raw, objective, blob)
     if leaked:
         return leaked
