@@ -1102,7 +1102,7 @@ _EXAMPLE_PHRASES = (
     "need three lines", "should be like", "for this context",
 )
 _ASK = re.compile(
-    r"\b(ask|reply|call|phone|email|write|contact|book|request|quote|schedule)\b",
+    r"\b(ask|reply|call|phone|email|write|contact|book|request|quote|schedule|touch)\b",
     re.I,
 )
 _CONTRAST = (
@@ -1946,7 +1946,7 @@ def _generic_offer(body: str, objective: str) -> bool:
 
 
 _PACKAGE_METHOD = re.compile(
-    r"\b(?:price each|priced from|price the|per door|per standard door|price is determined|determined by the number|calculated based on|based on the number)\b",
+    r"\b(?:price each|priced from|price the|per door|per standard door|price is determined|determined by the number|calculated based on|based on the number|price is based on)\b",
     re.I,
 )
 _SHOUTED_HEADING = re.compile(r"\b[A-Z]{2,}(?:\s+[A-Z]{2,}){2,}\b")
