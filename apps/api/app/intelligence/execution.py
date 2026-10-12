@@ -1720,6 +1720,17 @@ def _prepare_cited(programme: Programme, text: str) -> str:
     return enforce_citations(text or "", _ensure_facts(programme), programme.objective)
 
 
+def _cite_and_repair(programme: Programme, key: str, text: str, blob: str, raw: str = "") -> str:
+    """Cite facts, then name the page on a £ line. A 24/7 reply is left for the retry."""
+    cited = _prepare_cited(programme, text)
+    source = f"{raw or ''}\n{text or ''}"
+    if re.search(r"24/7|always ready", source, re.I):
+        return cited
+    from .facts import repair_before_gate
+
+    return repair_before_gate(key, cited, _ensure_facts(programme), programme.objective, blob)
+
+
 def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict:
     """Ask for each missing section on its own, at most three times. Return the reason each check still failed."""
     jobs = _section_jobs(programme.objective)
@@ -1727,7 +1738,7 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
         raw = sections.get(key) or ""
         if not raw.strip():
             continue
-        cleaned = _prepare_cited(programme, _section_body(raw, key, programme.objective))
+        cleaned = _cite_and_repair(programme, key, _section_body(raw, key, programme.objective), blob, raw)
         if cleaned and not _section_missing(key, cleaned, blob, programme.objective):
             sections[key] = cleaned
         else:
@@ -1761,7 +1772,7 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
                 headline = _clean_headline(raw)
                 if headline:
                     written = f"Headline: {headline}\nBody: {advert_rest[0]}\nCall to action: {advert_rest[1]}"
-            cited = _prepare_cited(programme, written)
+            cited = _cite_and_repair(programme, key, written, blob, raw)
             raw_reason = _section_drop_reason(key, raw or "", blob, programme.objective)
             if written and not cited:
                 written = ""

@@ -11,6 +11,7 @@ on:
       - apps/api/app/models.py
       - apps/api/app/intelligence/execution.py
       - apps/api/app/intelligence/deliverable.py
+      - apps/api/app/intelligence/facts.py
       - apps/api/app/intelligence/research.py
       - apps/api/app/db.py
       - apps/api/app/intelligence/store.py

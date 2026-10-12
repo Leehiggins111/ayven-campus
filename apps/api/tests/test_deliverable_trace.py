@@ -1469,6 +1469,52 @@ def test_a_fact_table_keeps_cited_quotes_and_drops_invented_names():
     assert enforce_citations(assumption, facts, objective) == assumption
     promise = "The opened page offers the work in one day [F1]."
     assert enforce_citations(promise, facts, objective) == ""
+    headline = "Headline: Refresh Your Kitchen Without A Full Replacement"
+    assert enforce_citations(headline, facts, objective) == headline
+    counted = "The owner phones 3 suppliers and asks what they charge."
+    assert "3" not in enforce_citations(counted, facts, objective)
+    assert "phones" in enforce_citations(counted, facts, objective)
+
+
+def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
+    from app.intelligence.deliverable import evidence_blob, section_rejection
+    from app.intelligence.facts import extract_facts, repair_before_gate
+
+    evidence = [{
+        "source_url": "https://www.coffeemachinerentals.co.uk/",
+        "source_title": "Coffee Machine Rental, Leasing & Buying",
+        "extracted_content": "Commercial coffee machines can be quite expensive, with prices ranging from £1,000 to £12,000 and even higher.",
+    }]
+    facts = extract_facts(evidence)
+    objective = "The service is coffee machine rental for offices. Buying outright is the alternative."
+    blob = evidence_blob(evidence)
+    competitor = "Commercial coffee machines can be quite expensive, with prices ranging from £1,000 to £12,000 and even higher [F1]."
+    repaired = repair_before_gate("competitor and market research", competitor, facts, objective, blob)
+    assert "coffeemachinerentals.co.uk" in repaired
+    assert section_rejection("competitor and market research", repaired, blob, objective) == ""
+    pricing = "The price is set after measuring demand."
+    priced = repair_before_gate("pricing", pricing, facts, objective, blob)
+    assert "£1,000" in priced
+    assert "Assumption:" in priced
+    assert section_rejection("pricing", priced, blob, objective) == ""
+    assert repair_before_gate("pricing", "", facts, objective, blob) == ""
+    channels = "Customers are reached through 6wresearch.com, where the owner posts one note."
+    reached = repair_before_gate("channels", channels, facts, objective, blob)
+    assert "6wresearch" not in reached
+    assert "directory" in reached
+    assert section_rejection("channels", reached, blob, objective) == ""
+    advert = (
+        "Headline: Expert Kitchen Renovations Without Full Replacement\n"
+        "Body: The offer covers coffee machine rental and differs from buying outright.\n"
+        "Call to action: Explore the range."
+    )
+    # The headline is a title, not this request. The call to action does not ask.
+    # A page title in the headline is rejected; the repair must not keep it.
+    blob_with_title = blob + "\nExpert Kitchen Renovations Without Full Replacement"
+    fixed = repair_before_gate("advert", advert, facts, objective, blob_with_title)
+    assert "Kitchen Renovations" not in fixed
+    assert "Contact us" in fixed
+    assert section_rejection("advert", fixed, blob_with_title, objective) == ""
 
 
 def test_an_empty_model_search_still_opens_the_service_query(monkeypatch):

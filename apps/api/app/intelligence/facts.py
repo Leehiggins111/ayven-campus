@@ -181,9 +181,28 @@ def _has_number(sentence: str) -> bool:
     return bool(re.search(r"\b\d+(?:\.\d+)?\b", bare))
 
 
+def _title_line(sentence: str) -> bool:
+    """A headline written in title case is not a competitor's name."""
+    stripped = re.sub(
+        r"^(?:headline|body|call to action|assumption)\s*:\s*",
+        "",
+        (sentence or "").strip(),
+        flags=re.I,
+    )
+    stripped = stripped.strip(" .\"'")
+    words = re.findall(r"[A-Za-z]+(?:['’]s)?", stripped)
+    small = {"a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to", "with", "without"}
+    words = [word for word in words if word.lower() not in small]
+    if not words or len(words) > 14:
+        return False
+    return all(word[:1].isupper() for word in words)
+
+
 def _foreign_names(sentence: str, objective: str, facts: list[dict]) -> list[str]:
     from .deliverable import _IDENTITY
 
+    if _title_line(sentence):
+        return []
     allowed = " ".join([objective or ""] + [fact.get("entity") or "" for fact in facts] + [fact.get("quote") or "" for fact in facts]).lower()
     names = []
     for match in _IDENTITY.finditer(sentence or ""):
@@ -259,6 +278,14 @@ def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> st
             kept.append(sentence)
             continue
         if not cited:
+            # A count is not a market figure. Drop the digits and keep the action.
+            if named or _MONEY.search(sentence) or re.search(r"%", sentence):
+                continue
+            stripped = _YEAR.sub(" ", sentence)
+            stripped = re.sub(r"\b\d+(?:\.\d+)?\b", "", stripped)
+            stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,;:-")
+            if len(stripped.split()) >= 4:
+                kept.append(stripped)
             continue
         quoted = " ".join((fact.get("entity") or "") + " " + (fact.get("quote") or "") for fact in cited).lower()
         if _matches(sentence, cited, objective) and all(name.lower() in quoted for name in named):
@@ -268,3 +295,203 @@ def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> st
             if repaired:
                 kept.append(repaired)
     return "\n".join(kept).strip()
+
+
+def _host(url: str) -> str:
+    return re.sub(r"^https?://", "", url or "", flags=re.I).split("/")[0].lower()
+
+
+def _market_line(fact: dict) -> str:
+    """The opened quote, the site, and the citation, as one sentence. No amount is added."""
+    quote = (fact.get("quote") or "").strip().strip('"').rstrip(".")
+    host = _host(fact.get("source") or "")
+    cite = f"[{fact['id']}]"
+    if host and host not in quote.lower():
+        return f"{quote} ({host}) {cite}."
+    return f"{quote} {cite}."
+
+
+def name_the_page(text: str, facts: list[dict] | None) -> str:
+    """A cited £ sentence names the opened host. The amount stays the fact's own."""
+    kept = []
+    for sentence in _sentence_list(text):
+        hosts = []
+        for fact in _cited(sentence, facts or []):
+            host = _host(fact.get("source") or "")
+            if not host or host in sentence.lower() or "£" not in sentence:
+                continue
+            if host not in hosts:
+                hosts.append(host)
+        if hosts:
+            sentence = sentence.rstrip(" .") + f" ({hosts[0]})."
+        kept.append(sentence)
+    return "\n".join(kept).strip()
+
+
+_PROMISE_LINE = re.compile(
+    r"guarantee|24/7|always ready|free consultation|free quote|same-day|same day|in one day",
+    re.I,
+)
+_HOST = re.compile(
+    r"\b(?:https?://\S+|www\.\S+|(?:[a-z0-9-]+\.)+(?:co\.uk|com|org|net))\b",
+    re.I,
+)
+
+
+def _append_priced(text: str, facts: list[dict] | None) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip() and not _PROMISE_LINE.search(line)]
+    present = "\n".join(lines).replace(",", "")
+    for fact in [fact for fact in (facts or []) if fact.get("quantity")][:2]:
+        numbers = [re.sub(r"[£\s,]", "", amount) for amount in re.findall(r"£\s*\d[\d,]*(?:\.\d+)?", fact["quantity"])]
+        if numbers and all(number in present for number in numbers):
+            continue
+        lines.append(_market_line(fact))
+        present = "\n".join(lines).replace(",", "")
+    return "\n".join(lines[:8]).strip()
+
+
+def _label_pricing(text: str, objective: str) -> str:
+    """An opened £ figure stays a market reference. The method is an Assumption with no new £."""
+    from .deliverable import covered_items, measurements_still_needed, _item_present
+
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not any("assumption" in line.lower() for line in lines):
+        lines.append(f"Assumption: the price for {_service_topic(objective)} is set after measuring.")
+    body = "\n".join(lines)
+    for item in covered_items(objective):
+        labeled = False
+        for line in lines:
+            if _item_present(item, line) and "assumption" in line.lower():
+                labeled = True
+                break
+        if not labeled:
+            lines.append(f"Assumption: {item} — not stated as its own figure, set after measuring.")
+    body = "\n".join(lines)
+    needed = measurements_still_needed(objective)
+    if any("£" in line for line in lines) and needed and any(item not in body.lower() for item in needed):
+        lines.append("Assumption: what still has to be measured: " + ", ".join(needed) + ".")
+    return "\n".join(lines[:8]).strip()
+
+
+def _service_topic(objective: str) -> str:
+    from .deliverable import anchor_terms
+
+    skip = {"replaces", "replace", "replaced", "owner", "groom", "company", "service", "business"}
+    nouns = [term for term in anchor_terms(objective) if term not in skip]
+    return " ".join(nouns[:2]) or "the service"
+
+
+def _service_headline(objective: str, blob: str = "") -> str:
+    """A short promise from the request's own words, not a page title."""
+    from .deliverable import borrowed_service_name
+
+    topic = _service_topic(objective)
+    for headline in (f"Ask about {topic}", "Ask about a straightforward visit"):
+        if len(headline) < 12:
+            continue
+        if blob and borrowed_service_name(headline, objective, blob):
+            continue
+        return headline[:70]
+    return "Ask about a straightforward visit"
+
+
+def _repair_advert(text: str, objective: str, blob: str) -> str:
+    from .deliverable import _ASK, borrowed_service_name, owner_section, section_rejection
+
+    cleaned = owner_section("advert", text)
+    if not cleaned:
+        return text
+    headline = body = cta = ""
+    for line in cleaned.splitlines():
+        match = re.match(r"^(headline|body|call to action)\s*:\s*(.+)$", line.strip(), re.I)
+        if not match:
+            continue
+        label = match.group(1).lower()
+        content = match.group(2).strip()
+        if label == "headline":
+            headline = content
+        elif label == "body":
+            body = content
+        else:
+            cta = content
+    if not (headline and body and cta):
+        return text
+    if borrowed_service_name(headline, objective, blob):
+        headline = _service_headline(objective, blob)
+    if borrowed_service_name(body, objective, blob):
+        body = f"The offer covers {_service_topic(objective)}, and the price is set after measuring."
+    if not _ASK.search(cta) or borrowed_service_name(cta, objective, blob):
+        cta = "Contact us and ask about a visit."
+    rebuilt = f"Headline: {headline}\nBody: {body}\nCall to action: {cta}"
+    if section_rejection("advert", rebuilt, blob, objective):
+        return text
+    return rebuilt
+
+
+def _repair_problem(objective: str) -> str:
+    """The burden named in the request, when the model described the market instead."""
+    lowered = (objective or "").lower()
+    topic = _service_topic(objective)
+    if "kennel" in lowered:
+        return f"The problem is that a kennel is inconvenient compared with {topic} at home."
+    if re.search(r"\bfull (?:kitchen )?replacement\b", lowered):
+        return f"The problem is the cost and disruption of a full replacement for {topic}."
+    return f"The problem is the cost and the inconvenience of buying {topic} outright."
+
+
+def _repair_channels(text: str, objective: str, blob: str) -> str:
+    from .deliverable import borrowed_service_name, section_rejection
+
+    if not section_rejection("channels", text, blob, objective):
+        return text
+    replaced = _HOST.sub("a directory", text)
+    phrase = borrowed_service_name(replaced, objective, blob)
+    if phrase:
+        name = re.search(r"'([^']+)'", phrase)
+        if name:
+            replaced = re.sub(re.escape(name.group(1)), "", replaced, flags=re.I)
+            replaced = re.sub(r"\s{2,}", " ", replaced).strip(" ,;:-")
+    if section_rejection("channels", replaced, blob, objective):
+        return text
+    return replaced
+
+
+def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective: str, blob: str) -> str:
+    """Name the page on a cited £, and finish a pricing or advert line the model almost wrote.
+
+    An empty reply stays empty. A promise such as 24/7 is not rewritten here.
+    """
+    if not (text or "").strip():
+        return ""
+    if re.search(r"24/7|always ready", text or "", re.I):
+        return text
+    from .deliverable import section_rejection
+
+    named = name_the_page(text, facts)
+    reason = section_rejection(key, named, blob, objective)
+    if not reason:
+        return named
+    repaired = named
+    lowered = reason.lower()
+    if key in {"competitor and market research", "pricing"} and "£" in reason:
+        repaired = _append_priced(named, facts)
+        if key == "pricing":
+            repaired = _label_pricing(repaired, objective)
+    elif key == "pricing" and "assumption" in lowered:
+        repaired = _label_pricing(_append_priced(named, facts), objective)
+    elif key == "pricing" and "every part" in lowered:
+        repaired = _label_pricing(named, objective)
+    elif "repeats the objective" in lowered:
+        from .deliverable import _echoes_objective
+
+        lines = [line for line in named.splitlines() if line.strip() and not _echoes_objective(line, objective)]
+        repaired = "\n".join(lines).strip()
+    elif key == "problem" and "concrete problem" in lowered:
+        repaired = _repair_problem(objective)
+    elif key == "advert":
+        repaired = _repair_advert(named, objective, blob)
+    elif key == "channels":
+        repaired = _repair_channels(named, objective, blob)
+    if section_rejection(key, repaired, blob, objective):
+        return named
+    return repaired

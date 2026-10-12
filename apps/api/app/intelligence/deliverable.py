@@ -980,7 +980,8 @@ _BUYERS = (
 _PROBLEM_BURDEN = (
     "cost", "expensive", "longer", "disruption", "waste", "budget", "delay",
     "price", "time", "cheaper", "afford", "slow", "inconvenient", "difficult",
-    "buying", "outright",
+    "buying", "outright", "challenge", "anxious", "hassle", "barrier", "struggle",
+    "inconvenience",
 )
 _EXAMPLE_WORDS = ("bicycle", "bicycles", "rider", "riders", "cyclist", "cyclists", "chains", "alex")
 _EXAMPLE_PHRASES = (
@@ -1020,7 +1021,12 @@ _CONFIRM_REQUEST = re.compile(
 
 
 def _has_word(text: str, word: str) -> bool:
-    return bool(re.search(rf"\b{re.escape(word)}s?\b", text or "", re.I))
+    """directory matches directories. referral matches referrals."""
+    if re.search(rf"\b{re.escape(word)}s?\b", text or "", re.I):
+        return True
+    if word.endswith("y"):
+        return bool(re.search(rf"\b{re.escape(word[:-1])}ies\b", text or "", re.I))
+    return False
 
 
 def _has_action(text: str, word: str) -> bool:
