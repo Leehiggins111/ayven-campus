@@ -45,7 +45,11 @@ def _door_section(user: str) -> str:
     if "Name the problem." in user:
         return "The problem is that a full kitchen replacement costs more than replacing the doors, worktops and handles."
     if "Name the offer." in user:
-        return "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement."
+        return (
+            "The package replaces the kitchen doors, the worktops, and the handles. "
+            "The visit measures the door count and the worktop length. "
+            "It differs from a full kitchen replacement."
+        )
     if "name one opened page" in user:
         return (
             "Kitchen Door Co offers fitted kitchen doors, worktops and handles. "

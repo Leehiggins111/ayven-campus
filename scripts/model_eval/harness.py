@@ -303,7 +303,7 @@ def main() -> int:
         env["AYVEN_EVAL_MODE"] = "pipeline"
         env["AYVEN_EVAL_REQUEST"] = request["id"]
         env["AYVEN_EVAL_OUT"] = str(out)
-        env["AYVEN_DB"] = str(out / "campus.db")
+        env["AYVEN_DB"] = str((out / "campus.db").resolve())
         env["AYVEN_EVIDENCE_PACK"] = "full"
         env["AYVEN_EVAL_CALL_LOG"] = str(out / "calls.jsonl")
         env.setdefault("PYTHONPATH", os.getcwd() + os.pathsep + str(Path(os.getcwd()) / "apps" / "api"))
@@ -340,7 +340,7 @@ def main() -> int:
             env["AYVEN_EVAL_MODE"] = "compact"
             env["AYVEN_EVAL_EVIDENCE"] = str(evidence)
             env["AYVEN_EVAL_OUT"] = str(out)
-            env["AYVEN_DB"] = str(out / "campus.db")
+            env["AYVEN_DB"] = str((out / "campus.db").resolve())
             env["AYVEN_EVIDENCE_PACK"] = "compact"
             print("eval start alba-compact", flush=True)
             compact = _run_child(env, out, budget, base)

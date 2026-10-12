@@ -160,7 +160,14 @@ def _wait_health(base: str, timeout: float = 60) -> None:
 
 
 def _start_api() -> tuple:
-    """The process Milo embeds: uvicorn app.main:app, then POST /milo/jobs."""
+    """The process Milo embeds: uvicorn app.main:app, then POST /milo/jobs.
+
+    The API runs with apps/api as its working directory. A relative AYVEN_DB
+    would then be a different file from the one this process reads.
+    """
+    db = os.environ.get("AYVEN_DB")
+    if db:
+        os.environ["AYVEN_DB"] = str(Path(db).resolve())
     port = int(os.environ.get("AYVEN_EVAL_PORT", "8877"))
     base = f"http://127.0.0.1:{port}"
     proc = subprocess.Popen(

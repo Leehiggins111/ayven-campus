@@ -220,7 +220,11 @@ def _door_section(user: str) -> str:
     if "Name the problem." in user:
         return "The problem is that a full kitchen replacement costs more than replacing the doors, worktops and handles."
     if "Name the offer." in user:
-        return "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement."
+        return (
+            "The package replaces the kitchen doors, the worktops, and the handles. "
+            "The visit measures the door count and the worktop length. "
+            "It differs from a full kitchen replacement."
+        )
     if "name one opened page" in user:
         return (
             "Kitchen Door Co offers fitted kitchen doors, worktops and handles. "
@@ -457,8 +461,8 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
         "service": "The service replaces worn kitchen doors, worktops and handles for households that want to avoid a full kitchen replacement.",
         "target customer": "The customer is a household that wants worn kitchen doors, worktops and handles replaced.",
         "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
-        "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
-        "competitor and market research": "Kitchen Door Co (https://doors.example/replace) states kitchen doors are £10 to £40 [F1].\nRefresh Kit (https://refreshkit.co.uk/offer) can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nThis service differs by replacing kitchen doors, worktops and handles rather than a full replacement.",
+        "offer and positioning": "The package replaces the kitchen doors, the worktops, and the handles. The visit measures the door count and the worktop length. It differs from a full kitchen replacement.",
+        "competitor and market research": "Kitchen Door Co (https://doors.example/replace) states a standard door is £10 to £40 [F1].\nRefresh Kit (refreshkit.co.uk) charges £950, and the page says pay on completion [F2].\nThis service differs by replacing kitchen doors, worktops and handles rather than a full replacement.",
         "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nhttps://refreshkit.co.uk/offer can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nAssumption: price each door from the opened per door figures, price the worktop from the measured length and material, and count the handles. Measure the kitchen size, the door count, the door size, the worktop length, the worktop material, and the handle count before a price is written.",
         "channels": "Households are reached through local search in the first week, where the owner posts one finished kitchen and asks for a reply.",
         "advert": "",
@@ -1432,8 +1436,8 @@ def test_a_channels_availability_claim_is_retried_and_the_plan_can_keep_the_repa
         "service": "The service replaces worn kitchen doors, worktops and handles for households that want to avoid a full kitchen replacement.",
         "target customer": "The customer is a household that wants worn kitchen doors, worktops and handles replaced.",
         "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
-        "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
-        "competitor and market research": "Kitchen Door Co (https://doors.example/replace) states kitchen doors are £10 to £40 [F1].\nRefresh Kit (https://refreshkit.co.uk/offer) can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nThis service differs by replacing kitchen doors, worktops and handles rather than a full replacement.",
+        "offer and positioning": "The package replaces the kitchen doors, the worktops, and the handles. The visit measures the door count and the worktop length. It differs from a full kitchen replacement.",
+        "competitor and market research": "Kitchen Door Co (https://doors.example/replace) states a standard door is £10 to £40 [F1].\nRefresh Kit (refreshkit.co.uk) charges £950, and the page says pay on completion [F2].\nThis service differs by replacing kitchen doors, worktops and handles rather than a full replacement.",
         "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nhttps://refreshkit.co.uk/offer can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nAssumption: price each door from the opened per door figures, price the worktop from the measured length and material, and count the handles. Measure the kitchen size, the door count, the door size, the worktop length, the worktop material, and the handle count before a price is written.",
         "channels": "",
         "advert": "Headline: Fresh kitchen doors\nBody: The service replaces kitchen doors, worktops and handles and differs from a full replacement.\nCall to action: Ask for a visit.",
@@ -1523,7 +1527,7 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     facts = extract_facts(evidence)
     objective = "The service is coffee machine rental for offices. Buying outright is the alternative."
     blob = evidence_blob(evidence)
-    competitor = "Commercial coffee machines can be quite expensive, with prices ranging from £1,000 to £12,000 and even higher [F1]."
+    competitor = "Commercial machines are priced from £1,000 to £12,000 [F1]."
     repaired = repair_before_gate("competitor and market research", competitor, facts, objective, blob)
     assert "coffeemachinerentals.co.uk" in repaired
     assert "fewer than two" in section_rejection("competitor and market research", repaired, blob, objective)
@@ -1547,8 +1551,8 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     blob_with_title = blob + "\nExpert Kitchen Renovations Without Full Replacement"
     fixed = repair_before_gate("advert", advert, facts, objective, blob_with_title)
     assert "Kitchen Renovations" not in fixed
-    assert "Contact us" in fixed
-    assert section_rejection("advert", fixed, blob_with_title, objective) == ""
+    assert "Contact us and ask about a visit" not in fixed
+    assert section_rejection("advert", fixed, blob_with_title, objective)
     promised = (
         "Headline: Refresh the kitchen you already have\n"
         "Body: The offer covers coffee machine rental and differs from buying outright.\n"
@@ -1556,8 +1560,9 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     )
     kept = repair_before_gate("advert", promised, facts, objective, blob)
     assert "free quote" not in kept.lower()
-    assert "Contact us and ask about a visit" in kept
-    assert section_rejection("advert", kept, blob, objective) == ""
+    assert "Contact us and ask about a visit" not in kept
+    assert "Refresh the kitchen" in kept
+    assert section_rejection("advert", kept, blob, objective)
 
 
 def test_a_related_product_code_is_not_the_price():
@@ -1644,8 +1649,9 @@ def test_a_rejected_rent_headline_is_a_customer_phrase():
     fixed = repair_before_gate("advert", advert, [], objective, "")
     assert "Measure" not in fixed
     assert "Upfront" not in fixed
-    assert "Rent a coffee machine instead of buying" in fixed
-    assert section_rejection("advert", fixed, "", objective) == ""
+    assert "Rent a coffee machine instead of buying" not in fixed
+    assert "without buying" in fixed
+    assert section_rejection("advert", fixed, "", objective)
 
 
 def test_a_later_page_price_is_not_crowded_out_by_titles(monkeypatch):
@@ -1749,10 +1755,7 @@ def test_owner_review_rejects_a_thin_plan():
     assert "opened page text" in section_rejection("competitor and market research", dumped, blob, objective)
     listed = "Competitors include Hale & Murray [F1] and Kiss Kitchens [F2]."
     assert section_rejection("competitor and market research", listed, blob, objective)
-    one_offer = (
-        "Refresh Kitchen (https://refreshkitchen.co.uk/) can transform your kitchen in one day for only £950, "
-        "and the page states pay on completion."
-    )
+    one_offer = "Refresh Kitchen states £950, and the page says pay on completion [F1]."
     assert "fewer than two" in section_rejection("competitor and market research", one_offer, blob, objective)
     generic_channels = "Online platforms, local directories, and word-of-mouth referrals."
     assert "timeframe" in section_rejection("channels", generic_channels, blob, objective)
@@ -1823,10 +1826,9 @@ def test_a_breed_price_list_keeps_one_offer():
         objective,
         blob,
     )
-    assert "£95" in repaired
+    assert "£95" not in repaired
     assert "£48" not in repaired and "£73" not in repaired
-    assert "kennel" in repaired.lower()
-    assert not section_rejection("competitor and market research", repaired, blob, objective)
+    assert section_rejection("competitor and market research", repaired, blob, objective)
     priced = repair_before_gate("pricing", "£48 to £95 for different breeds.", facts, objective, blob)
     assert "price is set after seeing the animal" not in priced.lower()
     assert section_rejection("pricing", priced, blob, objective)
@@ -1865,6 +1867,7 @@ def test_channels_and_next_steps_are_not_filled_from_a_shared_sentence():
     assert jobs["channels"][3] == ""
     assert jobs["next steps"][3] == ""
     assert jobs["offer and positioning"][3] == ""
+    assert jobs["pricing"][3] == ""
     prompt = " ".join(job[2] + job[3] for job in jobs.values()).lower()
     assert "posts on the website in the first week and phones" not in prompt
     assert "checkatrade" not in prompt
@@ -1967,8 +1970,18 @@ def test_a_shouted_heading_is_paraphrased_with_the_citation():
     assert "page heading" in section_rejection("competitor and market research", pasted, blob, DOOR)
     rebuilt = repair_before_gate("competitor and market research", pasted, facts, DOOR, blob)
     assert "PAY ON COMPLETION" not in rebuilt
-    assert "£950" in rebuilt
-    assert "pay on completion" in rebuilt.lower()
+    assert "This service differs by" not in rebuilt
+    assert "Joe's Doors" in rebuilt
+    assert section_rejection("competitor and market research", rebuilt, blob, DOOR)
+    pasted_title = (
+        "Joe's Doors (joesdoors.co.uk) Affordable Kitchen Makeovers A New Kitchen Look "
+        "in as little as One Day Get the kitchen of your dreams [F8]."
+    )
+    title_blob = (
+        "https://www.joesdoors.co.uk/\n"
+        "Affordable Kitchen Makeovers A New Kitchen Look in as little as One Day Get the kitchen of your dreams"
+    )
+    assert "pastes the page" in section_rejection("competitor and market research", pasted_title, title_blob, DOOR)
 
 
 def test_pricing_names_a_method_and_uses_a_unit_only_when_the_page_states_it():

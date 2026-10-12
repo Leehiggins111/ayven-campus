@@ -1047,7 +1047,7 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
         promised = unsupported_promise(cleaned, objective, blob)
         if promised:
             return promised
-    if key in {"service", "offer and positioning", "advert", "call to action", "channels"}:
+    if key in {"service", "offer and positioning", "advert", "call to action", "channels", "next steps"}:
         borrowed = borrowed_service_name(cleaned, objective, blob)
         if borrowed:
             return borrowed
@@ -1891,6 +1891,31 @@ def _shared_steps(body: str) -> bool:
     ))
 
 
+def _pasted_quote(body: str, blob: str) -> str:
+    """A run of the opened page's words is a paste. The model has to paraphrase."""
+    page_words = re.findall(r"[a-z0-9']+", (blob or "").lower())
+    span = 12
+    if len(page_words) < span:
+        return ""
+    sequences = {" ".join(page_words[index:index + span]) for index in range(len(page_words) - (span - 1))}
+    body_words = re.findall(r"[a-z0-9']+", (body or "").lower())
+    for index in range(len(body_words) - (span - 1)):
+        if " ".join(body_words[index:index + span]) in sequences:
+            return "The competitor line pastes the page. Paraphrase it and keep the citation."
+    return ""
+
+
+def _offer_names_measurement(body: str, objective: str) -> bool:
+    """A package offer says what the visit measures. The words come from the request."""
+    needed = measurements_still_needed(objective)
+    if not needed:
+        return True
+    lowered = (body or "").lower()
+    if any(item in lowered for item in needed):
+        return True
+    return bool(re.search(r"\bmeasur", lowered) and any(_item_present(item, body) for item in covered_items(objective)))
+
+
 def _generic_offer(body: str, objective: str) -> bool:
     """One sentence that names the parts and a contrast, and nothing the visit measures."""
     if len(covered_items(objective)) < 2 and not measurements_still_needed(objective):
@@ -1953,6 +1978,8 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
             return "The offer does not name the package: " + ", ".join(missing_package) + "."
         if _generic_offer(body, objective):
             return "The offer is one generic sentence. Name what the package includes and what the visit measures."
+        if not _offer_names_measurement(body, objective):
+            return "The offer does not say what the visit measures."
     elif key == "channels":
         if _shared_channel(body):
             return "The section uses the shared form. Name an action that fits this business."
@@ -1995,6 +2022,9 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
     elif key == "competitor and market research":
         if _SHOUTED_HEADING.search(body or ""):
             return "The competitor line starts with a page heading. Paraphrase it and keep the citation."
+        pasted_quote = _pasted_quote(body, blob)
+        if pasted_quote:
+            return pasted_quote
         priced = _competitor_prices(body, blob)
         if priced:
             return priced
