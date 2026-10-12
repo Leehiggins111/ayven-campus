@@ -912,7 +912,10 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
     return f"The name '{phrase}' comes from an opened page, not from the request."
 
 
-_UNSUPPORTED_PROMISES = ("free consultation", "free quote", "in one day", "same day", "same-day", "guaranteed")
+_UNSUPPORTED_PROMISES = (
+    "free consultation", "free quote", "free home visit", "free home",
+    "in one day", "same day", "same-day", "guaranteed", "upfront cost",
+)
 
 
 def unsupported_promise(body: str, objective: str, blob: str) -> str:
@@ -1728,13 +1731,19 @@ def _rate_card(body: str) -> str:
     """Three or more prices in one sentence are a pasted tariff, not an offer.
 
     A small, medium, and large package, or a per-unit range, is one price.
+    A dash-separated menu is still a tariff when it is not a package.
     """
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
-        if len(_pound_amounts(sentence)) < 3:
+        menu = len(re.findall(r"-\s*£\s*\d", sentence))
+        if len(_pound_amounts(sentence)) < 3 and menu < 3:
             continue
-        if re.search(r"\b(small|medium|large)\b", sentence, re.I):
+        if re.search(r"\bpackages?\b", sentence, re.I):
             continue
         if re.search(r"\b(?:per\s+[a-z]+|a\s+(?:session|week|day))\b", sentence, re.I):
+            continue
+        if menu >= 3:
+            return "The section pastes a price list. State one offer in a sentence."
+        if re.search(r"\b(small|medium|large)\b", sentence, re.I):
             continue
         return "The section pastes a price list. State one offer in a sentence."
     return ""
@@ -1876,7 +1885,12 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         omitted = _pricing_omits_page_figure(body, blob)
         if omitted:
             return omitted
-        return _missing_measurements(body, objective)
+        missing_measure = _missing_measurements(body, objective)
+        if missing_measure:
+            return missing_measure
+        if "£" in (body or "") and "assumption" not in lowered:
+            return "Pricing has no assumption. State the method, with no new £ figure."
+        return ""
     elif key == "competitor and market research":
         priced = _competitor_prices(body, blob)
         if priced:
