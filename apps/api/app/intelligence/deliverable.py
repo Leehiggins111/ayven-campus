@@ -296,7 +296,7 @@ def guide_page(url: str = "", title: str = "") -> bool:
     """A how-to or a cost guide is not a competitor's own offer."""
     if market_report_page(url, title):
         return True
-    if re.search(r"/(guides?|blog|news|costs|cost-guides|posts?)/", url or "", re.I):
+    if re.search(r"/(guides?|blog|news|costs|cost-guides|posts?|directory)/", url or "", re.I):
         return True
     if re.search(r"how-much|cost-guide|price-guide", url or "", re.I):
         return True
@@ -971,6 +971,9 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
     pasted = _pasted_page(raw)
     if pasted:
         return pasted
+    tariff = _rate_card(raw)
+    if tariff:
+        return tariff
     leaked = _example_leak(raw, objective, blob)
     if leaked:
         return leaked
@@ -1719,6 +1722,22 @@ def _sells_avoided(body: str, objective: str) -> bool:
     if not re.search(r"\bavoid(?:s|ing)? a full\b", objective or "", re.I):
         return False
     return bool(re.search(r"\bfull (?:kitchen )?replacement (?:service|quote)\b", body or "", re.I))
+
+
+def _rate_card(body: str) -> str:
+    """Three or more prices in one sentence are a pasted tariff, not an offer.
+
+    A small, medium, and large package, or a per-unit range, is one price.
+    """
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
+        if len(_pound_amounts(sentence)) < 3:
+            continue
+        if re.search(r"\b(small|medium|large)\b", sentence, re.I):
+            continue
+        if re.search(r"\b(?:per\s+[a-z]+|a\s+(?:session|week|day))\b", sentence, re.I):
+            continue
+        return "The section pastes a price list. State one offer in a sentence."
+    return ""
 
 
 def _pasted_page(body: str) -> str:

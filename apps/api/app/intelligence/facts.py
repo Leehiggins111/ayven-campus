@@ -16,7 +16,7 @@ _MONEY = re.compile(
     re.I,
 )
 _UNIT = re.compile(
-    r"\bper\s+[a-z]{3,}(?:\s+[a-z]{3,}){0,2}|\b(?:a|an)\s+(?:door|week|month|day|session|hour|year|metre|meter)\b|\beach\b",
+    r"\bper\s+[a-z]{3,}(?:\s+[a-z]{3,}){0,2}|\b(?:a|an)\s+(?:door|week|month|day|session|hour|year|metre|meter)\b|\beach\s+(?:door|week|month|day|session|hour)\b",
     re.I,
 )
 _INCLUDED = re.compile(
@@ -105,7 +105,7 @@ def _fact_row(url: str, title: str, sentence: str, text: str = "") -> dict:
 
 def _bare_price(sentence: str) -> bool:
     """A figure whose sentence does not already say what it buys."""
-    if re.search(r"\bper\s+[a-z]", sentence or "", re.I):
+    if re.search(r"\b(per\s+[a-z]+|small|medium|large|full groom|a week)\b", sentence or "", re.I):
         return False
     words = re.findall(r"[A-Za-z]+", sentence or "")
     if len(words) >= 12 and re.search(
@@ -125,8 +125,28 @@ _NOT_A_NAME = re.compile(
     r"\b(machine|machines|rental|leasing|buying|grinder|grinders|commercial|cost|guide|replacement|online|wide)\b",
     re.I,
 )
-_DIRECTORY = re.compile(r"\b(lists|directory|compare local|browse)\b", re.I)
+_DIRECTORY = re.compile(
+    r"\b(lists|directory|compare local|browse|near me|find a|finding a|are ready)\b",
+    re.I,
+)
 _LOUD_PROMISE = re.compile(r"24-hour|24/7|free home visit", re.I)
+
+
+def _price_table(fact: dict) -> bool:
+    """A row of materials and prices is not one offer."""
+    return len(re.findall(r"£\s*\d", fact.get("quote") or "")) >= 5
+
+
+def _spec_sheet(fact: dict) -> bool:
+    """A machine's dimensions are not the offer."""
+    quote = fact.get("quote") or ""
+    return quote.count(" - ") >= 3 or bool(re.search(r"\d+\s*w\s*x\s*\d+", quote, re.I))
+
+
+def _repair_service(fact: dict) -> bool:
+    """A repair specialist is not a competitor for a replacement service."""
+    blob = f"{fact.get('entity') or ''} {fact.get('quote') or ''}"
+    return bool(re.search(r"\brepairs?\b", blob, re.I))
 
 
 def _proper_name(entity: str) -> bool:
@@ -135,6 +155,12 @@ def _proper_name(entity: str) -> bool:
         return False
     words = entity.split()
     if not 1 <= len(words) <= 4 or _NOT_A_NAME.search(entity):
+        return False
+    if any(re.fullmatch(r"[A-Za-z]", word) for word in words):
+        return False
+    plain = re.findall(r"[A-Za-z']+", entity)
+    generic = {"mobile", "dog", "grooming", "groom", "price", "prices", "service", "services", "cost", "costs", "uk", "the"}
+    if plain and all(word.lower() in generic for word in plain):
         return False
     return True
 
@@ -199,7 +225,10 @@ def extract_facts(evidence: list[dict] | None) -> list[dict]:
             continue
         business = not guide_page(url, title)
         sentences = _sentence_list(text)
-        found = [sentence for sentence in sentences if _MONEY.search(sentence)]
+        found = [
+            sentence for sentence in sentences
+            if _MONEY.search(sentence) and not re.search(r"\bdog walking\b|\bindividual walk\b", sentence, re.I)
+        ]
         bucket = business_priced if business else other_priced
         if found:
             for sentence in found[:2]:
@@ -549,7 +578,7 @@ def _append_priced(text: str, facts: list[dict] | None) -> str:
     return "\n".join(lines[:8]).strip()
 
 
-def _pricing_section(text: str, facts: list[dict] | None, objective: str) -> str:
+def _pricing_section(text: str, facts: list[dict] | None, objective: str, *, skip_title_only: bool = False) -> str:
     """Up to three opened £ lines, then one Assumption. The model's worksheet is not reused.
 
     A copied request, a page title, and a new £ figure are not the section.
@@ -563,6 +592,8 @@ def _pricing_section(text: str, facts: list[dict] | None, objective: str) -> str
     for fact in priced:
         if len(lines) >= 3:
             break
+        if _price_table(fact) or _spec_sheet(fact) or (skip_title_only and fact.get("title_only")):
+            continue
         line = _market_line(fact)
         if " | " in line or not line:
             continue
@@ -635,8 +666,14 @@ def _repair_advert(text: str, objective: str, blob: str) -> str:
     if cleaned:
         h2, b2, c2 = parts(cleaned)
         headline, body, cta = headline or h2, body or b2, cta or c2
-    if not (headline and body):
+    if not headline and not body:
+        only = re.sub(r"\s+", " ", (text or "")).strip()
+        if only and "nothing was sent" not in only.lower() and len(only.splitlines()) == 1 and len(only.split()) >= 3:
+            headline = only
+    if not headline and not body:
         return text
+    if not body or "£" in body:
+        body = f"The offer covers {_service_topic(objective)}, and the price is set after measuring."
     if borrowed_service_name(headline, objective, blob) or _bad_headline(headline) or _LOUD_PROMISE.search(headline) or re.search(r"\bno upfront\b|\bupfront costs?\b", headline or "", re.I):
         headline = _service_headline(objective, blob)
     if borrowed_service_name(body, objective, blob):
@@ -778,21 +815,34 @@ def _competitor_lines(text: str, facts: list[dict] | None, objective: str, blob:
     businesses = [
         fact for fact in (facts or [])
         if fact.get("business") and fact.get("quote") and not fact.get("title_only")
+        and not _price_table(fact) and not _repair_service(fact)
+        and not _DIRECTORY.search(fact.get("quote") or "")
     ]
     priced = [fact for fact in businesses if fact.get("quantity")]
-    others = [fact for fact in businesses if not fact.get("quantity") and not _DIRECTORY.search(fact.get("quote") or "")]
+    others = [fact for fact in businesses if not fact.get("quantity")]
     named = [
         fact for fact in others
         if _OFFER_HINT.search(fact.get("quote") or "") and (_proper_name(fact.get("entity") or "") or _sentence_names_business(fact.get("quote") or ""))
     ]
     named.sort(key=lambda fact: (
         1 if _LOUD_PROMISE.search(fact.get("quote") or "") else 0,
+        0 if re.search(r"\b(we supply|we install|we replace|we offer|packages? (?:start|usually))\b", fact.get("quote") or "", re.I) else 1,
         0 if re.search(r"\b(rent|rental|hire|hiring|replac)", fact.get("quote") or "", re.I) else 1,
         1 if (fact.get("quote") or "").lower().startswith("welcome") else 0,
         0 if _proper_name(fact.get("entity") or "") else 1,
     ))
 
-    first = next((fact for fact in priced if fact.get("unit")), priced[0] if priced else None)
+    from .deliverable import anchor_terms
+
+    anchors = [term for term in anchor_terms(objective) if len(term) >= 4]
+
+    def _mentions_service(fact: dict) -> bool:
+        blob = f"{fact.get('entity') or ''} {fact.get('quote') or ''}".lower()
+        return any(term in blob for term in anchors)
+
+    preferred = [fact for fact in priced if _mentions_service(fact)]
+    pool = preferred or priced
+    first = next((fact for fact in pool if fact.get("unit")), pool[0] if pool else None)
     seconds: list[dict] = []
     for fact in named + [fact for fact in priced if fact is not first] + others:
         if first and _host(fact.get("source") or "") == _host(first.get("source") or ""):
@@ -839,8 +889,16 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
             better = _competitor_lines(named, facts, objective, blob)
             if better and better != named and not section_rejection(key, better, blob, objective):
                 return better
-        if key == "advert" and re.search(r"\bno upfront\b|\bupfront costs?\b", named or "", re.I):
+        if key == "advert" and (
+            re.search(r"\bno upfront\b|\bupfront costs?\b", named or "", re.I)
+            or not re.search(r"(?im)^headline\s*:", named or "")
+            or not re.search(r"(?im)^body\s*:", named or "")
+        ):
             better = _repair_advert(named, objective, blob)
+            if better and better != named and not section_rejection(key, better, blob, objective):
+                return better
+        if key == "next steps" and not re.search(r"\b(phone|phones|visit|measure)\b", named or "", re.I):
+            better = _repair_next_steps(objective)
             if better and not section_rejection(key, better, blob, objective):
                 return better
         return named
@@ -848,6 +906,10 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
     lowered = reason.lower()
     if key == "pricing":
         repaired = _pricing_section(named, facts, objective)
+        if section_rejection(key, repaired, blob, objective):
+            without_titles = _pricing_section(named, facts, objective, skip_title_only=True)
+            if without_titles and not section_rejection(key, without_titles, blob, objective):
+                repaired = without_titles
     elif key == "competitor and market research":
         repaired = _competitor_lines(named, facts, objective, blob)
     elif "repeats the objective" in lowered:
