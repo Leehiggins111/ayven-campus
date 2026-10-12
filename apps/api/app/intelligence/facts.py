@@ -88,8 +88,11 @@ def _fact_row(url: str, title: str, sentence: str) -> dict:
 
 
 def extract_facts(evidence: list[dict] | None) -> list[dict]:
-    """Price sentences first. A title fills a spare row only after every £ figure is in."""
-    priced: list[dict] = []
+    """Price sentences first. A market-report page is not a business fact."""
+    from .deliverable import guide_page, market_report_page
+
+    business_priced: list[dict] = []
+    other_priced: list[dict] = []
     titles: list[dict] = []
     for item in evidence or []:
         if not isinstance(item, dict):
@@ -97,16 +100,40 @@ def extract_facts(evidence: list[dict] | None) -> list[dict]:
         url = str(item.get("source_url") or item.get("url") or "")
         title = str(item.get("source_title") or item.get("title") or "")
         text = str(item.get("extracted_content") or item.get("text") or "")
-        if not url.startswith("http"):
+        if not url.startswith("http") or market_report_page(url, title, text):
             continue
+        business = not guide_page(url, title)
         found = [sentence for sentence in _sentence_list(text) if _MONEY.search(sentence)]
+        bucket = business_priced if business else other_priced
         if found:
             for sentence in found[:2]:
-                priced.append(_fact_row(url, title, sentence))
-        elif title:
-            titles.append(_fact_row(url, title, title))
+                row = _fact_row(url, title, sentence)
+                if not row["unit"]:
+                    row["quote"] = (
+                        row["quote"].rstrip(".")
+                        + ", and the page text does not give the size, the material, or the unit"
+                    )[:280]
+                row["title_only"] = False
+                row["business"] = business
+                bucket.append(row)
+        elif title and _MONEY.search(title):
+            amount = _MONEY.search(title).group(0)
+            row = _fact_row(
+                url,
+                title,
+                f"{amount}, and the page text does not give the size, the material, or the unit.",
+            )
+            row["quantity"] = amount
+            row["title_only"] = True
+            row["business"] = business
+            bucket.append(row)
+        elif title and business:
+            row = _fact_row(url, title, title)
+            row["title_only"] = True
+            row["business"] = True
+            titles.append(row)
     facts = []
-    for row in (priced + titles)[:12]:
+    for row in (business_priced + other_priced + titles)[:12]:
         row["id"] = f"F{len(facts) + 1}"
         facts.append(row)
     return facts
@@ -360,21 +387,23 @@ def _append_priced(text: str, facts: list[dict] | None) -> str:
 def _pricing_section(text: str, facts: list[dict] | None, objective: str) -> str:
     """Market references, then one Assumption line that names every part and what to measure.
 
-    A copied request, a false 'not stated', and a worksheet row are not the section.
+    A copied request, a false 'not stated', a page title, and a worksheet row are not the section.
     """
     from .deliverable import covered_items, measurements_still_needed, _echoes_objective
 
     kept = []
     for line in (text or "").splitlines():
         line = line.strip()
-        if not line or _echoes_objective(line, objective):
+        if not line or _echoes_objective(line, objective) or " | " in line:
             continue
         if _PROMISE_LINE.search(line) or re.search(r"\bnot stated\b|includes none|offers no unit", line, re.I):
             continue
         kept.append(line)
     present = "\n".join(kept).replace(",", "")
     markets = []
-    for fact in [fact for fact in (facts or []) if fact.get("quantity")][:2]:
+    priced = [fact for fact in (facts or []) if fact.get("quantity") and not fact.get("title_only")]
+    priced += [fact for fact in (facts or []) if fact.get("quantity") and fact.get("title_only")]
+    for fact in priced[:4]:
         numbers = [re.sub(r"[£\s,]", "", amount) for amount in re.findall(r"£\s*\d[\d,]*(?:\.\d+)?", fact["quantity"])]
         if numbers and all(number in present for number in numbers):
             continue
@@ -410,17 +439,15 @@ def _service_topic(objective: str) -> str:
 
 
 def _service_headline(objective: str, blob: str = "") -> str:
-    """A short promise from the request's own words, not a page title."""
-    from .deliverable import borrowed_service_name
+    """A complete phrase from the request's own words. Not a page title and not 'Ask about'."""
+    from .deliverable import borrowed_service_name, _headline_problem
 
     topic = _service_topic(objective)
-    for headline in (f"Ask about {topic}", "Ask about a straightforward visit"):
-        if len(headline) < 12:
+    for headline in (f"{topic}, measured before a price", "A visit, then a written scope"):
+        if _headline_problem(headline) or (blob and borrowed_service_name(headline, objective, blob)):
             continue
-        if blob and borrowed_service_name(headline, objective, blob):
-            continue
-        return headline[:70]
-    return "Ask about a straightforward visit"
+        return headline
+    return "A visit, then a written scope"
 
 
 def _repair_advert(text: str, objective: str, blob: str) -> str:
@@ -449,7 +476,7 @@ def _repair_advert(text: str, objective: str, blob: str) -> str:
         headline, body, cta = headline or h2, body or b2, cta or c2
     if not (headline and body):
         return text
-    if borrowed_service_name(headline, objective, blob):
+    if borrowed_service_name(headline, objective, blob) or _bad_headline(headline):
         headline = _service_headline(objective, blob)
     if borrowed_service_name(body, objective, blob):
         body = f"The offer covers {_service_topic(objective)}, and the price is set after measuring."
@@ -472,21 +499,62 @@ def _repair_problem(objective: str) -> str:
     return f"The problem is the cost and the inconvenience of buying {topic} outright."
 
 
+def _bad_headline(headline: str) -> bool:
+    from .deliverable import _headline_problem
+
+    return bool(_headline_problem(headline))
+
+
 def _repair_channels(text: str, objective: str, blob: str) -> str:
-    from .deliverable import borrowed_service_name, section_rejection
+    from .deliverable import section_rejection
 
     if not section_rejection("channels", text, blob, objective):
         return text
-    replaced = _HOST.sub("a directory", text)
-    phrase = borrowed_service_name(replaced, objective, blob)
-    if phrase:
-        name = re.search(r"'([^']+)'", phrase)
-        if name:
-            replaced = re.sub(re.escape(name.group(1)), "", replaced, flags=re.I)
-            replaced = re.sub(r"\s{2,}", " ", replaced).strip(" ,;:-")
+    topic = _service_topic(objective)
+    replaced = f"The owner posts on the website in the first week and asks for a reply about {topic}."
     if section_rejection("channels", replaced, blob, objective):
         return text
     return replaced
+
+
+def _repair_next_steps(objective: str) -> str:
+    topic = _service_topic(objective)
+    return (
+        f"In the first week the owner phones two suppliers and writes down the published offer for {topic}. "
+        f"In the first month the owner visits one customer and sets the price after measuring."
+    )
+
+
+def _repair_offer(objective: str) -> str:
+    from .deliverable import covered_items
+
+    items = covered_items(objective)
+    package = ", ".join(items) if items else _service_topic(objective)
+    return f"The offer is a package covering {package}, and it differs from the longer alternative."
+
+
+def _competitor_lines(text: str, facts: list[dict] | None, objective: str, blob: str) -> str:
+    """Two opened businesses and what each offers. No invented name and no page dump."""
+    from .deliverable import section_rejection
+
+    lines = []
+    for fact in facts or []:
+        if not fact.get("business") or not fact.get("quantity"):
+            continue
+        line = _market_line(fact)
+        if " | " in line:
+            continue
+        lines.append(line)
+        if len(lines) >= 4:
+            break
+    if len(lines) < 2:
+        return text
+    topic = _service_topic(objective)
+    lines.append(f"This service differs by selling {topic} rather than copying those offers.")
+    rebuilt = "\n".join(lines)
+    if section_rejection("competitor and market research", rebuilt, blob, objective):
+        return text
+    return rebuilt
 
 
 def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective: str, blob: str) -> str:
@@ -508,12 +576,8 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
     lowered = reason.lower()
     if key == "pricing":
         repaired = _pricing_section(named, facts, objective)
-    elif key == "competitor and market research" and "£" in reason:
-        named = "\n".join(
-            line for line in named.splitlines()
-            if line.strip() and not re.search(r"includes none|offers no unit", line, re.I)
-        ).strip()
-        repaired = _append_priced(named, facts)
+    elif key == "competitor and market research":
+        repaired = _competitor_lines(named, facts, objective, blob)
     elif "repeats the objective" in lowered:
         from .deliverable import _echoes_objective
 
@@ -525,6 +589,10 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
         repaired = _repair_advert(named, objective, blob)
     elif key == "channels":
         repaired = _repair_channels(named, objective, blob)
+    elif key == "next steps":
+        repaired = _repair_next_steps(objective)
+    elif key == "offer and positioning":
+        repaired = _repair_offer(objective)
     if section_rejection(key, repaired, blob, objective):
         return named
     return repaired

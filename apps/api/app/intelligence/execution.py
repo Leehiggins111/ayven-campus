@@ -1472,13 +1472,13 @@ def _section_jobs(objective: str) -> tuple:
         ("service", "Service", "Write one sentence. Name the service. Use the request's own words. Do not use a business name that appears only on an opened page." + shared, "The service "),
         ("target customer", "Target customer", "Write one sentence. Name the customer." + shared, "The customer is "),
         ("problem", "Problem", "Write one or two sentences. Name the problem." + shared, "The problem is "),
-        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Say how it differs. Do not use a business name that appears only on an opened page." + shared, "The offer "),
-        ("competitor and market research", "Competitor and market research", "Write one sentence for each fact you use. Cite it as [F#] and name one opened page by that fact. Use that fact's quote, quantity, unit, and what it includes. Do not add a unit or a product the quote does not use." + shared, "Opened pages state "),
-        ("pricing", "Pricing", "Write one line for each market reference. Cite it as [F#] and use that fact's quote, quantity, unit, and what it includes. Then start each remaining line with Assumption. An Assumption line states the method and has no £ figure, for example the price is set after measuring. When no fact states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, "Assumption: "),
-        ("channels", "Channels", "Write one sentence. Name the channel. Use a website, search, or a directory, and say what the owner does there. Do not name a competitor's business as the channel. Do not mention hours." + shared, "Customers are reached through "),
-        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\nDo not use a business name that appears only on an opened page.\n" + shared, ""),
+        ("offer and positioning", "Offer and positioning", "Write one sentence. Name the offer. Name the package that is sold, using the parts in the request, and say how it differs. Do not invent a price. Do not use a business name that appears only on an opened page." + shared, "The offer is a package covering "),
+        ("competitor and market research", "Competitor and market research", "Write two or three sentences. Name two UK businesses from the fact table. name one opened page for each business. For each, say what they offer using that fact's quote, quantity, and unit. Then say how this service differs. Do not paste a page title or an opened-sources dump. A market report or a how-to guide is not a competitor. Do not invent a name." + shared, "Two businesses offer "),
+        ("pricing", "Pricing", "Write one line for each market reference. Cite it as [F#] and use that fact's quote, quantity, unit, and what it includes. If the fact does not give the size, the material, or the unit, say so in that sentence. Do not paste a page title. Then start each remaining line with Assumption. An Assumption line states the method, has no [F#], and has no £ figure, for example the price is set after measuring. When no fact states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + shared, "Assumption: "),
+        ("channels", "Channels", "Write one sentence. Name the channel. Name one specific channel, the action the owner takes there, and the first week or the first month. Use a website, search, or a directory. Do not say online platforms, industry reports, or conduct market research. Do not name a competitor's business as the channel. Do not mention hours." + shared, "The owner posts on the website in the first week and "),
+        ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\nThe headline is a complete phrase under 10 words. Do not start the headline with Ask about.\nDo not use a business name that appears only on an opened page.\n" + shared, ""),
         ("call to action", "Call to action", "Write one sentence. Ask the reader to get in touch. Do not name the person who wrote the request. Do not use a business name that appears only on an opened page." + shared, "Ask "),
-        ("next steps", "Next steps", "Write one sentence. Name the owner's next action. Do not name a service area." + shared, "The owner phones "),
+        ("next steps", "Next steps", "Write two sentences. Name the owner's next action. In the first week, name one practical action the owner takes. In the first month, name the next action. Do not say conduct market research. Do not name a service area." + shared, "In the first week the owner "),
         ("assumptions", "Assumptions", "Write one sentence. Name one assumption." + shared, "The plan assumes "),
         ("unresolved", "Unresolved", "Write one sentence. Name one open fact." + shared, "Still open: "),
     )
@@ -1558,8 +1558,20 @@ def _check_for_model(reason: str) -> str:
         return "The previous line promised something the request does not say. Do not repeat that promise."
     if "does not ask the customer" in lowered or "names the person who wrote" in lowered:
         return "Ask the reader to get in touch. Do not name the person who wrote the request."
-    if "does not name a channel" in lowered:
-        return "Name a website, search, or a directory, and the action the owner takes there. Do not name a competitor's business as the channel."
+    if "does not name a channel" in lowered or "timeframe" in lowered:
+        return "Name a website, search, or a directory, the action the owner takes, and the first week or the first month."
+    if "fewer than two" in lowered:
+        return "Name two opened businesses and what each offers. Say how this service differs. Do not invent a name."
+    if "page title" in lowered or "opened page text" in lowered:
+        return "Do not paste a page title or an opened-sources dump. Say what the figure buys, or that the page does not give the unit."
+    if "not a complete phrase" in lowered or "ask about" in lowered:
+        return "Write a complete headline under 10 words. Do not start with Ask about."
+    if "assumption line restates" in lowered:
+        return "Keep the cited fact on its own line. An Assumption line has no [F#] and no £ figure."
+    if "prioritised" in lowered or "first month" in lowered:
+        return "Name the action for the first week and the action for the first month."
+    if "does not name the package" in lowered:
+        return "Name the package that is sold, using the parts in the request, and say how it differs."
     if "without a valid" in lowered:
         return "Cite the fact as [F#] and use that fact's quantity, unit, and quote. An Assumption line has no £ figure."
     return text

@@ -47,7 +47,11 @@ def _door_section(user: str) -> str:
     if "Name the offer." in user:
         return "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement."
     if "name one opened page" in user:
-        return "Opened pages state the worktops and handles at https://doors.example/replace and no second price was stated."
+        return (
+            "Kitchen Door Co offers fitted kitchen doors, worktops and handles. "
+            "Refresh Kit offers a kitchen door replacement. "
+            "This service differs by replacing the doors, worktops and handles rather than a full replacement."
+        )
     if "Do not invent a £ figure" in user:
         return (
             "Assumption: doors — not stated as a durable price, so the kitchen doors are counted on a visit.\n"
@@ -55,11 +59,14 @@ def _door_section(user: str) -> str:
             "Assumption: handles — not stated on an opened page."
         )
     if "Name the channel." in user:
-        return "Customers are reached through local search, where the owner posts one note about replacing kitchen doors, worktops and handles."
+        return "Customers are reached through local search in the first week, where the owner posts one note about replacing kitchen doors, worktops and handles."
     if "Ask the reader to get in touch" in user:
         return "Ask for a visit and a written scope before any booking is made."
     if "Name the owner's next action." in user:
-        return "The owner opens two supplier pages and writes down the prices they publish for the doors, worktops and handles."
+        return (
+            "In the first week the owner opens two supplier pages and writes down the prices they publish for the doors, worktops and handles. "
+            "In the first month the owner visits one kitchen and measures the doors."
+        )
     if "Name one assumption." in user:
         return "The plan assumes a visit still has to see the kitchen doors, worktops and handles before any figure is used."
     if "Name one open fact." in user:
@@ -83,15 +90,22 @@ def _coffee_section(user: str) -> str:
     if "Name the offer." in user:
         return "The offer is coffee machine rental, which differs from selling a machine outright to the office."
     if "name one opened page" in user:
-        return "Opened pages state the coffee machine rental terms at https://brew.example/rental and no second price was stated."
+        return (
+            "Office Coffee Co offers coffee machine rental for an office. "
+            "Brew Example offers a weekly coffee machine hire. "
+            "This service differs by renting the machine rather than selling one."
+        )
     if "Do not invent a £ figure" in user:
         return "Assumption: the opened page did not state a durable coffee machine rental price, so a visit still has to see the office."
     if "Name the channel." in user:
-        return "Customers are reached through local search, where the owner posts one note about coffee machine rental."
+        return "Customers are reached through local search in the first week, where the owner posts one note about coffee machine rental."
     if "Ask the reader to get in touch" in user:
         return "Ask for a visit and a written scope before any booking is made."
     if "Name the owner's next action." in user:
-        return "The owner confirms which offices to visit and counts the coffee machines to rent."
+        return (
+            "In the first week the owner confirms which offices to visit and counts the coffee machines to rent. "
+            "In the first month the owner visits one office and sets the rental after that visit."
+        )
     if "Name one assumption." in user:
         return "The plan assumes a visit still has to see the office before a coffee machine rental price is used."
     if "Name one open fact." in user:
@@ -178,13 +192,23 @@ def test_door_job_then_coffee_job_share_nothing(monkeypatch):
     def search(query, limit=8):
         lowered = query.lower()
         if "coffee" in lowered or "rental" in lowered:
-            return [{"title": "Office coffee machine rental", "url": "https://brew.example/rental", "snippet": "coffee machine rental for offices", "rerank_score": 0.8}]
-        return [{"title": "Replacement kitchen doors", "url": "https://doors.example/replace", "snippet": "replacement kitchen doors worktops and handles", "rerank_score": 0.8}]
+            return [
+                {"title": "Office Coffee Co", "url": "https://brew.example/rental", "snippet": "coffee machine rental for offices", "rerank_score": 0.8},
+                {"title": "Brew Example", "url": "https://hirecoffee.co.uk/hire", "snippet": "coffee machine rental hire", "rerank_score": 0.7},
+            ]
+        return [
+            {"title": "Kitchen Door Co", "url": "https://doors.example/replace", "snippet": "replacement kitchen doors worktops and handles", "rerank_score": 0.8},
+            {"title": "Refresh Kit", "url": "https://refreshkit.co.uk/offer", "snippet": "kitchen doors worktops and handles", "rerank_score": 0.7},
+        ]
 
     def fetch(url):
+        if "hirecoffee.co.uk" in url:
+            return {"url": url, "title": "Brew Example", "text": "Brew Example hires a coffee machine for offices in the UK.", "error": ""}
         if "brew.example" in url:
-            return {"url": url, "title": "Office coffee machine rental", "text": "Coffee machine rental for UK offices. The rental is agreed after a visit.", "error": ""}
-        return {"url": url, "title": "Replacement kitchen doors", "text": "We replace kitchen doors, worktops and handles across the UK.", "error": ""}
+            return {"url": url, "title": "Office Coffee Co", "text": "Coffee machine rental for UK offices. The rental is agreed after a visit.", "error": ""}
+        if "refreshkit.co.uk" in url:
+            return {"url": url, "title": "Refresh Kit", "text": "Refresh Kit replaces kitchen doors, worktops and handles.", "error": ""}
+        return {"url": url, "title": "Kitchen Door Co", "text": "We replace kitchen doors, worktops and handles across the UK.", "error": ""}
 
     monkeypatch.setattr("app.intelligence.research._live_search", search)
     monkeypatch.setattr("app.intelligence.research._open_live", fetch)

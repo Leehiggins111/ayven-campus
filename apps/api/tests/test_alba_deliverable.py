@@ -71,11 +71,11 @@ def _filled_plan() -> str:
         "Offer and positioning",
         "The offer is an on-site cabinet painting service positioned against replacement showrooms: shorter disruption, the existing kitchen stays, and the finish is the thing being sold.",
         "Competitor and market research",
-        "Opened sources describe cabinet painting and respray work. No opened page was a UK painting competitor in this fixture, so the positioning stays cautious.",
+        "Rose Painting offers an on-site cabinet respray. Gloss Finish offers a workshop spray. This service differs by painting the cabinets in the home.",
         "Pricing",
         "ASSUMPTION: a kitchen painting price is not stated on the opened page, so the plan does not publish one. The reason is that a durable quote depends on the cabinet count and the condition seen at a visit.",
         "Channels",
-        "Start with local search and a short homeowner leaflet near the service area. Do not buy ads until a page states a result worth copying.",
+        "The owner posts on local search in the first week and asks a homeowner to reply about painting.",
         "Advert",
         "Headline: New colour, same kitchen.",
         "Body: Alba Kitchen Refresh paints the cabinets you already own, so the kitchen can look finished without a full refit.",
@@ -83,7 +83,7 @@ def _filled_plan() -> str:
         "Call to action",
         "Ask for a visit and a written scope. No booking is made from this plan.",
         "Next steps",
-        "Confirm the towns to cover, open two UK painting companies' pages, and only then set a price assumption beside those pages.",
+        "In the first week the owner confirms the towns to cover. In the first month the owner opens two UK painting companies' pages before any price is set.",
         "Assumptions",
         "The business name and the UK painting service come from the request. Demand is not proven by the name alone.",
         "Unresolved",
@@ -295,11 +295,11 @@ def test_bold_and_inline_headings_still_count_as_a_written_plan():
         "Problem: A full replacement is more disruption than the household wants when the units are sound.",
         "Offer and positioning: The offer is an on-site cabinet respray that leaves the kitchen in place and sells the finish.",
         "Competitor and market research",
-        "Opened painting pages describe respray work. This plan does not invent a competitor the pages did not name.",
+        "Rose Painting offers an on-site cabinet respray. Gloss Finish offers a workshop spray. This service differs by painting the cabinets in the home.",
         "Pricing",
         "ASSUMPTION: a price is not stated on the opened page, so the plan does not publish one. A visit has to count the doors.",
         "Channels",
-        "Use local search and a short conversation with homeowners. Nothing was sent.",
+        "The owner posts on local search in the first week and asks a homeowner about painting.",
         "Advert",
         "Headline: Same kitchen, new colour.",
         "Body: Alba paints the cabinets you already own so the room can change without a refit.",
@@ -307,7 +307,7 @@ def test_bold_and_inline_headings_still_count_as_a_written_plan():
         "Call to action",
         "Ask for a visit and a written scope. No booking was made.",
         "Next steps",
-        "Open two UK kitchen painting pages and confirm the towns before any price is shown.",
+        "In the first week the owner opens two UK kitchen painting pages. In the first month the owner confirms the towns before any price is shown.",
         "Assumptions",
         "The service and the UK location come from the request. Demand is not proven.",
         "Unresolved",
@@ -487,6 +487,10 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
             PAINTER["url"],
             PAINTER["title"],
             "Professional kitchen cabinet painting costs £80 to £100 in the UK. We paint and respray kitchen cabinets.",
+        ), _preview(
+            "https://glosskit.co.uk/respray",
+            "Gloss Finish",
+            "Gloss Finish paints kitchen cabinets from £90. We paint and respray kitchen cabinets.",
         )]},
     )
     answers = {
@@ -494,12 +498,12 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         "Target customer": "Local UK homeowners who want the cabinets painted rather than ripped out.",
         "Problem": "Replacing a kitchen costs more and takes longer when the units themselves are still sound.",
         "Offer and positioning": "The offer is an on-site cabinet painting service, which differs from a showroom replacement because the existing kitchen stays.",
-        "Competitor and market research": "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1].",
+        "Competitor and market research": "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1]. https://glosskit.co.uk/respray states Gloss Finish paints kitchen cabinets from £90 [F2]. This service differs by painting the cabinets in the home rather than a showroom replacement.",
         "Pricing": "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1].\nAssumption: the price is set after a visit still has to see the units.",
-        "Channels": "Homeowners nearby are reached through local search and a short conversation about painting their cabinets. Nothing was sent.",
+        "Channels": "Homeowners nearby are reached through local search in the first week, and the owner posts one note about painting their cabinets.",
         "Advert": "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope.",
         "Call to action": "Ask for a visit and a written scope before any booking. Nothing was sent.",
-        "Next steps": "Confirm the towns to cover, then set the visit before any price is published. Nothing was sent.",
+        "Next steps": "In the first week the owner confirms the towns to cover. In the first month the owner sets the visit before any price is published.",
         "Assumptions": "The name and the UK painting service come from the request. Demand is not proven by the name alone.",
         "Unresolved": "The towns to cover and the condition of the cabinets stay open until a visit.",
     }
@@ -534,7 +538,8 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
     assert "towns to cover" in published
     assert plan_sections_filled(
         published,
-        "https://example-painter.example/kitchen-painting-prices\nProfessional kitchen cabinet painting costs £80 to £100 in the UK.",
+        "https://example-painter.example/kitchen-painting-prices\nProfessional kitchen cabinet painting costs £80 to £100 in the UK.\n"
+        "https://glosskit.co.uk/respray\nGloss Finish paints kitchen cabinets from £90.",
     ) is True
 
 
@@ -649,17 +654,21 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
             PAINTER["url"],
             PAINTER["title"],
             "Professional kitchen cabinet painting costs £80 to £100 in the UK. We paint and respray kitchen cabinets.",
+        ), _preview(
+            "https://glosskit.co.uk/respray",
+            "Gloss Finish",
+            "Gloss Finish paints kitchen cabinets from £90. We paint and respray kitchen cabinets.",
         )]},
     )
     good = (
         ("Name the customer.", "Local UK homeowners who want the cabinets painted rather than ripped out."),
         ("Name the problem.", "Painting the cabinets costs less and takes less time than replacing the kitchen."),
         ("Name the offer.", "The offer is cabinet painting, and the existing kitchen stays in place."),
-        ("name one opened page", "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1]."),
+        ("name one opened page", "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1]. https://glosskit.co.uk/respray states Gloss Finish paints kitchen cabinets from £90 [F2]. This service differs by painting the cabinets in the home rather than a showroom replacement."),
         ("Do not invent a £ figure", "https://example-painter.example/kitchen-painting-prices states professional kitchen cabinet painting costs £80 to £100 in the UK [F1].\nAssumption: the price is set after a visit still has to see the units."),
         ("three lines", "Headline: New colour, same kitchen.\nBody: Alba paints the cabinets you already own so the room can change without a full refit.\nCall to action: Ask for a visit and a written scope."),
         ("Ask the reader to get in touch", "Ask for a visit and a written scope before any booking."),
-        ("Name the owner's next action.", "Next, the owner confirms the towns to cover, then books the visit."),
+        ("Name the owner's next action.", "In the first week the owner confirms the towns to cover. In the first month the owner books the visit."),
         ("Name one assumption.", "The plan assumes the UK painting service comes from the request and a visit still has to see the cabinets."),
         ("Name one open fact.", "Still open: the towns and the cabinet condition are still open."),
         ("Name the service.", "Alba Kitchen Refresh paints and resprays the kitchen cabinets a household already owns."),
@@ -668,7 +677,7 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
     def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None, plan=False):
         if "Name the channel." in user:
             if "was rejected" in user:
-                return "Homeowners are reached through local search, in a conversation about painting their kitchen cabinets.", 8, {"backend": "test"}
+                return "Homeowners are reached through local search in the first week, and the owner posts one note about painting their kitchen cabinets.", 8, {"backend": "test"}
             return "I see what you're saying. You've reached out to 200+ potential homeowners.", 8, {"backend": "test"}
         for marker, answer in good:
             if marker in user:
@@ -684,5 +693,6 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
     assert "Headline:" in published
     assert plan_sections_filled(
         published,
-        "https://example-painter.example/kitchen-painting-prices\nProfessional kitchen cabinet painting costs £80 to £100 in the UK.",
+        "https://example-painter.example/kitchen-painting-prices\nProfessional kitchen cabinet painting costs £80 to £100 in the UK.\n"
+        "https://glosskit.co.uk/respray\nGloss Finish paints kitchen cabinets from £90.",
     ) is True

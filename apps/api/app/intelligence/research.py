@@ -209,6 +209,9 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                     if extra not in planned:
                         planned.append(extra)
             if planned:
+                for extra in targeted_queries(objective):
+                    if "company" in extra.lower() and extra not in planned:
+                        planned.append(extra)
                 return planned[:8], "model"
             return generic_from_objective(objective), "objective-fallback"
         except Exception:
@@ -221,6 +224,8 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
             user = (
                 "Write 4 to 6 web search queries for this objective. "
                 "Use the service words from the objective. "
+                "Search for named UK businesses that sell the service, and for their prices. "
+                "Do not search for market size, CAGR, or an industry report. "
                 "Each query names the service, the place, or a price. "
                 "Do not name a trade the objective does not name. "
                 "Do not search the requester's name. Do not search pronouns. "
@@ -246,6 +251,11 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
                         if extra not in planned:
                             planned.append(extra)
                 if planned:
+                    from .deliverable import targeted_queries as _targeted
+
+                    for extra in _targeted(objective):
+                        if "company" in extra.lower() and extra not in planned:
+                            planned.append(extra)
                     return planned[:8], "model"
             except Exception:
                 pass
@@ -584,6 +594,12 @@ def research(
                     if is_noise_hit(hit.get("url") or "", hit.get("title") or "", hit.get("snippet") or ""):
                         filtered.append({"url": hit.get("url"), "reason": "noise", "rerank_score": hit.get("rerank_score")})
                         failures.append({"query": query, "stage": "relevance", "url": hit.get("url") or "", "error": "noise_rejected"})
+                        continue
+                    from .deliverable import market_report_page
+
+                    if market_report_page(hit.get("url") or "", hit.get("title") or ""):
+                        filtered.append({"url": hit.get("url"), "reason": "market_report", "rerank_score": hit.get("rerank_score")})
+                        failures.append({"query": query, "stage": "relevance", "url": hit.get("url") or "", "error": "market_report"})
                         continue
                     if _drop_low_score(hit, objective, strict=bool(job.get("strict"))):
                         filtered.append({"url": hit.get("url"), "reason": "below_relevance_threshold", "rerank_score": hit.get("rerank_score")})

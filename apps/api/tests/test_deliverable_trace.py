@@ -222,7 +222,11 @@ def _door_section(user: str) -> str:
     if "Name the offer." in user:
         return "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement."
     if "name one opened page" in user:
-        return "Opened pages state the worktops and handles at https://doors.example/replace and no second price was stated."
+        return (
+            "Kitchen Door Co offers fitted kitchen doors, worktops and handles. "
+            "Refresh Kit offers a kitchen door replacement. "
+            "This service differs by replacing the doors, worktops and handles rather than a full replacement."
+        )
     if "Do not invent a £ figure" in user:
         return (
             "Assumption: doors — not stated as a durable price, so the kitchen doors are counted on a visit.\n"
@@ -230,11 +234,14 @@ def _door_section(user: str) -> str:
             "Assumption: handles — not stated on an opened page."
         )
     if "Name the channel." in user:
-        return "Customers are reached through local search, where the owner posts one note about replacing kitchen doors, worktops and handles."
+        return "Customers are reached through local search in the first week, where the owner posts one note about replacing kitchen doors, worktops and handles."
     if "Ask the reader to get in touch" in user:
         return "Ask for a visit and a written scope before any booking is made."
     if "Name the owner's next action." in user:
-        return "The owner opens two supplier pages and writes down the prices they publish for the doors, worktops and handles."
+        return (
+            "In the first week the owner opens two supplier pages and writes down the prices they publish for the doors, worktops and handles. "
+            "In the first month the owner visits one kitchen and measures the doors."
+        )
     if "Name one assumption." in user:
         return "The plan assumes a visit still has to see the kitchen doors, worktops and handles before any figure is used."
     if "Name one open fact." in user:
@@ -248,10 +255,15 @@ def test_plan_sections_are_stored_and_the_campus_view_returns_them(monkeypatch):
     from app.intelligence.deliverable import plan_sections_filled
 
     def search(query, limit=8):
-        return [{"title": "Replacement kitchen doors", "url": "https://doors.example/replace", "snippet": "replacement kitchen doors worktops and handles", "rerank_score": 0.8}]
+        return [
+            {"title": "Kitchen Door Co", "url": "https://doors.example/replace", "snippet": "replacement kitchen doors worktops and handles", "rerank_score": 0.8},
+            {"title": "Refresh Kit", "url": "https://refreshkit.co.uk/offer", "snippet": "kitchen doors worktops and handles", "rerank_score": 0.7},
+        ]
 
     def fetch(url):
-        return {"url": url, "title": "Replacement kitchen doors", "text": "We replace kitchen doors, worktops and handles across the UK.", "error": ""}
+        if "refreshkit.co.uk" in url:
+            return {"url": url, "title": "Refresh Kit", "text": "Refresh Kit replaces kitchen doors, worktops and handles.", "error": ""}
+        return {"url": url, "title": "Kitchen Door Co", "text": "We replace kitchen doors, worktops and handles across the UK.", "error": ""}
 
     monkeypatch.setattr("app.intelligence.research._live_search", search)
     monkeypatch.setattr("app.intelligence.research._open_live", fetch)
@@ -418,7 +430,7 @@ def test_a_rejected_plan_keeps_the_repaired_sections_and_the_failed_check():
 
     repaired = {
         "pricing": "Assumption: doors — plan around £10 to £40 per door.\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.\nAssumption: still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count.",
-        "next steps": "The owner opens two supplier pages and writes down the prices they publish.",
+        "next steps": "In the first week the owner opens two supplier pages and writes down the prices they publish. In the first month the owner phones one supplier.",
     }
     one_shot = "Next steps\nReplace doors.\nPricing\nAbout £10.\n"
     reason = "The line claims 24/7 availability. That claim is not stored."
@@ -446,12 +458,12 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
         "target customer": "The customer is a household that wants worn kitchen doors, worktops and handles replaced.",
         "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
         "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
-        "competitor and market research": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].",
-        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.\nAssumption: still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count.",
-        "channels": "Households are reached through local search, where the owner posts one finished kitchen and asks for a reply.",
+        "competitor and market research": "Kitchen Door Co (https://doors.example/replace) states kitchen doors are £10 to £40 [F1].\nRefresh Kit (https://refreshkit.co.uk/offer) can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nThis service differs by replacing kitchen doors, worktops and handles rather than a full replacement.",
+        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nhttps://refreshkit.co.uk/offer can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nAssumption: doors, worktops, handles — what still has to be measured: kitchen size, door count, door size, worktop length, worktop material, and handle count.",
+        "channels": "Households are reached through local search in the first week, where the owner posts one finished kitchen and asks for a reply.",
         "advert": "",
         "call to action": "Ask for a visit and a written scope before any booking is made.",
-        "next steps": "The owner opens two supplier pages and writes down the prices they publish for doors, worktops and handles.",
+        "next steps": "In the first week the owner opens two supplier pages and writes down the prices they publish for doors, worktops and handles. In the first month the owner visits one kitchen and sets the price after measuring.",
         "assumptions": "The plan assumes a visit still has to see the doors, worktops and handles before any figure is used.",
         "unresolved": "Still open: the towns to visit for kitchen door replacement are not settled.",
     })
@@ -473,10 +485,18 @@ def test_an_availability_headline_is_retried_without_copying_the_claim(monkeypat
     monkeypatch.setattr("app.intelligence.execution._complete", fake)
     programme = SimpleNamespace(objective=DOOR, parent_id="", research={"evidence": [{
         "source_url": "https://doors.example/replace",
-        "source_title": "Kitchen doors",
-        "extracted_content": "kitchen doors are £10 to £40.",
+        "source_title": "Kitchen Door Co",
+        "extracted_content": "Kitchen Door Co states kitchen doors are £10 to £40.",
+    }, {
+        "source_url": "https://refreshkit.co.uk/offer",
+        "source_title": "Refresh Kit",
+        "extracted_content": "Refresh Kit can transform your kitchen in one day for only £950, pay on completion.",
     }]})
-    rejected = _fill_plan_sections(programme, sections, "https://doors.example/replace\nkitchen doors are £10 to £40.")
+    blob = (
+        "https://doors.example/replace\nKitchen Door Co states kitchen doors are £10 to £40.\n"
+        "https://refreshkit.co.uk/offer\nRefresh Kit can transform your kitchen in one day for only £950, pay on completion."
+    )
+    rejected = _fill_plan_sections(programme, sections, blob)
     assert rejected == {}
     assert "24/7" not in sections["advert"]
     assert sections["advert"].startswith("Headline: Replacement of kitchen doors")
@@ -1387,10 +1407,10 @@ def test_later_sentences_keep_the_customer_the_problem_and_the_offer():
     )
     assert "differs" in owner_section("offer and positioning", offer)
     assert section_rejection("offer and positioning", offer, "", "A home visit service.") == ""
-    channels = (
-        "Online booking platform, direct contact via phone, and partnerships with event organizers."
-    )
+    channels = "The owner posts on the website in the first week and phones one organiser."
     assert section_rejection("channels", channels, "", "") == ""
+    generic = "Online platforms, local directories, and word-of-mouth referrals."
+    assert section_rejection("channels", generic, "", "")
     assert "24/7" in section_rejection("channels", "Customers are reached through 24/7 online availability.", "", "")
 
 
@@ -1406,12 +1426,12 @@ def test_a_channels_availability_claim_is_retried_and_the_plan_can_keep_the_repa
         "target customer": "The customer is a household that wants worn kitchen doors, worktops and handles replaced.",
         "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
         "offer and positioning": "The offer is replacement of kitchen doors, worktops and handles, which differs from a full kitchen replacement.",
-        "competitor and market research": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].",
-        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nAssumption: worktops — not stated on an opened page.\nAssumption: handles — not stated on an opened page.\nAssumption: still to measure kitchen size, door count, door size, worktop length, worktop material, and handle count.",
+        "competitor and market research": "Kitchen Door Co (https://doors.example/replace) states kitchen doors are £10 to £40 [F1].\nRefresh Kit (https://refreshkit.co.uk/offer) can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nThis service differs by replacing kitchen doors, worktops and handles rather than a full replacement.",
+        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nhttps://refreshkit.co.uk/offer can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nAssumption: doors, worktops, handles — what still has to be measured: kitchen size, door count, door size, worktop length, worktop material, and handle count.",
         "channels": "",
         "advert": "Headline: Fresh kitchen doors\nBody: The service replaces kitchen doors, worktops and handles and differs from a full replacement.\nCall to action: Ask for a visit.",
         "call to action": "Ask for a visit and a written scope before any booking is made.",
-        "next steps": "The owner opens two supplier pages and writes down the prices they publish for doors, worktops and handles.",
+        "next steps": "In the first week the owner opens two supplier pages and writes down the prices they publish for doors, worktops and handles. In the first month the owner visits one kitchen and sets the price after measuring.",
         "assumptions": "The plan assumes a visit still has to see the doors, worktops and handles before any figure is used.",
         "unresolved": "Still open: the towns to visit for kitchen door replacement are not settled.",
     })
@@ -1421,16 +1441,24 @@ def test_a_channels_availability_claim_is_retried_and_the_plan_can_keep_the_repa
         prefills.append(prefill)
         if "was rejected" in user:
             assert "24/7" not in user
-            return "local search and posts one note about kitchen doors.", 8, {"backend": "test", "finish_reason": "stop", "raw_response": "local search and posts one note about kitchen doors."}
+            return "local search and posts one note about kitchen doors in the first week.", 8, {"backend": "test", "finish_reason": "stop", "raw_response": "local search and posts one note about kitchen doors in the first week."}
         return "24/7 online availability.", 6, {"backend": "test", "finish_reason": "stop", "raw_response": "24/7 online availability."}
 
     monkeypatch.setattr("app.intelligence.execution._complete", fake)
     programme = SimpleNamespace(objective=DOOR, parent_id="", research={"evidence": [{
         "source_url": "https://doors.example/replace",
-        "source_title": "Kitchen doors",
-        "extracted_content": "kitchen doors are £10 to £40.",
+        "source_title": "Kitchen Door Co",
+        "extracted_content": "Kitchen Door Co states kitchen doors are £10 to £40.",
+    }, {
+        "source_url": "https://refreshkit.co.uk/offer",
+        "source_title": "Refresh Kit",
+        "extracted_content": "Refresh Kit can transform your kitchen in one day for only £950, pay on completion.",
     }]})
-    rejected = _fill_plan_sections(programme, sections, "https://doors.example/replace\nkitchen doors are £10 to £40.")
+    blob = (
+        "https://doors.example/replace\nKitchen Door Co states kitchen doors are £10 to £40.\n"
+        "https://refreshkit.co.uk/offer\nRefresh Kit can transform your kitchen in one day for only £950, pay on completion."
+    )
+    rejected = _fill_plan_sections(programme, sections, blob)
     assert rejected == {}
     assert "24/7" not in sections["channels"]
     assert "search" in sections["channels"]
@@ -1491,7 +1519,7 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     competitor = "Commercial coffee machines can be quite expensive, with prices ranging from £1,000 to £12,000 and even higher [F1]."
     repaired = repair_before_gate("competitor and market research", competitor, facts, objective, blob)
     assert "coffeemachinerentals.co.uk" in repaired
-    assert section_rejection("competitor and market research", repaired, blob, objective) == ""
+    assert "fewer than two" in section_rejection("competitor and market research", repaired, blob, objective)
     pricing = "The price is set after measuring demand."
     priced = repair_before_gate("pricing", pricing, facts, objective, blob)
     assert "£1,000" in priced
@@ -1501,7 +1529,9 @@ def test_a_cited_price_names_the_page_and_a_title_is_not_the_channel():
     channels = "Customers are reached through 6wresearch.com, where the owner posts one note."
     reached = repair_before_gate("channels", channels, facts, objective, blob)
     assert "6wresearch" not in reached
-    assert "directory" in reached
+    assert "website" in reached
+    assert "first week" in reached
+    assert "industry report" not in reached.lower()
     assert section_rejection("channels", reached, blob, objective) == ""
     advert = (
         "Headline: Expert Kitchen Renovations Without Full Replacement\n"
@@ -1593,3 +1623,64 @@ def test_an_empty_model_search_still_opens_the_service_query(monkeypatch):
     assert result["evidence"]
     assert any("coffee" in query and "rental" in query for query in calls)
     assert any("brew.example" in (item.get("source_url") or "") for item in result["evidence"])
+
+
+def test_owner_review_rejects_a_thin_plan():
+    """A raw title, a page dump, one unnamed offer, a generic step, and a cited Assumption do not pass."""
+    from app.intelligence.deliverable import evidence_blob, market_report_page, section_rejection
+    from app.intelligence.facts import extract_facts, repair_before_gate
+
+    title = "Replacement Kitchen Doors UK | Made to Measure | From £11.80"
+    evidence = [{
+        "source_url": "https://kitchenwarehouseltd.com/replacement-kitchen-doors",
+        "source_title": title,
+        "extracted_content": "Replacement kitchens made EASY!",
+    }, {
+        "source_url": "https://refreshkitchen.co.uk/",
+        "source_title": "Refresh Kitchen",
+        "extracted_content": "PAY ON COMPLETION Refresh Your Kitchen can transform your kitchen in one day for only £950.",
+    }, {
+        "source_url": "https://www.linkedin.com/pulse/coffee-cagr",
+        "source_title": "Coffee Machine Market CAGR 4.2%",
+        "extracted_content": "The market will grow at a CAGR of 4.2% to 6.8%.",
+    }]
+    facts = extract_facts(evidence)
+    quotes = " ".join(fact.get("quote") or "" for fact in facts)
+    assert "4.2" not in quotes
+    assert market_report_page("https://www.linkedin.com/pulse/coffee-cagr", "Coffee Machine Market CAGR 4.2%")
+    assert any("950" in (fact.get("quantity") or "") for fact in facts)
+    assert all(" | " not in (fact.get("quote") or "") for fact in facts)
+    blob = evidence_blob(evidence)
+    objective = "The service replaces kitchen doors, worktops and handles, and it avoids a full kitchen replacement."
+    raw_title = "Replacement Kitchen Doors UK | Made to Measure | From £11.80 (kitchenwarehouseltd.com) [F1]."
+    assert "page title" in section_rejection("pricing", raw_title, blob, objective)
+    dumped = "Competitors include Hale & Murray [F1].\nOpened sources\nURL: https://refreshkitchen.co.uk/\nPAY ON COMPLETION."
+    assert "opened page text" in section_rejection("competitor and market research", dumped, blob, objective)
+    listed = "Competitors include Hale & Murray [F1] and Kiss Kitchens [F2]."
+    assert section_rejection("competitor and market research", listed, blob, objective)
+    one_offer = (
+        "Refresh Kitchen (https://refreshkitchen.co.uk/) can transform your kitchen in one day for only £950, "
+        "and the page states pay on completion."
+    )
+    assert "fewer than two" in section_rejection("competitor and market research", one_offer, blob, objective)
+    generic_channels = "Online platforms, local directories, and word-of-mouth referrals."
+    assert "timeframe" in section_rejection("channels", generic_channels, blob, objective)
+    generic_steps = "Conduct market research and then develop the launch."
+    assert "first week" in section_rejection("next steps", generic_steps, blob, objective)
+    asked = (
+        "Headline: Ask about coffee machine\n"
+        "Body: The offer covers coffee machine rental and differs from buying outright.\n"
+        "Call to action: Contact us and ask about a visit."
+    )
+    assert "complete phrase" in section_rejection(
+        "advert", asked, blob, "The service is coffee machine rental for offices.",
+    )
+    cited = "Assumption: prices range from £1,000 to £12,000 [F1]."
+    assert "cited fact" in section_rejection("pricing", cited, blob, objective)
+    priced = repair_before_gate("pricing", "The price is set after measuring.", facts, objective, blob)
+    assert "£950" in priced
+    assert " | " not in priced
+    assert "11.80" in priced
+    assert "does not give the size" in priced
+    assert priced.lower().count("assumption") == 1
+    assert "[F" not in priced.split("Assumption:", 1)[-1]

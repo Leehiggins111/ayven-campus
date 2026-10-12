@@ -233,7 +233,7 @@ def region_token(objective: str) -> str:
 
 
 def targeted_queries(objective: str) -> list[str]:
-    """Searches about the service, the place, and prices. Not the requester."""
+    """Searches about the service, the place, prices, and named businesses. Not the requester."""
     terms = distinctive_terms(objective)
     if not terms:
         return []
@@ -244,7 +244,55 @@ def targeted_queries(objective: str) -> list[str]:
     primary = re.sub(r"\s+", " ", primary).strip()
     if primary and not reject_search_query(primary, objective):
         queries.append(primary[:180])
+    company = " ".join(terms[:4] + ([region] if region else []) + ["company"])
+    company = re.sub(r"\s+", " ", company).strip()
+    if company and company not in queries and not reject_search_query(company, objective):
+        queries.append(company[:180])
     return queries
+
+
+_REPORT_HOSTS = (
+    "linkedin.com",
+    "intelmarketresearch",
+    "qyresearch",
+    "futuredatastats",
+    "aviaan",
+    "6wresearch",
+    "grandviewresearch",
+    "marketresearchfuture",
+    "statista.com",
+    "ibisworld",
+    "cognitivemarketresearch",
+    "alliedmarketresearch",
+    "databridgemarketresearch",
+    "fortunebusinessinsights",
+    "researchandmarkets",
+)
+_GUIDE_TITLE = re.compile(
+    r"\b(how to|cost to|cost guide|market size|market report|industry report|cagr)\b",
+    re.I,
+)
+
+
+def market_report_page(url: str = "", title: str = "", text: str = "") -> bool:
+    """A market-size or LinkedIn SEO page is not evidence for a business fact."""
+    blob = f"{url} {title}".lower()
+    if "linkedin.com" in blob or "linkedin.com" in (text or "").lower()[:240]:
+        return True
+    if any(token in blob for token in _REPORT_HOSTS):
+        return True
+    if re.search(r"\b(market size|market report|industry report|cagr)\b", blob, re.I):
+        return True
+    return False
+
+
+def guide_page(url: str = "", title: str = "") -> bool:
+    """A how-to or a cost guide is not a competitor's own offer."""
+    if market_report_page(url, title):
+        return True
+    if re.search(r"/(guides?|blog|news)/", url or "", re.I):
+        return True
+    return bool(_GUIDE_TITLE.search(title or ""))
 
 
 def _blob_has_term(term: str, blob: str) -> bool:
@@ -698,7 +746,14 @@ def owner_section(kind: str, text: str) -> str:
             return ""
         return "\n".join(picked[:8])
     if kind == "competitor and market research":
-        picked = [sentence for sentence in sentences if "£" in sentence or "http" in sentence.lower()]
+        picked = [
+            sentence for sentence in sentences
+            if "£" in sentence or "http" in sentence.lower() or re.search(
+                r"\b(differs?|rather|instead|unlike|offers?|hires?|sells?|charges?)\b",
+                sentence,
+                re.I,
+            )
+        ]
         return "\n".join((picked or sentences)[:6])
     # The required fact is often in the second sentence. One sentence is not the section.
     body = "\n".join(_prefer_request(kind, sentences)[:3]).strip()
@@ -905,6 +960,9 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
     raw = _without_service_area(raw, objective)
     if not raw.strip():
         return "The section invents a service area. The request says not to."
+    pasted = _pasted_page(raw)
+    if pasted:
+        return pasted
     leaked = _example_leak(raw, objective, blob)
     if leaked:
         return leaked
@@ -958,6 +1016,12 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
     mismatch = _claim_mismatches(cleaned, blob)
     if mismatch:
         return mismatch
+    pasted = _pasted_page(cleaned)
+    if pasted:
+        return pasted
+    cited_assumption = _assumption_on_fact(cleaned)
+    if cited_assumption:
+        return cited_assumption
     shape = _section_shape(key, cleaned, objective, blob)
     if shape:
         return shape
@@ -1639,6 +1703,84 @@ def _sells_avoided(body: str, objective: str) -> bool:
     return bool(re.search(r"\bfull (?:kitchen )?replacement (?:service|quote)\b", body or "", re.I))
 
 
+def _pasted_page(body: str) -> str:
+    """A raw page title or an opened-source dump is not a section."""
+    if re.search(r"(?m)^\s*opened sources\s*$", body or "", re.I):
+        return "The section pastes opened page text. Keep that in the evidence panel."
+    if re.search(r"(?m)^\s*URL:\s*\S", body or "", re.I):
+        return "The section pastes opened page text. Keep that in the evidence panel."
+    if re.search(r"\s\|\s", body or ""):
+        return "The section pastes a page title. State what the page says in a sentence."
+    return ""
+
+
+def _assumption_on_fact(body: str) -> str:
+    """Assumption is the method. A cited fact stays on its own line."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
+        if not re.search(r"\bassumption\b", sentence, re.I):
+            continue
+        if re.search(r"\[F\d+\]", sentence, re.I) or re.search(r"""\bstates\s+["'“]""", sentence, re.I):
+            return (
+                "An Assumption line restates a cited fact. "
+                "Keep the fact on its own line and use Assumption for the method."
+            )
+    return ""
+
+
+def _headline_problem(title: str) -> str:
+    """A headline is a complete phrase under ten words, and it does not start with Ask about."""
+    if re.search(r"\bcost guide\b", title or "", re.I) or len(title or "") > 80:
+        return "The headline copies a page title. Write a short promise."
+    words = re.findall(r"[A-Za-z0-9'’%]+", title or "")
+    if words and (title.strip().lower().startswith("ask about") or len(words) >= 10 or len(words) < 3):
+        return "The headline is not a complete phrase under 10 words."
+    return ""
+
+
+_OFFER_VERB = re.compile(
+    r"\b(offers?|hires?|hiring|rents?|rental|sells?|supplies|charges?|package|respray|paints?|painting|replaces?|replacement)\b",
+    re.I,
+)
+_HOST_IN_TEXT = re.compile(r"\b(?:[a-z0-9-]+\.)+(?:co\.uk|com|org|net|example)\b", re.I)
+_NOT_COMPETITOR = {
+    "the offer", "this service", "opened pages", "opened sources", "market research",
+    "next steps", "target customer", "call to action", "the customer", "the problem",
+    "the plan", "the owner", "united kingdom",
+}
+_WHEN = re.compile(
+    r"\b(first week|first month|this week|this month|within a week|within a month)\b",
+    re.I,
+)
+
+
+def _competitor_names(body: str) -> list[str]:
+    """Named businesses whose sentence also says what they offer."""
+    found: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", body or ""):
+        if _GUIDE_TITLE.search(sentence):
+            continue
+        if not (_pound_amounts(sentence) or _OFFER_VERB.search(sentence)):
+            continue
+        names: list[str] = []
+        hosts: list[str] = []
+        for match in _IDENTITY.finditer(sentence):
+            phrase = re.sub(r"\s+", " ", match.group(0)).strip()
+            if phrase.lower() in _NOT_COMPETITOR or _GUIDE_TITLE.search(phrase):
+                continue
+            if market_report_page("", phrase):
+                continue
+            names.append(phrase.lower())
+        for host in _HOST_IN_TEXT.findall(sentence):
+            if market_report_page(host, ""):
+                continue
+            hosts.append(host.lower())
+        chosen = names if len(names) >= 2 else (names[:1] or hosts[:1])
+        for name in chosen:
+            if name not in found:
+                found.append(name)
+    return found
+
+
 def _offer_differs(body: str, objective: str) -> bool:
     """A contrast word counts only when the request did not already use it."""
     for marker in _CONTRAST:
@@ -1664,16 +1806,26 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
             return "The section describes the alternative as the service."
         if not _offer_differs(body, objective):
             return "The section does not state what is sold and how it differs."
+        unlinked = _unlinked_price(body, blob)
+        if unlinked:
+            return unlinked
+        missing_package = [item for item in covered_items(objective) if not _item_present(item, body)]
+        if len(covered_items(objective)) >= 2 and missing_package:
+            return "The offer does not name the package: " + ", ".join(missing_package) + "."
     elif key == "channels":
         if re.search(r"three lines|headline\s*:|call to action\s*:", lowered):
             return "The section describes the advert format instead of a channel."
+        if re.search(r"\bindustry reports?\b|\bonline platforms?\b", lowered):
+            return "The section does not name a channel, a practical action, and a timeframe."
         named = [word for word in _CHANNELS if _has_word(lowered, word)]
         actions = [word for word in _OWNER_ACTIONS if _has_action(lowered, word) and word not in named]
-        if not named or not (actions or "through" in lowered):
-            return "The section does not name a channel and an action."
+        if not named or not actions or not _WHEN.search(body or ""):
+            return "The section does not name a channel, a practical action, and a timeframe."
     elif key == "next steps":
         if "first practical action" in lowered or not any(_has_word(lowered, word) for word in _OWNER_ACTIONS):
             return "The next step repeats the service instead of an action the owner takes."
+        if "first week" not in lowered or "first month" not in lowered:
+            return "The next steps are not a prioritised plan. Name the action for the first week and the action for the first month."
     elif key == "pricing":
         missing = _pricing_parts(body, objective)
         if missing:
@@ -1689,7 +1841,14 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
             return omitted
         return _missing_measurements(body, objective)
     elif key == "competitor and market research":
-        return _competitor_prices(body, blob)
+        priced = _competitor_prices(body, blob)
+        if priced:
+            return priced
+        if len(_competitor_names(body)) < 2:
+            return "The competitor section names fewer than two competitors and what each offers."
+        if not _offer_differs(body, objective):
+            return "The competitor section does not say how this service differs."
+        return ""
     elif key == "call to action":
         named_owner = names_requester(body, objective)
         if named_owner:
@@ -1703,8 +1862,9 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
     elif key == "advert":
         headline = re.search(r"headline\s*:\s*(.+)", body or "", re.I)
         title = headline.group(1).strip() if headline else ""
-        if re.search(r"\bcost guide\b", title, re.I) or len(title) > 80:
-            return "The headline copies a page title. Write a short promise."
+        problem = _headline_problem(title)
+        if problem:
+            return problem
         if _sells_avoided(body, objective):
             return "The call to action asks for the alternative the service avoids."
         match = re.search(r"call to action\s*:\s*(.+)", body or "", re.I)
@@ -1895,8 +2055,6 @@ def publish_business_plan(objective: str, research: dict | None, model_text: str
         prose = _strip_labels(grounded.get("text") or "")
         if not prose:
             prose = _strip_labels(body)
-        if key == "pricing" and prose and "assumption" not in prose.lower():
-            prose = "Assumption: " + prose
         cleaned[key] = prose
     draft = _format_sections(cleaned, evidence)
     if not plan_sections_filled(draft, blob, objective):
@@ -1919,15 +2077,6 @@ def _format_sections(sections: dict[str, str], evidence: list[dict]) -> str:
         body = (sections.get(key) or "").strip()
         if body:
             lines.append(body)
-        if key == "competitor and market research" and evidence:
-            lines.append("Opened sources")
-            for item in evidence[:8]:
-                lines.append(item.get("source_title") or item.get("title") or "Opened page")
-                lines.append(f"URL: {item.get('source_url') or item.get('url')}")
-                excerpt = clip_at_boundary(item.get("extracted_content") or item.get("text") or "", 2000)
-                if excerpt:
-                    lines.append(excerpt)
-                lines.append("")
         lines.append("")
     if "nothing was sent" not in "\n".join(lines).lower():
         lines.append("Nothing was sent. No purchase was made.")
