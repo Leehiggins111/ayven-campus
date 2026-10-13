@@ -95,18 +95,36 @@ python3 -m pytest apps/api/tests/test_hosting.py apps/api/tests/test_durable.py 
 bash scripts/run_ayven_live.sh
 ```
 
-## Milo end-to-end defect fixes (2026-10-13)
+## Milo end-to-end defect fixes and pre-pilot fixes (since `4a2d946`)
 
-Five defects from a simulated Milo run. Tests for every fix are **UNRUN pending QA**: they were written and syntax-checked (`py_compile`) but not executed. CI on this branch is the first run.
+### QA-verified at `3975f80` (CI green, 369 passed; the browser tests failing locally were a box environment issue, not code)
 
-| Defect | Change | Commit |
-| --- | --- | --- |
-| `bundle.zip` 404, `save_bytes` never called | `finalize_project` calls `blobs.store_package_files` for any non-FAILED package: `report.md`, program files whose tests passed, verified web files | `9a780c8` |
-| Failed step (`database is locked`) reached approval | Delivery review and repair model calls run before the MANAGER stage write (`Programme.delivery_calls`); `run_retries` records the exact error as a blocker and creates no approval; a failed deliverable is checked before the escalation branch; `fail_project` records the exact cause as a blocker | `6f0296d`, `da58a43` |
-| `criteria_results` empty | `goals.evaluate_criteria` (deterministic term coverage: met / not_met / unverified) runs in `finalize_project`; `/milo/jobs/{id}` returns `criteria_results` | `0f849cd` |
-| £6.25 clamped to $2 | `job_cap_gbp` stored and returned exactly; `goals.check_budget` refuses a budget above `AYVEN_JOB_BUDGET_USD` with HTTP 400 and a reason instead of clamping | `1a6309d` |
-| `/health` durability inconsistent | `runtime` comes from `durable.enabled()`; `durable` is true only when runtime and storage are both durable; adds `durable_runtime`, `durable_storage` | `72c0861` |
+| Commit | Change |
+| --- | --- |
+| `6f0296d` | Delivery review and repair model calls run before the MANAGER stage write (`Programme.delivery_calls`), removing the `database is locked` failure. `run_retries` records the exact error as a blocker and creates no approval. A failed deliverable is checked before the escalation branch. `fail_project` records the exact cause as a blocker |
+| `da58a43` | Tests for the above in `test_qa_defects.py` |
+| `9a780c8` | `finalize_project` saves generated files (`blobs.store_package_files`), so `bundle.zip` serves them |
+| `0f849cd` | `goals.evaluate_criteria` fills `criteria_results`; `/milo/jobs/{id}` returns them |
+| `1a6309d` | `job_cap_gbp` stored exactly in GBP; a budget above `AYVEN_JOB_BUDGET_USD` is refused with HTTP 400, never clamped |
+| `72c0861` | `/health` runtime comes from `durable.enabled()`; `durable` needs a durable runtime and durable storage |
+| `bf562c0` | Earlier version of this handover section |
+| `733264b` | Stale review-cap test updated: an unparseable review is a failed step, so a blocker and no approval |
+| `b2d6caa` | Criteria match whole tokens; figures must appear exactly (`£25` is not `£250`) |
+| `3975f80` | e2e (`validation/wf1.py`) and `MILO_CONTRACT.md` example budgets £2.00 to £1.00, under the unchanged $2 ceiling |
 
-Behaviour change to note: with the default `$2` ceiling, a £6.25 job is now refused with a reason, not silently capped. Raise `AYVEN_JOB_BUDGET_USD` (for example `9`) to accept it. Criteria checks are keyword coverage, not a model judgement.
+### Pending QA
 
-Tests to run: `python3 -m pytest apps/api/tests/test_qa_defects.py apps/api/tests/test_durable.py apps/api/tests/test_hosting.py apps/api/tests/test_spend_controls.py -q`, then the full suite.
+| Commit | Change |
+| --- | --- |
+| `7c3e998` | `/health` runs a live `SELECT 1` (`db.live_check`, 2s timeout) when storage is configured durable. On failure it reports `durable: false`, `persistence_state: degraded`, `persistence_live: false` and `persistence_error` |
+| `711836f` | Criteria keep figures of any length (`3`, `£5`, `$2`) and match them exactly as whole tokens, after normalising `£25.00` to `£25` and `1,000` to `1000` |
+
+Run: `python3 -m pytest apps/api/tests/test_hosting.py apps/api/tests/test_qa_defects.py -q`, then the full suite.
+
+## Backlog: criteria matching
+
+Criteria checks are deterministic whole-token coverage, not a model judgement. Known gaps:
+
+- **Negation.** "No setup fee" is met by a report that says "a setup fee applies".
+- **Hyphen versus space.** "30-day" and "30 day" are different tokens.
+- **Plurals.** "prospect" does not match "prospects".
