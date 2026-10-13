@@ -271,6 +271,9 @@ def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence
             if meta.get('error'):
                 raise RuntimeError('Workforce model call failed; no fixture fallback was used')
             calls.append((prompt['id'], text, meta))
+        # The delivery review and its repair call are model calls too. They run here,
+        # before the stage write opens, never inside atomic_stage.
+        precheck = programme.delivery_calls() if role == 'MANAGER' else None
         if lost.is_set():
             from .intelligence.run_token import StaleWrite
             raise StaleWrite('lease lost during the model call')
@@ -281,6 +284,8 @@ def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence
 
     def action():
         stored = restore(state)
+        if precheck is not None:
+            stored._delivery_precheck = precheck
         for package_id, text, meta in calls:
             stored.bind(role, package_id, text, meta)
         return snapshot(stored)
@@ -338,6 +343,9 @@ def _fail_project(project_id: str, stage: str, cause: str) -> None:
     reason = rejection_reason(stage, cause)
 
     def action():
+        from .goals import add_blocker
+        # The exact cause is the blocker. A failed step is never routed to approval.
+        add_blocker(project_id, "error", reason, "Read the cause, fix it, then retry the job.")
         conn = connect()
         conn.execute('UPDATE projects SET status=?, result=? WHERE id=?',
                      ('rejected', reason, project_id))

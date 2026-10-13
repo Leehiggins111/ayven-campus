@@ -150,6 +150,40 @@ def test_approval_is_atomic_idempotent_and_conflicts_are_rejected(tmp_path, monk
     reset_connection_state()
 
 
+
+def test_manager_delivery_review_runs_before_the_stage_write_opens(tmp_path, monkeypatch):
+    """The review and repair model calls run outside atomic_stage; only the bind is inside."""
+    from app.db import _stage_connection, connect, reset_connection_state
+    from app import durable
+    from app.intelligence import execution
+
+    monkeypatch.setenv('AYVEN_DB', str(tmp_path/'review.sqlite'))
+    reset_connection_state()
+    conn=connect()
+    conn.execute('CREATE TABLE IF NOT EXISTS durable_checkpoints(job_id TEXT,stage TEXT,state_json TEXT,PRIMARY KEY(job_id,stage))')
+    conn.commit();conn.close()
+    seen={}
+    precheck={'review':{'passed':True,'calls':[]},'repair':None,'revised':None}
+
+    class Fake:
+        def prompts(self, role):
+            return [{'id':'parent','system':'s','user':'u'}]
+
+        def delivery_calls(self):
+            seen['review_inside_write']=_stage_connection.get() is not None
+            return precheck
+
+        def bind(self, role, package_id, text, meta):
+            seen['bind_inside_write']=_stage_connection.get() is not None
+            seen['precheck']=self.__dict__.get('_delivery_precheck')
+
+    monkeypatch.setattr(durable,'restore',lambda state: Fake())
+    monkeypatch.setattr(durable,'snapshot',lambda programme: {'version':1,'programme':{}})
+    monkeypatch.setattr(execution,'_complete',lambda *args, **kwargs: ('ok',1,{'backend':'stub'}))
+    durable.execute_role.__wrapped__('review-job','MANAGER',{'version':1},'',0)
+    assert seen=={'review_inside_write':False,'bind_inside_write':True,'precheck':precheck}
+    reset_connection_state()
+
 def test_api_submission_to_milo_readback(tmp_path):
     script=r'''
 import time

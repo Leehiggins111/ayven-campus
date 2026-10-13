@@ -74,7 +74,8 @@ def run_bounded(stage: str, fn, timeout: float | None = None):
 def run_retries(fn, *, stage: str = "stage", max_attempts: int | None = None, project_id: str = "", task_id: str = "", needed_from: str = "Lee", independent=None) -> dict:
     """Try ``fn(attempt)`` up to the cap, waiting longer between failures.
 
-    After the cap, record a blocker for the director and an approval for Lee.
+    After the cap, record a blocker with the exact last error for the director.
+    A failed step never creates an approval: there is nothing for Lee to approve.
     Nothing is sent outside the process. ``independent`` still runs.
     """
     limit = max(1, int(max_attempts if max_attempts is not None else os.environ.get("AYVEN_MAX_ATTEMPTS", "3")))
@@ -99,14 +100,13 @@ def run_retries(fn, *, stage: str = "stage", max_attempts: int | None = None, pr
             if independent is not None:
                 independent()
             return {"ok": True, "attempts": attempts, "result": result, "blocker": None, "approval": None, "external_sends": 0}
-    reason = f"{stage} failed after {limit} attempts. Last error: {last}. Escalated to the director, then to Lee."
+    reason = f"{stage} failed after {limit} attempts. Last error: {last}. Escalated to the director as a blocker."
     blocker = None
     approval = None
     if project_id:
         from ..goals import add_blocker
 
         blocker = add_blocker(project_id, "error", reason, needed_from, package_id=task_id)
-        approval = _approval_for_lee(project_id, task_id or project_id, reason)
     if independent is not None:
         independent()
     return {"ok": False, "attempts": attempts, "result": None, "blocker": blocker, "approval": approval, "external_sends": 0}

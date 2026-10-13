@@ -768,6 +768,43 @@ class Programme:
             if row["verification"] == "independently_contradicted" and row.get("claim_id"):
                 claim_ledger.challenge(row["claim_id"], SUPERVISOR, "Independent page contradicted the claim.", "CONTRADICTED")
 
+    def delivery_calls(self) -> dict | None:
+        """The delivery review and the repair call. Model calls only; nothing is written here.
+
+        The durable runner calls this before the stage write opens, so the lock guard
+        never sees a model call inside the write.
+        """
+        if self.plan.get("planning_source") != "live_model":
+            return None
+        from .delivery_plan import review_delivery
+
+        deliverable = "\n\n".join(child["report"] for child in self.children if child["focus"] == "deliverable")
+        review = review_delivery(
+            self.objective, self.plan, deliverable, self.research.get("evidence") or [],
+            project_id=self.project_id, task_id=self.parent_id,
+        )
+        result = {"review": review, "repair": None, "revised": None}
+        if review["passed"] or int(self.plan.get("budget", {}).get("max_attempts", 2)) <= 1:
+            return result
+        child = next(item for item in self.children if item["focus"] == "deliverable")
+        repair_text, _, repair_meta = _complete(
+            "EMPLOYEE", _employee_system(self),
+            _employee_user(self, child) + "\nFix these reviewer findings and return the entire corrected deliverable:\n" + json.dumps({key: value for key, value in review.items() if key != "calls"}),
+            max_tokens=1400, programme=self, package_id=child["id"],
+        )
+        result["repair"] = {"child_id": child["id"], "text": repair_text, "meta": dict(repair_meta or {})}
+        if not (repair_meta or {}).get("error"):
+            # The same grounding _bind_employee applies to a deliverable child.
+            evidence, deterministic = self._corpus()
+            repaired = ground_text(repair_text or "", evidence, deterministic)["text"]
+            revised = review_delivery(
+                self.objective, self.plan, repaired, self.research.get("evidence") or [],
+                project_id=self.project_id, task_id=self.parent_id,
+            )
+            revised["calls"] = review.get("calls", []) + revised.get("calls", [])
+            result["revised"] = revised
+        return result
+
     def _bind_manager(self, text: str, meta: dict) -> None:
         from .campus_view import mark_stage
 
@@ -829,31 +866,21 @@ class Programme:
                 }
         delivery_review = None
         if self.plan.get("planning_source") == "live_model":
-            from .delivery_plan import review_delivery
-            deliverable = "\n\n".join(child["report"] for child in self.children if child["focus"] == "deliverable")
-            delivery_review = review_delivery(
-                self.objective, self.plan, deliverable, self.research.get("evidence") or [],
-                project_id=self.project_id, task_id=self.parent_id,
-            )
-            if not delivery_review["passed"] and int(self.plan.get("budget", {}).get("max_attempts", 2)) > 1:
+            # The durable runner makes these model calls before the stage write opens.
+            # Calling the model while the write is held is what produced "database is locked".
+            precheck = self.__dict__.pop("_delivery_precheck", None)
+            if precheck is None:
+                precheck = self.delivery_calls()
+            delivery_review = precheck["review"]
+            repair = precheck.get("repair")
+            if repair is not None:
                 self.retries += 1
                 mark_stage(self.parent_id, "REPAIR", project_id=self.project_id, task_id=self.task_id or "")
-                child = next(item for item in self.children if item["focus"] == "deliverable")
-                repair_text, _, repair_meta = _complete(
-                    "EMPLOYEE", _employee_system(self),
-                    _employee_user(self, child) + "\nFix these reviewer findings and return the entire corrected deliverable:\n" + json.dumps({key: value for key, value in delivery_review.items() if key != "calls"}),
-                    max_tokens=1400, programme=self, package_id=child["id"],
-                )
-                if not repair_meta.get("error"):
-                    self._bind_employee(child["id"], repair_text, repair_meta)
-                    revised = review_delivery(
-                        self.objective, self.plan, child["report"], self.research.get("evidence") or [],
-                        project_id=self.project_id, task_id=self.parent_id,
-                    )
-                    revised["calls"] = delivery_review.get("calls", []) + revised.get("calls", [])
-                    delivery_review = revised
+                if not repair["meta"].get("error"):
+                    self._bind_employee(repair["child_id"], repair["text"], repair["meta"])
+                    delivery_review = precheck["revised"]
                 else:
-                    self.errors.append("Deliverable repair failed")
+                    self.errors.append("Deliverable repair failed: " + str(repair["meta"].get("error")))
             for review_meta in delivery_review.pop("calls", []):
                 self.tokens += int(review_meta.get("completion_tokens") or 0)
                 save_model_call(self.parent_id, "DELIVERY_REVIEW", self.task_class, review_meta, json.dumps(delivery_review))
@@ -972,6 +999,16 @@ class Programme:
             and decision in ("ESCALATE", "RETURN", "RESEARCH_MORE", "CLARIFY", "SYNTHESISE", "ACCEPT")
         )
         final_state = state_for_manager(decision, approval_required=approval_required)
+        if delivery_review is not None and completion["outcome"] != "PASS":
+            # A failed step never advances to approval, escalation included.
+            blocker = _delivery_blocker(delivery_review, self.errors)
+            from ..goals import add_blocker
+
+            add_blocker(self.project_id, "error", blocker, "Fix the blocker, then retry the job.", package_id=self.parent_id)
+            log_transition(self.parent_id, "FAILED", blocker)
+            update_package(self.parent_id, findings=findings, status="failed", stage="delivery_incomplete", requires_approval=0, error=blocker, next_action="Review missing items and retry the job")
+            _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="The requested deliverable is incomplete", progress=1)
+            return
         if decision == "ESCALATE":
             log_transition(self.parent_id, "ESCALATED", self.resolution.get("reason") or "escalated")
             if approval_required:
@@ -991,11 +1028,6 @@ class Programme:
                 _set_agent(MANAGER, visual_state="NEEDS_APPROVAL", status="needs_approval", last_summary="Escalation needs Lee", progress=1)
             else:
                 _set_agent(MANAGER, visual_state="WAITING", status="idle", last_summary="Escalation disabled", progress=1)
-            return
-        if delivery_review is not None and completion["outcome"] != "PASS":
-            log_transition(self.parent_id, "FAILED", "Required deliverable did not pass its checks")
-            update_package(self.parent_id, findings=findings, status="failed", stage="delivery_incomplete", requires_approval=0, next_action="Review missing items and retry the job")
-            _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="The requested deliverable is incomplete", progress=1)
             return
         log_transition(self.parent_id, final_state, decision)
         clarification = bool(approval_required)
@@ -1021,6 +1053,20 @@ class Programme:
             mark_stage(self.parent_id, "MANAGER", project_id=self.project_id, task_id=self.task_id or "")
             _set_agent(MANAGER, visual_state="IDLE", status="idle", last_summary=decision, progress=1)
         _set_agent(SUPERVISOR, visual_state="COMPLETED", status="idle", last_summary="Audit complete", progress=1)
+
+
+def _delivery_blocker(review: dict, errors: list) -> str:
+    """The exact reason a deliverable failed: the step error first, then the review."""
+    parts = []
+    if errors:
+        parts.append("Step error: " + "; ".join(str(item) for item in errors))
+    if review.get("reason"):
+        parts.append("Review: " + str(review["reason"]))
+    if review.get("missing_items"):
+        parts.append("Missing: " + "; ".join(str(item) for item in review["missing_items"]))
+    if review.get("unsupported_claims"):
+        parts.append("Unsupported: " + "; ".join(str(item) for item in review["unsupported_claims"]))
+    return " | ".join(parts) or "Required deliverable did not pass its checks"
 
 
 def _calculation_from_objective(objective: str) -> dict | None:
