@@ -253,6 +253,7 @@ def run_pipeline(request: dict, out_dir: Path) -> dict:
     (out_dir / "evidence.json").write_text(json.dumps({
         "objective": objective,
         "pages": pages,
+        "fact_table": obs.get("fact_table") or [],
         "queries": obs.get("queries") or [],
         "failures": obs.get("failures") or [],
         "research_budget": obs.get("research_budget") or {},

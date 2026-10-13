@@ -386,10 +386,30 @@ def extract_facts(evidence: list[dict] | None) -> list[dict]:
         + [row for row in other_priced if not row.get("unit")]
     )
     facts = []
-    for row in ordered[:12]:
+    for row in ordered:
+        if _same_fact(row, facts):
+            continue
+        if len(facts) >= 12:
+            break
         row["id"] = f"F{len(facts) + 1}"
         facts.append(row)
     return facts
+
+
+def _same_fact(row: dict, kept: list[dict]) -> bool:
+    """The same page and the same £, or the same quote, is one fact."""
+    host = _host(row.get("source") or "").removeprefix("www.")
+    quantity = re.sub(r"[\s,]", "", (row.get("quantity") or "").lower())
+    quote = re.sub(r"\s+", " ", _fold(row.get("quote") or "")).strip()
+    for previous in kept:
+        prev_quote = re.sub(r"\s+", " ", _fold(previous.get("quote") or "")).strip()
+        if quote and quote == prev_quote:
+            return True
+        prev_host = _host(previous.get("source") or "").removeprefix("www.")
+        prev_quantity = re.sub(r"[\s,]", "", (previous.get("quantity") or "").lower())
+        if host and quantity and host == prev_host and quantity == prev_quantity:
+            return True
+    return False
 
 
 def render_fact_table(facts: list[dict] | None) -> str:
@@ -573,80 +593,19 @@ def _matches(sentence: str, cited: list[dict], objective: str) -> bool:
 
 
 def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> str:
-    """Drop an uncited number or name. A citation that does not match the fact is dropped, not rewritten."""
+    """Drop a sentence that states an uncited number or name. Do not cut words out of it."""
     table = facts or []
     kept = []
     for sentence in _sentence_list(text):
         cited = _cited(sentence, table)
-        if _promise_blocked(sentence, objective, cited) and not re.search(r"24/7|always ready", sentence, re.I):
-            trimmed = _without_promise_clause(sentence)
-            from .deliverable import _ASK
-
-            day_only = bool(re.search(r"\b(?:in one day|same-day|same day)\b", sentence, re.I)) and not re.search(
-                r"free quote|free consultation|upfront cost|for free", sentence, re.I
-            )
-            long_enough = len(trimmed.split()) >= (8 if day_only else 4) or _ASK.search(trimmed)
-            if (
-                trimmed
-                and trimmed != sentence
-                and not _promise_blocked(trimmed, objective, cited)
-                and long_enough
-            ):
-                sentence = trimmed
-                cited = _cited(sentence, table)
         if _promise_blocked(sentence, objective, cited):
             continue
         named = _foreign_names(sentence, objective, table)
-        factual = _has_number(sentence) or bool(named)
+        factual = _has_number(sentence) or bool(named) or ("%" in sentence)
         if not factual:
             kept.append(sentence)
             continue
         if not cited:
-            # A count is not a market figure. Drop the digits and keep the action.
-            # An invented title or an uncited £ is deleted. The rest of the model's sentence stays.
-            if re.search(r"%", sentence):
-                stripped = _without_saving_clause(sentence)
-                if "%" not in stripped and not _MONEY.search(stripped) and len(stripped.split()) >= 4:
-                    kept.append(stripped if re.search(r"[.!?]$", stripped) else stripped + ".")
-                continue
-            if _MONEY.search(sentence):
-                stripped = re.sub(
-                    r"£\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:-|–|to)\s*£?\s*\d[\d,]*(?:\.\d+)?)?",
-                    "",
-                    sentence,
-                )
-                for name in sorted(named, key=len, reverse=True):
-                    stripped = re.sub(rf"\b{re.escape(name)}\b", "", stripped)
-                # Deleting the £ must not leave "for including".
-                stripped = re.sub(
-                    r"\b(?:for|at|from)\s+(?:only\s+)?(?=including\b|[,.;:!?])",
-                    "",
-                    stripped,
-                    flags=re.I,
-                )
-                stripped = re.sub(r"\s{2,}", " ", stripped)
-                stripped = re.sub(r"\s+([,.;:!?])", r"\1", stripped).strip(" ,;:-")
-                if stripped and not re.search(r"[.!?]$", stripped):
-                    stripped += "."
-                if len(stripped.split()) >= 4 and not _MONEY.search(stripped):
-                    kept.append(stripped)
-                continue
-            if named:
-                stripped = sentence
-                for name in sorted(named, key=len, reverse=True):
-                    stripped = re.sub(rf"\b{re.escape(name)}\b", "", stripped)
-                stripped = re.sub(r"\s{2,}", " ", stripped)
-                stripped = re.sub(r"\s+([,.;:!?])", r"\1", stripped).strip(" ,;:-")
-                if stripped and not re.search(r"[.!?]$", stripped):
-                    stripped += "."
-                if len(stripped.split()) >= 4:
-                    kept.append(stripped)
-                continue
-            stripped = _YEAR.sub(" ", sentence)
-            stripped = re.sub(r"\b\d+(?:,\d{3})*(?:\.\d+)?\+?", "", stripped)
-            stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,;:-")
-            if len(stripped.split()) >= 4:
-                kept.append(stripped)
             continue
         quoted = _fold(
             " ".join((fact.get("entity") or "") + " " + (fact.get("quote") or "") for fact in cited)
@@ -1048,57 +1007,9 @@ def _dropped_only(original: str, repaired: str) -> bool:
     return True
 
 
-def _without_borrowed_phrases(key: str, body: str, objective: str, blob: str) -> str:
-    """Delete a business name taken from an opened page. Leave the model's sentence."""
-    if key not in {"service", "offer and positioning", "advert", "call to action", "channels", "next steps"}:
-        return body or ""
-    from .deliverable import borrowed_service_name
-
-    cleaned = body or ""
-    for _ in range(4):
-        reason = borrowed_service_name(cleaned, objective, blob)
-        match = re.search(r"The name '([^']+)'", reason or "")
-        if not match:
-            break
-        phrase = re.escape(match.group(1))
-        cleaned = re.sub(
-            rf"(?i)(?:\*\*)?\b(?:at|by|from|with)\s+{phrase}\b(?:\*\*)?[,:]?\s*",
-            "",
-            cleaned,
-        )
-        cleaned = re.sub(rf"(?i)(?:\*\*)?{phrase}(?:\*\*)?", "", cleaned)
-        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-        cleaned = re.sub(r"(?m)^[\s,;:*\-]+", "", cleaned)
-        cleaned = re.sub(r"\(\s*\)", "", cleaned)
-    return cleaned.strip()
-
-
-def _without_rejected_unit(sentence: str, blob: str) -> str:
-    """Delete the unit the page check rejected. Keep the model's £ and the rest of the sentence."""
-    from .deliverable import claim_mismatch
-
-    reason = claim_mismatch(sentence, blob)
-    match = re.search(r"gives the unit '([^']+)'", reason or "")
-    if not match:
-        return ""
-    pattern = r"\b" + r"\s+".join(re.escape(part) for part in match.group(1).split()) + r"\b"
-    nxt = re.sub(pattern, "", sentence or "", count=1, flags=re.I)
-    nxt = re.sub(r"\s{2,}", " ", nxt)
-    nxt = re.sub(r"\s+([,.;:!?])", r"\1", nxt).strip(" ,;:-")
-    if nxt and not re.search(r"[.!?]$", nxt):
-        nxt += "."
-    if not nxt or nxt == (sentence or "").strip() or "£" not in nxt:
-        return ""
-    if "gives the unit" in (claim_mismatch(nxt, blob) or "").lower():
-        return ""
-    if claim_mismatch(nxt, blob):
-        return ""
-    return nxt
-
-
 def _short_pricing(text: str, objective: str, blob: str) -> str:
-    """Keep the model's £ line and the assumption lines that still pass, when the list is too long."""
-    from .deliverable import section_rejection
+    """Keep whole £ lines that already pass, when the list is too long. Do not trim a line."""
+    from .deliverable import claim_mismatch, section_rejection
 
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if len(lines) <= 8 and len(text or "") <= 900:
@@ -1111,15 +1022,14 @@ def _short_pricing(text: str, objective: str, blob: str) -> str:
         and not re.search(r"\[F\d+\]", line, re.I)
     ]
     for price in prices[:6]:
-        trimmed = _without_rejected_claim_words(price, blob) or _without_rejected_unit(price, blob) or price
-        if "£" not in trimmed:
+        if claim_mismatch(price, blob):
             continue
         chosen: list[str] = []
         steps = [None, *assumptions[:6]]
         for extra in steps:
             if extra:
                 chosen.append(extra)
-            candidate = "\n".join([trimmed, *chosen])
+            candidate = "\n".join([price, *chosen])
             if len(candidate) > 900 or 1 + len(chosen) > 8:
                 break
             if not section_rejection("pricing", candidate, blob, objective):
@@ -1127,104 +1037,35 @@ def _short_pricing(text: str, objective: str, blob: str) -> str:
     return ""
 
 
-def _without_rejected_claim_words(sentence: str, blob: str) -> str:
-    """Delete the words the page check named. Keep the rest of the model's sentence."""
-    from .deliverable import claim_mismatch
-
-    cleaned = sentence
-    for _ in range(4):
-        reason = claim_mismatch(cleaned, blob)
-        if not reason or "uses" not in reason.lower():
-            break
-        words = re.findall(r"'([^']+)'", reason)
-        if not words:
-            break
-        nxt = cleaned
-        for word in words:
-            nxt = re.sub(rf"\b{re.escape(word)}s?\b", "", nxt, flags=re.I)
-        nxt = re.sub(r"\s{2,}", " ", nxt)
-        nxt = re.sub(r"\s+([,.;:!?])", r"\1", nxt)
-        nxt = re.sub(r"\s+\b(?:and|or)\b(?=\s*[\[.,;]|$)", "", nxt, flags=re.I)
-        nxt = re.sub(r"\s{2,}", " ", nxt).strip(" ,;:-")
-        if "£" not in nxt or nxt == cleaned.strip(" ,;:-"):
-            return ""
-        cleaned = nxt if re.search(r"[.!?]$", nxt) else nxt + "."
-    if claim_mismatch(cleaned, blob) or cleaned == sentence:
-        return ""
-    return cleaned
-
-
-def _without_saving_clause(sentence: str) -> str:
-    """Delete an unsupported saving clause. Keep the model's other words."""
-    nxt = re.sub(
-        r"(?:,|\s+\band\b)?\s+\b(?:saving|savings|saves|saved|save)\b[^.,;]*",
-        "",
-        sentence or "",
-        flags=re.I,
-    )
-    nxt = re.sub(r"\s{2,}", " ", nxt)
-    nxt = re.sub(r"\s+([.!?])", r"\1", nxt).strip()
-    return nxt
-
-
-def _without_promise_clause(sentence: str) -> str:
-    """Delete a promise hung on the end of the model's sentence. Leave the rest."""
-    nxt = sentence or ""
-    nxt = re.sub(
-        r",?\s+\b(?:for\s+(?:a|an)\s+(?:free quote|free consultation|free home visit)|without(?:\s+the)?\s+upfront costs?|with(?:\s+no)?\s+upfront costs?|for free)\b",
-        "",
-        nxt,
-        flags=re.I,
-    )
-    nxt = re.sub(r"\b(?:in one day|same-day|same day)\b", "", nxt, flags=re.I)
-    nxt = re.sub(r"\s{2,}", " ", nxt)
-    nxt = re.sub(r"\s+([.!?])", r"\1", nxt)
-    nxt = re.sub(r"\s+,", ",", nxt).strip(" ,;:-")
-    if nxt and nxt != (sentence or "").strip() and not re.search(r"[.!?]$", nxt):
-        nxt += "."
-    return nxt
-
-
 def _drop_failed_sentences(key: str, text: str, objective: str, blob: str) -> str:
-    """Delete a sentence the check rejects. Do not write a replacement."""
+    """Drop a sentence the check rejects. Do not cut a word out of the sentence."""
     from .deliverable import (
         _SHOUTED_HEADING,
         _invented_saving,
+        borrowed_service_name,
+        broken_sentence,
         claim_mismatch,
         narration_reason,
         unsupported_promise,
     )
 
-    body = _without_borrowed_phrases(key, text, objective, blob)
     kept = []
-    for sentence in _sentence_list(body):
+    for sentence in _sentence_list(text):
         stripped = sentence.strip()
         # A banner such as PAY ON COMPLETION can open a real £ sentence. Drop only a heading line.
         # The £ figure and the citation stay with the sentence.
         if "£" not in stripped and re.match(r"\s*" + _SHOUTED_HEADING.pattern, stripped):
             continue
+        if broken_sentence(stripped):
+            continue
+        if key in {"service", "offer and positioning", "advert", "call to action", "channels", "next steps"}:
+            if borrowed_service_name(stripped, objective, blob):
+                continue
         if claim_mismatch(stripped, blob):
-            trimmed = _without_rejected_claim_words(stripped, blob) or _without_rejected_unit(stripped, blob)
-            if trimmed:
-                kept.append(trimmed)
             continue
         if unsupported_promise(stripped, objective, blob):
-            if re.search(r"24/7|always ready", stripped, re.I):
-                continue
-            trimmed = _without_promise_clause(stripped)
-            from .deliverable import _ASK
-
-            if (
-                trimmed
-                and not unsupported_promise(trimmed, objective, blob)
-                and (len(trimmed.split()) >= 4 or _ASK.search(trimmed))
-            ):
-                kept.append(trimmed)
             continue
         if _invented_saving(stripped, blob):
-            trimmed = _without_saving_clause(stripped)
-            if trimmed and not _invented_saving(trimmed, blob) and len(trimmed.split()) >= 4:
-                kept.append(trimmed)
             continue
         if narration_reason(stripped):
             continue

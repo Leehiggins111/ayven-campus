@@ -1021,10 +1021,36 @@ def names_requester(body: str, objective: str) -> str:
     return ""
 
 
+def broken_sentence(text: str) -> str:
+    """A cut sentence is rejected. The model writes the whole sentence again."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
+        piece = re.sub(
+            r"^(?:headline|body|call to action|assumption|still open)\s*:\s*",
+            "",
+            sentence.strip(),
+            flags=re.I,
+        ).strip()
+        if not piece:
+            continue
+        if re.search(r"\bing\b", piece) or re.search(r"\s\.", piece):
+            return "The sentence is cut off. Write the whole sentence again."
+        if re.match(r"^(?:which|including)\b", piece, re.I):
+            return "The sentence is cut off. Write the whole sentence again."
+        if re.match(r"^offers\s+(?:a|an|the|your|full)\b", piece, re.I):
+            return "The sentence is cut off. Write the whole sentence again."
+        words = re.findall(r"[A-Za-z']+", piece)
+        if words and words[-1].lower() in {"can", "to", "for", "with", "the", "a", "an"}:
+            return "The sentence is cut off. Write the whole sentence again."
+    return ""
+
+
 def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -> str:
     """A readable reason this check failed. Empty when the section passes."""
     if not (raw or "").strip():
         return "The model returned nothing."
+    cut = broken_sentence(raw)
+    if cut:
+        return cut
     raw = _without_service_area(raw, objective)
     if not raw.strip():
         return "The section invents a service area. The request says not to."
@@ -2130,6 +2156,70 @@ def _offer_differs(body: str, objective: str) -> bool:
     return False
 
 
+_OWNER_AS_CUSTOMER = re.compile(
+    r"\b(?:existing kitchen|own kitchen|owner'?s kitchen|office space|in the office|own home)\b",
+    re.I,
+)
+_CUSTOMER_WIN = (
+    "register", "list", "post", "advertise", "contact", "call", "phone", "email",
+    "leaflet", "directory", "customer", "book", "invite", "promote", "launch",
+    "website", "facebook", "instagram", "google", "visit", "photograph",
+    "supplier", "park", "publish", "reach", "household",
+)
+_HEARD_BY = (
+    "post", "advertise", "register", "leaflet", "directory", "facebook",
+    "instagram", "call", "phone", "invite", "customer",
+)
+
+
+def _showroom_invented(body: str, objective: str) -> bool:
+    if not re.search(r"\bshowroom\b", body or "", re.I):
+        return False
+    return "showroom" not in (objective or "").lower()
+
+
+def _price_is_the_channel(body: str) -> bool:
+    """Listing a rental rate is not how a customer hears about the service."""
+    lowered = body or ""
+    if not re.search(r"\b(?:rental rate|weekly rate)\b|£", lowered, re.I):
+        return False
+    return not any(_has_word(lowered, word) for word in _HEARD_BY)
+
+
+def _wins_first_customers(body: str) -> bool:
+    lowered = body or ""
+    if any(_has_word(lowered, word) for word in _CUSTOMER_WIN):
+        return True
+    return bool(re.search(r"\benquir", lowered, re.I))
+
+
+def _cost_guide_url(url: str) -> bool:
+    """A publisher's cost guide is not a business that sells the service."""
+    return bool(re.search(r"/(?:guides?|costs|cost-guides)/", url or "", re.I))
+
+
+def _competitor_source_gap(body: str, blob: str) -> str:
+    """A cost guide is not a competitor. A business page's £ belongs in the comparison."""
+    business_amounts: list[str] = []
+    cited_guide = False
+    for url, text in _pages_in_blob(blob):
+        if not url:
+            continue
+        if _cost_guide_url(url):
+            if _names_opened_page(body, url):
+                cited_guide = True
+            continue
+        business_amounts.extend(_pound_amounts(text))
+    if cited_guide:
+        return (
+            "A cost guide is not a competitor. Name two businesses that sell the service, "
+            "and cite each business's £ figure."
+        )
+    if business_amounts and not any(_pound_supported(amount, body) for amount in business_amounts):
+        return "Cite the £ figure from the opened business page in the competitor comparison."
+    return ""
+
+
 def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
     """Missing elements. Empty when this section has the element it needs."""
     lowered = (body or "").lower()
@@ -2157,10 +2247,14 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
     elif key == "channels":
         if _shared_channel(body):
             return "The section uses the shared form. Name an action that fits this business."
+        if _showroom_invented(body, objective):
+            return "The request does not name a showroom. Name a channel this business can use."
         if re.search(r"three lines|headline\s*:|call to action\s*:", lowered):
             return "The section describes the advert format instead of a channel."
         if re.search(r"\bindustry reports?\b|\bonline platforms?\b", lowered):
             return "The section does not name a channel, a practical action, and a timeframe."
+        if _price_is_the_channel(body):
+            return "Name how a customer hears about the service. Listing a price is not the channel."
         named = [word for word in _CHANNELS if _has_word(lowered, word)]
         actions = [word for word in _OWNER_ACTIONS if _has_action(lowered, word) and word not in named]
         if not named:
@@ -2172,10 +2266,21 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
     elif key == "next steps":
         if _shared_steps(body):
             return "The section uses the shared form. Name an action that fits this business."
+        if _showroom_invented(body, objective):
+            return "The request does not name a showroom. Name a channel this business can use."
+        if _OWNER_AS_CUSTOMER.search(body or ""):
+            return "The next steps describe the owner as the customer. Name an action that wins the first customers."
         if "first practical action" in lowered or not any(_has_word(lowered, word) for word in _OWNER_ACTIONS):
             return "The next step repeats the service instead of an action the owner takes."
+        if not _wins_first_customers(body):
+            return "The next steps do not name an action that wins the first customers."
         if "first week" not in lowered or "first month" not in lowered:
             return "The next steps are not a prioritised plan. Name the action for the first week and the action for the first month."
+    elif key == "unresolved":
+        if re.search(r"\bwilling(?:ness)? to travel\b", lowered) and re.search(
+            r"\bwilling to travel\b", (objective or "").lower()
+        ):
+            return "That fact is already in the request. Name a gap the opened pages do not settle."
     elif key == "pricing":
         missing = _pricing_parts(body, objective)
         if missing:
@@ -2206,6 +2311,9 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         priced = _competitor_prices(body, blob)
         if priced:
             return priced
+        source_gap = _competitor_source_gap(body, blob)
+        if source_gap:
+            return source_gap
         if len(_competitor_names(body, blob)) < 2:
             return "The competitor section names fewer than two competitors and what each offers."
         if not _offer_differs(body, objective):
@@ -2424,6 +2532,22 @@ def publish_business_plan(objective: str, research: dict | None, model_text: str
     return draft
 
 
+def without_closing_line(body: str) -> str:
+    """The closing line belongs once, after the plan. It is not part of a section."""
+    kept = []
+    for line in (body or "").splitlines():
+        cleaned = re.sub(
+            r"\bNothing was sent\.?(?:\s+No purchase was made\.?)?",
+            "",
+            line,
+            flags=re.I,
+        )
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+        if cleaned:
+            kept.append(cleaned)
+    return "\n".join(kept).strip()
+
+
 def _format_sections(sections: dict[str, str], evidence: list[dict]) -> str:
     lines = ["Business launch plan", ""]
     order = [key for key, _aliases in _HEADINGS if key in sections or key in _REQUIRED]
@@ -2436,10 +2560,9 @@ def _format_sections(sections: dict[str, str], evidence: list[dict]) -> str:
         if key == "call to action":
             title = "Call to action"
         lines.append(title)
-        body = (sections.get(key) or "").strip()
+        body = without_closing_line(sections.get(key) or "")
         if body:
             lines.append(body)
         lines.append("")
-    if "nothing was sent" not in "\n".join(lines).lower():
-        lines.append("Nothing was sent. No purchase was made.")
+    lines.append("Nothing was sent.")
     return "\n".join(lines).strip() + "\n"

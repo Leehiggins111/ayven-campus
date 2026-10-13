@@ -742,13 +742,6 @@ class Programme:
         findings = render_parent(facts, self.audits, decision, completion)
         if self.task_class == "business_research" and drafts and (drafts[0] or "").strip():
             body = drafts[0].strip()
-            table_facts = self.research.get("fact_table") or []
-            if table_facts and not body.startswith("Facts:"):
-                index = ["Facts:"]
-                for fact in table_facts:
-                    quote = re.sub(r"\s+", " ", fact.get("quote") or "")
-                    index.append(f"[{fact.get('id')}] {fact.get('source') or ''} {fact.get('quantity') or 'none'} {quote}"[:400])
-                body = "\n".join(index) + "\n\n" + body
             findings = body if body.endswith("\n") else body + "\n"
         verification = verify(self.objective, self.task_class, all_claims, self.research)
         quality = quality_score(self.task_class, all_claims, self.research, verification, "ACCEPT", self.quote)
@@ -795,6 +788,16 @@ class Programme:
             "failures": self.research.get("failures") or [],
             "research_budget": self.research.get("budget") or {},
             "research_gaps": self.research.get("gaps") or [],
+            "fact_table": [
+                {
+                    "id": fact.get("id") or "",
+                    "source": fact.get("source") or "",
+                    "quantity": fact.get("quantity") or "",
+                    "quote": (fact.get("quote") or "")[:400],
+                }
+                for fact in (self.research.get("fact_table") or [])
+                if isinstance(fact, dict)
+            ],
             "supervisor_decisions": [{k: audit[k] for k in ("focus", "decision", "advisory")} for audit in self.audits],
             "manager_decision": decision,
             "resolution": self.resolution,
@@ -1544,14 +1547,14 @@ def _section_jobs(objective: str) -> tuple:
         ("target customer", "Target customer", "Write one sentence. Name the customer." + shared, "The customer is "),
         ("problem", "Problem", "Write one or two sentences. Name the problem." + shared, "The problem is "),
         ("offer and positioning", "Offer and positioning", "Write two or three sentences. Name the offer. Name what the package includes, what it leaves out, and what the visit measures. Say how it differs. Do not write only that the offer is a package covering the parts. Do not invent a price. Do not use a business name that appears only on an opened page." + own, ""),
-        ("competitor and market research", "Competitor and market research", "Write two or three sentences. Name two UK businesses from the fact table. name one opened page for each business. Paraphrase what each offers. Put [F#] in the same sentence as the £ figure. Keep the quantity and the unit. If the fact states pay on completion, plus vat, week (minimum), or what the price excludes, copy those words into the same sentence. Do not copy a run of the page's words. Then say how this service differs from those two, using differs, unlike, or instead. Do not paste a page title or an opened-sources dump. Do not start a line with a heading from the page. A market report or a how-to guide is not a competitor. Do not invent a name." + own, ""),
+        ("competitor and market research", "Competitor and market research", "Write two or three sentences. Name two UK businesses from the fact table that sell the service. name one opened page for each business. Paraphrase what each offers. Put [F#] in the same sentence as the £ figure. Cite each business's own £ figure. A cost guide is not a competitor. Keep the quantity and the unit. If the fact states pay on completion, plus vat, week (minimum), or what the price excludes, copy those words into the same sentence. Do not copy a run of the page's words. Then say how this service differs from those two, using differs, unlike, or instead. Do not paste a page title or an opened-sources dump. Do not start a line with a heading from the page. A market report or a how-to guide is not a competitor. Do not invent a name." + own, ""),
         ("pricing", "Pricing", "Write one line for each market reference. Do not start with the request. The first line cites one fact whose quantity is a £ figure. Copy that quantity, its unit, and its [F#]. If the fact states pay on completion, plus vat, week (minimum), or what the price excludes, copy those words into the same sentence. If the fact does not give the size, the material, or the unit, say so in that sentence. Do not paste a page title. Then start each remaining line with Assumption. An Assumption line states how the measured inputs become a price, has no [F#], and has no £ figure. Use a unit only when a fact states that unit. When no fact states a £ figure for a part, write not stated. Do not invent a £ figure." + measure_line + " Parts: " + labeled + "." + own, ""),
-        ("channels", "Channels", "Write one sentence for this business. Name the channel. The channel is where a customer hears about the service, not the place the work is done. Use one of these places in the sentence: showroom, Facebook, Instagram, directory, leaflet, website, workshop, or Google. Name the action the owner takes there, and say first week or first month. The action has to fit this service, so the same sentence would not fit a different trade. Do not say online platforms, industry reports, conduct market research, or asks for a reply. Do not name a competitor's business as the channel. Do not name the person who wrote the request. Do not mention hours." + own, ""),
+        ("channels", "Channels", "Write one sentence for this business. Name the channel. The channel is where a customer hears about the service, not the place the work is done. Use one of these places in the sentence: Facebook, Instagram, directory, leaflet, website, workshop, or Google. Do not name a showroom unless the request names one. Name the action the owner takes there, and say first week or first month. Listing a price is not the channel. The action has to fit this service, so the same sentence would not fit a different trade. Do not say online platforms, industry reports, conduct market research, or asks for a reply. Do not name a competitor's business as the channel. Do not name the person who wrote the request. Do not mention hours." + own, ""),
         ("advert", "Advert", "Write exactly three lines and stop.\nHeadline:\nBody:\nCall to action:\nThe headline is a complete phrase under 10 words. Do not start the headline with Ask about.\nThe call to action asks the customer to get in touch. Do not promise a free quote.\nDo not use a business name that appears only on an opened page.\n" + own, ""),
         ("call to action", "Call to action", "Write one sentence. Ask the reader to get in touch. Do not name the person who wrote the request. Do not use a business name that appears only on an opened page." + own, "Ask "),
-        ("next steps", "Next steps", "Write two sentences for this business. Name the owner's next action. In the first week, name one practical action and the place the owner does it. In the first month, name the next action. The actions have to fit this service, so the same sentences would not fit a different trade. Do not say conduct market research. Do not name a service area. Do not name a competitor's business as the place the owner goes. Do not name the person who wrote the request." + own, ""),
+        ("next steps", "Next steps", "Write two sentences for this business. Name the owner's next action. These are actions the owner takes to launch the business and win the first customers. Do not describe the owner buying or receiving the service. Do not install the work in the owner's own home or office. In the first week, name one practical action and the place the owner does it. In the first month, name the next action. The actions have to fit this service, so the same sentences would not fit a different trade. Do not say conduct market research. Do not name a service area. Do not name a competitor's business as the place the owner goes. Do not name the person who wrote the request." + own, ""),
         ("assumptions", "Assumptions", "Write one sentence. Name one assumption." + shared, "The plan assumes "),
-        ("unresolved", "Unresolved", "Write one sentence. Name one open fact." + shared, "Still open: "),
+        ("unresolved", "Unresolved", "Write one sentence. Name one open fact. Name a gap the opened pages do not settle. Do not repeat a fact the request already states." + shared, "Still open: "),
     )
 
 
@@ -1623,6 +1626,20 @@ def _check_for_model(reason: str) -> str:
     lowered = text.lower()
     if "24/7" in lowered or "always ready" in lowered or "availability" in lowered:
         return "The previous line was an availability claim. That claim is not stored."
+    if "cut off" in lowered:
+        return "Write the whole sentence again. Do not leave a fragment."
+    if "showroom" in lowered:
+        return "The request does not name a showroom. Name a channel this business can use: Facebook, a directory, a leaflet, a website, or a workshop."
+    if "cost guide" in lowered:
+        return "A cost guide is not a competitor. Name two businesses that sell the service, and cite each business's £ figure."
+    if "opened business page" in lowered:
+        return "Cite the £ figure from the opened business page in the competitor comparison. A cost guide is not a competitor."
+    if "already in the request" in lowered:
+        return "That fact is already in the request. Name a gap the opened pages do not settle."
+    if "as the customer" in lowered or "first customers" in lowered:
+        return "Name an action the owner takes to launch the business and win the first customers. Do not describe the owner buying or receiving the service."
+    if "listing a price" in lowered:
+        return "Name how a customer hears about the service. Listing a price is not the channel."
     if "comes from an opened page" in lowered:
         return "Do not use that business name. It is on an opened page. Write the sentence with the request's own words."
     if "the claim uses" in lowered:
@@ -1647,9 +1664,9 @@ def _check_for_model(reason: str) -> str:
         return "Name the action the owner takes on that channel. Say first week or first month."
     if "does not name a channel" in lowered or "timeframe" in lowered:
         return (
-            "Name where a customer hears about the service: a showroom, Facebook, a directory, "
+            "Name where a customer hears about the service: Facebook, a directory, "
             "a leaflet, a website, or a workshop. Name the action and say first week or first month. "
-            "Do not name a competitor."
+            "Do not name a showroom unless the request names one. Do not name a competitor."
         )
     if "one source" in lowered or "which opened page" in lowered:
         return "Put each £ figure in its own sentence with that figure's own opened page and [F#]. One claim, one source."
@@ -1840,12 +1857,6 @@ def _prepare_cited(programme: Programme, text: str) -> str:
 
 
 _PRICE_SECTIONS = {"pricing", "competitor and market research"}
-_UNCITED_POUND = re.compile(
-    r"(?:,\s*)?(?:\b(?:starting\s+from|priced\s+at|from|at|for|of)\s+)?"
-    r"£\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:-|–|to)\s*£?\s*\d[\d,]*(?:\.\d+)?)?"
-    r"(?:\s+plus\s+vat)?(?:\s*/\s*[a-z]+|\s+per\s+[a-z]+)?",
-    re.I,
-)
 
 
 def _citation_gap(reason: str) -> bool:
@@ -1867,25 +1878,22 @@ def _citation_gap(reason: str) -> bool:
     return any(gap in lowered for gap in gaps)
 
 
-def _delete_uncited_pound(text: str) -> str:
-    """Delete an uncited £ clause. Keep the rest of the model's sentence."""
+def _sentences_without_uncited_price(text: str) -> str:
+    """Sentences that do not carry an uncited £. Used to name the next check, not to store a cut line."""
     kept = []
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
         sentence = sentence.strip()
         if not sentence:
             continue
-        if "£" not in sentence or re.search(r"\[F\d+\]", sentence, re.I):
-            kept.append(sentence)
+        if "£" in sentence and not re.search(r"\[F\d+\]", sentence, re.I):
             continue
-        stripped = _UNCITED_POUND.sub("", sentence)
-        stripped = re.sub(r"\s{2,}", " ", stripped)
-        stripped = re.sub(r"\s+([,.;:!?])", r"\1", stripped)
-        stripped = re.sub(r"\(\s*\)", "", stripped)
-        stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,;:-")
-        if "£" in stripped or len(stripped.split()) < 4:
-            continue
-        kept.append(stripped)
+        kept.append(sentence)
     return "\n".join(kept).strip()
+
+
+def _delete_uncited_pound(text: str) -> str:
+    """Drop a sentence that states an uncited £. Do not cut the £ out of the sentence."""
+    return _sentences_without_uncited_price(text)
 
 
 def _cite_and_repair(programme: Programme, key: str, text: str, blob: str, raw: str = "") -> str:
@@ -1971,6 +1979,7 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
                 or "does not ask the customer" in raw_reason.lower()
                 or "complete phrase" in raw_reason.lower()
                 or "fragment" in raw_reason.lower()
+                or "cut off" in raw_reason.lower()
             ):
                 reason = raw_reason
             elif (
@@ -1979,27 +1988,27 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
                 and "£" not in (written or "")
                 and not re.search(r"\[F\d+\]", raw or "", re.I)
             ):
-                # A price section still has to cite the figure. Any other section keeps the
-                # model's sentence once the uncited £ is deleted, and the retry hears the
-                # check that still fails.
+                # An uncited £ drops the whole sentence. The retry hears the check that remains.
                 if key in _PRICE_SECTIONS and _citation_gap(raw_reason):
                     reason = "The £ line had no [F#], so it was not stored. Cite that fact as [F#] and keep the quantity and the unit."
                 elif key in _PRICE_SECTIONS:
                     reason = raw_reason or reason
                 else:
-                    remainder_source = _section_body(_delete_uncited_pound(raw or ""), key, programme.objective)
-                    remainder = _cite_and_repair(programme, key, remainder_source, blob, remainder_source) if remainder_source else ""
-                    if remainder and not _section_missing(key, remainder, blob, programme.objective):
-                        written = remainder
-                        reason = ""
+                    other_source = _sentences_without_uncited_price(raw or "")
+                    other = ""
+                    if other_source:
+                        other = _section_drop_reason(
+                            key,
+                            _section_body(other_source, key, programme.objective),
+                            blob,
+                            programme.objective,
+                        )
+                    if other and not _citation_gap(other):
+                        reason = other
+                    elif raw_reason and not _citation_gap(raw_reason):
+                        reason = raw_reason
                     else:
-                        after = _section_drop_reason(key, remainder or remainder_source, blob, programme.objective) if (remainder or remainder_source) else ""
-                        if after and not _citation_gap(after):
-                            reason = after
-                        elif raw_reason and not _citation_gap(raw_reason):
-                            reason = raw_reason
-                        else:
-                            reason = after or raw_reason or reason
+                        reason = "The £ line had no [F#], so it was not stored. Cite that fact as [F#] and keep the quantity and the unit."
             if (
                 reason
                 and raw_reason
@@ -2025,10 +2034,12 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
 
 
 def _assemble_plan(sections: dict, objective: str = "") -> str:
+    from .deliverable import without_closing_line
+
     lines = ["Business launch plan", ""]
     for key, title, _instruction, _prefill in _section_jobs(objective):
         lines.append(title)
-        body = (sections.get(key) or "").strip()
+        body = without_closing_line(sections.get(key) or "")
         if body:
             lines.append(body)
         lines.append("")
