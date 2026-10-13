@@ -98,16 +98,32 @@ def _rows(sql: str, args=()):
 @app.get("/health")
 def health():
     from .models import DEFAULT_MODELS, escalation_configured, local_configured
+    from .durable import enabled as durable_enabled
+
+    # One durability answer: the job runner and the database must both be durable.
+    try:
+        runtime_durable = durable_enabled()
+    except RuntimeError:
+        runtime_durable = False
+    storage = persistence_report()
+    durability = {
+        **storage,
+        "durable": bool(storage["durable"] and runtime_durable),
+        "durable_runtime": runtime_durable,
+        "durable_storage": bool(storage["durable"]),
+    }
+    if not durability["durable"]:
+        durability["persistence_state"] = "not_durable"
     return {
         "ok": True,
         "service": "ayven-api",
         "version": __version__,
         "validation_status": VALIDATION_STATUS,
         "gpu_validated": False,
-        "runtime": "durable" if os.environ.get("AYVEN_DURABLE") == "1" else "ephemeral",
+        "runtime": "durable" if runtime_durable else "thread_stub",
         "access_protected": protected(),
         "research_mode": os.environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
-        **persistence_report(),
+        **durability,
         "model_mode": "fixture" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" and not local_configured() else "configured",
         "simulated": os.environ.get("AYVEN_LLM_STUB", "1") != "0",
         "label": "SIMULATED" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" else "LIVE",

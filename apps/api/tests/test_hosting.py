@@ -90,6 +90,25 @@ def test_health_reports_local_sqlite_as_not_durable():
     assert body["persistence"] == "local_sqlite"
 
 
+
+def test_health_runtime_and_durable_flag_agree(monkeypatch):
+    monkeypatch.delenv("AYVEN_DURABLE", raising=False)
+    monkeypatch.delenv("AYVEN_THREAD_STUB", raising=False)
+    body = TestClient(app).get("/health").json()
+    # Durable mode is the only runner, whatever AYVEN_DURABLE says.
+    assert body["runtime"] == "durable"
+    assert body["durable_runtime"] is True
+    assert body["durable_storage"] is False
+    assert body["durable"] is False
+    assert body["persistence_state"] == "not_durable"
+    monkeypatch.setenv("AYVEN_ENV", "local")
+    monkeypatch.setenv("AYVEN_THREAD_STUB", "1")
+    stub = TestClient(app).get("/health").json()
+    assert stub["runtime"] == "thread_stub"
+    assert stub["durable_runtime"] is False
+    assert stub["durable"] is False
+    assert stub["persistence_state"] == "not_durable"
+
 def _sqld_binary() -> str:
     candidates = [
         os.environ.get("AYVEN_SQLD", ""),
