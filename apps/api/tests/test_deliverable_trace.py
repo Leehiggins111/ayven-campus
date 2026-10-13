@@ -2543,6 +2543,15 @@ def test_an_invented_offer_title_does_not_drop_the_package():
     assert section_rejection("offer and positioning", kept, "", objective) == ""
 
 
+def test_a_unit_retry_names_the_page_unit():
+    from app.intelligence.execution import _check_for_model
+
+    reason = "The claim gives the unit 'per day', and the opened page states 'per week'."
+    retry = _check_for_model(reason)
+    assert "per week" in retry
+    assert "per day" not in retry
+
+
 def test_an_upfront_cost_clause_is_deleted_and_the_advert_stays():
     from app.intelligence.deliverable import section_rejection
     from app.intelligence.facts import repair_before_gate
@@ -2834,6 +2843,22 @@ def test_next_steps_win_customers_and_a_price_is_not_the_channel():
         "In the first month the owner partners with a nearby office to offer a trial."
     )
     assert section_rejection("next steps", launch, "", "The service is coffee machine rental.") == ""
+    listed = "On the website, the owner lists the service for first week rental of a commercial coffee machine."
+    assert "listing a price" in section_rejection(
+        "channels", listed, "", "The service is coffee machine rental.",
+    ).lower()
+    free = (
+        "In the first week, the owner will set up a rental display at a local business expo. "
+        "In the first month, the owner will reach out to small office managers to offer a free trial week."
+    )
+    assert "free trial" in section_rejection(
+        "next steps", free, "", "The service is coffee machine rental.",
+    ).lower()
+    rental = (
+        "The service offers a rental package for commercial coffee machines, "
+        "allowing businesses to use the equipment without the upfront cost of purchase."
+    )
+    assert section_rejection("service", rental, "", "A coffee machine rental company.") == ""
     assert borrowed_service_name(
         "The owner lists the service on the website and explains the first week rental cost.",
         "The service is coffee machine rental.",

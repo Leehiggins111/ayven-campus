@@ -988,6 +988,7 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
 _UNSUPPORTED_PROMISES = (
     "free consultation", "free quote", "free home visit", "free home",
     "in one day", "same day", "same-day", "guaranteed", "upfront cost",
+    "free trial",
 )
 
 
@@ -1001,6 +1002,10 @@ def unsupported_promise(body: str, objective: str, blob: str) -> str:
             continue
         for phrase in _UNSUPPORTED_PROMISES:
             if phrase not in lowered or phrase in objective_l:
+                continue
+            if phrase == "upfront cost" and re.search(
+                r"without the upfront cost of (?:purchase|buying)\b", lowered
+            ):
                 continue
             if blob_l and phrase in blob_l and re.search(r"\[F\d+\]", sentence):
                 continue
@@ -2198,7 +2203,11 @@ def _showroom_invented(body: str, objective: str) -> bool:
 def _price_is_the_channel(body: str) -> bool:
     """Listing a rental rate is not how a customer hears about the service."""
     lowered = body or ""
-    if not re.search(r"\b(?:rental rate|weekly rate)\b|£", lowered, re.I):
+    if not re.search(
+        r"\b(?:rental rate|weekly rate|first week rental|rental of a)\b|£",
+        lowered,
+        re.I,
+    ):
         return False
     return not any(_has_word(lowered, word) for word in _HEARD_BY)
 
