@@ -87,14 +87,15 @@ def test_a_review_that_never_parses_records_a_blocker_and_escalates():
     assert blockers
     assert "delivery-review" in blockers[0]["reason"]
     assert "escalat" in blockers[0]["reason"].lower()
+    # The reviewer never produced a verdict, so this is a failed step, not a decision for Lee.
+    # The exact error is the blocker, and no approval is created for unreviewed work.
+    assert "malformed_review" in blockers[0]["reason"]
     approvals = conn.execute(
         "SELECT summary, status FROM approvals WHERE project_id=?",
         ("review-job",),
     ).fetchall()
     conn.close()
-    assert approvals
-    assert approvals[0]["status"] == "pending"
-    assert "escalat" in approvals[0]["summary"].lower()
+    assert approvals == []
 
 
 def test_review_rejects_missing_duplicate_and_invented_items():
