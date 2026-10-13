@@ -2487,10 +2487,10 @@ def test_an_invented_offer_title_does_not_drop_the_package():
         "The visit measures the existing space to custom-fit the new elements, differing from a full kitchen renovation by focusing solely on surface updates."
     )
     kept = enforce_citations(text, [], objective)
-    assert "Kitchen Revival" not in kept
-    assert "leaving out structural" not in kept
-    assert "The visit measures" in kept
-    assert section_rejection("offer and positioning", kept, "", objective)
+    assert "Kitchen Revival" in kept
+    assert "doors" in kept and "worktops" in kept and "handles" in kept
+    assert "for including" not in kept.lower()
+    assert section_rejection("offer and positioning", kept, "", objective) == ""
 
 
 def test_an_upfront_cost_clause_is_deleted_and_the_advert_stays():
@@ -2686,6 +2686,8 @@ def test_a_cut_sentence_is_rejected_whole():
     assert "offers a full kitchen transformation" not in dropped or "Refresh Your Kitchen offers" in dropped
     intact = "The owner posts on the website and asks the customer to get in touch."
     assert enforce_citations(intact, [], DOOR) == intact
+    assert broken_sentence("Machines range from £1,000 to £12,000.") == ""
+    assert "cut off" in broken_sentence("Contact us today to see how we can .")
 
 
 def test_the_plan_closes_once_and_leaves_the_fact_table_out():
@@ -2748,7 +2750,7 @@ def test_a_showroom_a_guide_and_a_known_fact_are_rejected():
 
 
 def test_next_steps_win_customers_and_a_price_is_not_the_channel():
-    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.deliverable import borrowed_service_name, section_rejection
 
     office = (
         "In the first week the owner will set up the machine in the office space. "
@@ -2777,6 +2779,16 @@ def test_next_steps_win_customers_and_a_price_is_not_the_channel():
     assert "listing a price" not in section_rejection(
         "channels", heard, "", "The service is coffee machine rental.",
     ).lower()
+    launch = (
+        "In the first week the owner sets up a station at a local co-working space to attract early users. "
+        "In the first month the owner partners with a nearby office to offer a trial."
+    )
+    assert section_rejection("next steps", launch, "", "The service is coffee machine rental.") == ""
+    assert borrowed_service_name(
+        "The owner lists the service on the website and explains the first week rental cost.",
+        "The service is coffee machine rental.",
+        "Commercial Coffee Machine Rental Cost UK. The Rental Cost starts at £19.",
+    ) == ""
 
 
 def test_the_same_price_on_one_host_is_one_fact():

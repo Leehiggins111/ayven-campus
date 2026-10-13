@@ -601,7 +601,9 @@ def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> st
         if _promise_blocked(sentence, objective, cited):
             continue
         named = _foreign_names(sentence, objective, table)
-        factual = _has_number(sentence) or bool(named) or ("%" in sentence)
+        # A capitalised offer title is not cut out. A page name is dropped later, whole.
+        # An uncited number or percent drops the whole sentence.
+        factual = _has_number(sentence) or ("%" in sentence)
         if not factual:
             kept.append(sentence)
             continue

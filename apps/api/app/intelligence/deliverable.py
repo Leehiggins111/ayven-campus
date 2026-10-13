@@ -925,6 +925,7 @@ _NOT_A_BORROWED_NAME = {
     "business", "businesses", "company", "service", "services",
     "coffee", "machine", "machines", "commercial", "premium",
     "rental", "solution", "solutions", "weekly", "flexible",
+    "cost", "costs", "price", "prices", "rate", "rates",
 }
 
 
@@ -1038,8 +1039,8 @@ def broken_sentence(text: str) -> str:
             return "The sentence is cut off. Write the whole sentence again."
         if re.match(r"^offers\s+(?:a|an|the|your|full)\b", piece, re.I):
             return "The sentence is cut off. Write the whole sentence again."
-        words = re.findall(r"[A-Za-z']+", piece)
-        if words and words[-1].lower() in {"can", "to", "for", "with", "the", "a", "an"}:
+        tokens = re.findall(r"[A-Za-z0-9']+", piece)
+        if tokens and tokens[-1].lower() in {"can", "to", "for", "with", "the", "a", "an"}:
             return "The sentence is cut off. Write the whole sentence again."
     return ""
 
@@ -2165,6 +2166,7 @@ _CUSTOMER_WIN = (
     "leaflet", "directory", "customer", "book", "invite", "promote", "launch",
     "website", "facebook", "instagram", "google", "visit", "photograph",
     "supplier", "park", "publish", "reach", "household",
+    "partner", "trial", "user", "client", "fair", "booth",
 )
 _HEARD_BY = (
     "post", "advertise", "register", "leaflet", "directory", "facebook",
