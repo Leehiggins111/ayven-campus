@@ -2582,3 +2582,64 @@ def test_a_wrong_unit_is_deleted_and_the_figure_stays():
     assert "31.00" in kept
     assert "per week" not in kept.lower()
     assert claim_mismatch(kept, blob) == ""
+
+
+def test_an_uncited_pound_keeps_the_package_without_a_dangling_for():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import enforce_citations, repair_before_gate
+
+    text = (
+        "Refresh Your Kitchen offers a full kitchen transformation in one day for £950, "
+        "including new doors, worktops, and handles, while leaving out structural changes. "
+        "The visit measures the existing kitchen layout."
+    )
+    facts = [{
+        "id": "F1",
+        "entity": "Refresh Kitchen",
+        "source": "https://refreshkitchen.co.uk/",
+        "quote": "transform your kitchen in one day for only £950",
+    }]
+    blob = "https://refreshkitchen.co.uk/\nRefresh Your Kitchen can transform your kitchen in one day for only £950.\n"
+    kept = enforce_citations(text, facts, DOOR)
+    assert "950" not in kept
+    assert "in one day" not in kept.lower()
+    assert "for including" not in kept.lower()
+    assert "doors" in kept and "worktops" in kept and "handles" in kept
+    stored = repair_before_gate("offer and positioning", kept, facts, DOOR, blob)
+    assert "Refresh Your Kitchen" not in stored
+    assert "for including" not in stored.lower()
+    assert section_rejection("offer and positioning", stored, blob, DOOR) == ""
+
+
+def test_a_long_kitchen_price_keeps_the_measurement_line():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import repair_before_gate
+
+    blob = (
+        "https://refreshkitchen.co.uk/\n"
+        "PAY ON COMPLETION Refresh Your Kitchen can transform your kitchen in one day for only £950.\n"
+    )
+    facts = [{
+        "id": "F1",
+        "entity": "Refresh Kitchen",
+        "source": "https://refreshkitchen.co.uk/",
+        "quote": "PAY ON COMPLETION Refresh Your Kitchen can transform your kitchen in one day for only £950.",
+    }]
+    lines = [
+        "£950 for a full kitchen transformation in one day, PAY ON COMPLETION, includes all work and materials [F1].",
+        "Assumption: The price is based on a kitchen refresh including doors, worktops, and handles.",
+        "Assumption: Kitchen size, door count, door size, worktop length, worktop material, and handle count still need to be measured.",
+    ]
+    for index in range(8):
+        lines.append(
+            f"Assumption: The cost for replacing doors and worktops is not stated in note {index} of this long worksheet."
+        )
+    kept = repair_before_gate("pricing", "\n".join(lines), facts, DOOR, blob)
+    price = kept.split("Assumption", 1)[0].lower()
+    assert "full" not in price and "transformation" not in price
+    assert "950" in kept
+    assert "kitchen size" in kept.lower()
+    assert "door count" in kept.lower()
+    assert "note 0" not in kept
+    assert len([line for line in kept.splitlines() if line.strip()]) <= 4
+    assert section_rejection("pricing", kept, blob, DOOR) == ""

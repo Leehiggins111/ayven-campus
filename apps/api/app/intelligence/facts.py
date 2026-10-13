@@ -582,11 +582,15 @@ def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> st
             trimmed = _without_promise_clause(sentence)
             from .deliverable import _ASK
 
+            day_only = bool(re.search(r"\b(?:in one day|same-day|same day)\b", sentence, re.I)) and not re.search(
+                r"free quote|free consultation|upfront cost|for free", sentence, re.I
+            )
+            long_enough = len(trimmed.split()) >= (8 if day_only else 4) or _ASK.search(trimmed)
             if (
                 trimmed
                 and trimmed != sentence
                 and not _promise_blocked(trimmed, objective, cited)
-                and (len(trimmed.split()) >= 4 or _ASK.search(trimmed))
+                and long_enough
             ):
                 sentence = trimmed
                 cited = _cited(sentence, table)
@@ -599,8 +603,33 @@ def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> st
             continue
         if not cited:
             # A count is not a market figure. Drop the digits and keep the action.
-            # An invented title is deleted. The rest of the model's sentence stays.
-            if _MONEY.search(sentence) or re.search(r"%", sentence):
+            # An invented title or an uncited £ is deleted. The rest of the model's sentence stays.
+            if re.search(r"%", sentence):
+                stripped = _without_saving_clause(sentence)
+                if "%" not in stripped and not _MONEY.search(stripped) and len(stripped.split()) >= 4:
+                    kept.append(stripped if re.search(r"[.!?]$", stripped) else stripped + ".")
+                continue
+            if _MONEY.search(sentence):
+                stripped = re.sub(
+                    r"£\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:-|–|to)\s*£?\s*\d[\d,]*(?:\.\d+)?)?",
+                    "",
+                    sentence,
+                )
+                for name in sorted(named, key=len, reverse=True):
+                    stripped = re.sub(rf"\b{re.escape(name)}\b", "", stripped)
+                # Deleting the £ must not leave "for including".
+                stripped = re.sub(
+                    r"\b(?:for|at|from)\s+(?:only\s+)?(?=including\b|[,.;:!?])",
+                    "",
+                    stripped,
+                    flags=re.I,
+                )
+                stripped = re.sub(r"\s{2,}", " ", stripped)
+                stripped = re.sub(r"\s+([,.;:!?])", r"\1", stripped).strip(" ,;:-")
+                if stripped and not re.search(r"[.!?]$", stripped):
+                    stripped += "."
+                if len(stripped.split()) >= 4 and not _MONEY.search(stripped):
+                    kept.append(stripped)
                 continue
             if named:
                 stripped = sentence
@@ -1068,19 +1097,33 @@ def _without_rejected_unit(sentence: str, blob: str) -> str:
 
 
 def _short_pricing(text: str, objective: str, blob: str) -> str:
-    """Keep the model's first £ line and first Assumption line when the list is too long."""
+    """Keep the model's £ line and the assumption lines that still pass, when the list is too long."""
     from .deliverable import section_rejection
 
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if len(lines) <= 8 and len(text or "") <= 900:
         return ""
     prices = [line for line in lines if "£" in line]
-    assumptions = [line for line in lines if re.search(r"\bassumption\b", line, re.I) and "£" not in line]
-    assumption = assumptions[0] if assumptions else ""
+    assumptions = [
+        line for line in lines
+        if re.search(r"\bassumption\b", line, re.I)
+        and "£" not in line
+        and not re.search(r"\[F\d+\]", line, re.I)
+    ]
     for price in prices[:6]:
-        candidate = "\n".join(part for part in (price, assumption) if part)
-        if candidate and not section_rejection("pricing", candidate, blob, objective):
-            return candidate
+        trimmed = _without_rejected_claim_words(price, blob) or _without_rejected_unit(price, blob) or price
+        if "£" not in trimmed:
+            continue
+        chosen: list[str] = []
+        steps = [None, *assumptions[:6]]
+        for extra in steps:
+            if extra:
+                chosen.append(extra)
+            candidate = "\n".join([trimmed, *chosen])
+            if len(candidate) > 900 or 1 + len(chosen) > 8:
+                break
+            if not section_rejection("pricing", candidate, blob, objective):
+                return candidate
     return ""
 
 
@@ -1113,7 +1156,12 @@ def _without_rejected_claim_words(sentence: str, blob: str) -> str:
 
 def _without_saving_clause(sentence: str) -> str:
     """Delete an unsupported saving clause. Keep the model's other words."""
-    nxt = re.sub(r",?\s+\b(?:saving|savings|saves|saved)\b[^.,;]*", "", sentence or "", flags=re.I)
+    nxt = re.sub(
+        r"(?:,|\s+\band\b)?\s+\b(?:saving|savings|saves|saved|save)\b[^.,;]*",
+        "",
+        sentence or "",
+        flags=re.I,
+    )
     nxt = re.sub(r"\s{2,}", " ", nxt)
     nxt = re.sub(r"\s+([.!?])", r"\1", nxt).strip()
     return nxt
@@ -1128,6 +1176,7 @@ def _without_promise_clause(sentence: str) -> str:
         nxt,
         flags=re.I,
     )
+    nxt = re.sub(r"\b(?:in one day|same-day|same day)\b", "", nxt, flags=re.I)
     nxt = re.sub(r"\s{2,}", " ", nxt)
     nxt = re.sub(r"\s+([.!?])", r"\1", nxt)
     nxt = re.sub(r"\s+,", ",", nxt).strip(" ,;:-")
