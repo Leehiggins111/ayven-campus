@@ -273,3 +273,28 @@ def test_criteria_match_whole_tokens_only():
     update_package(parent, findings="Quotes £25. per visit.", workflow_state="COMPLETED")
     finalize_project(project)
     assert criteria_for(project) == [{"criterion": "Quotes £25 per visit", "status": "met"}]
+
+
+def test_short_figures_match_exactly_and_formats_are_normalised():
+    from app.goals import criteria_for, open_goal
+    from app.orchestrator import finalize_project
+
+    cases = [
+        ("Delivered within 3 days", "Delivered within 30 days.", "not_met"),
+        ("Delivered within 3 days", "Delivered within 3 days.", "met"),
+        ("Costs £5 per visit", "Costs £50 per visit.", "not_met"),
+        ("Fee is $2 per call", "Fee is $2.50 per call.", "not_met"),
+        ("Quotes £25 per visit", "Quotes £25.00 per visit.", "met"),
+        ("Covers 1,000 homes", "Covers 1000 homes.", "met"),
+        ("Covers 1000 homes", "Covers 1,000 homes.", "met"),
+    ]
+    for criterion, report, expected in cases:
+        project = _project(criterion)
+        open_goal(project, [criterion])
+        parent = insert_package(
+            project_id=project, task_id="figures", title="Research programme", objective=criterion,
+            origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="complete",
+        )
+        update_package(parent, findings=report, workflow_state="COMPLETED")
+        finalize_project(project)
+        assert criteria_for(project) == [{"criterion": criterion, "status": expected}], (criterion, report)

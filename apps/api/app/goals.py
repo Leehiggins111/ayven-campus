@@ -513,11 +513,28 @@ def _tokens(text: str) -> list[str]:
     import re
 
     words = re.findall(r"[a-z0-9£$][a-z0-9£$.,'-]*", (text or "").lower())
-    return [w.strip(".,'-") for w in words if w.strip(".,'-")]
+    return [_normalise_figure(w.strip(".,'-")) for w in words if w.strip(".,'-")]
+
+
+def _normalise_figure(token: str) -> str:
+    """'£25.00' is '£25', '1,000' is '1000', '2.50' is '2.5'. The currency sign is kept."""
+    import re
+
+    match = re.fullmatch(r"([£$]?)(\d[\d,]*)(?:\.(\d+))?", token)
+    if not match:
+        return token
+    sign, whole, fraction = match.groups()
+    whole = whole.replace(",", "").lstrip("0") or "0"
+    fraction = (fraction or "").rstrip("0")
+    return sign + whole + ("." + fraction if fraction else "")
 
 
 def _criterion_terms(criterion: str) -> list[str]:
-    return [w for w in _tokens(criterion) if len(w) >= 3 and w not in _CRITERIA_STOP]
+    # Figures are kept whatever their length: '3', '£5' and '$2' are checkable terms.
+    return [
+        w for w in _tokens(criterion)
+        if any(ch.isdigit() for ch in w) or (len(w) >= 3 and w not in _CRITERIA_STOP)
+    ]
 
 
 def evaluate_criteria(project_id: str, report: str) -> list[dict]:
