@@ -1835,6 +1835,55 @@ def _prepare_cited(programme: Programme, text: str) -> str:
     return enforce_citations(text or "", _ensure_facts(programme), programme.objective)
 
 
+_PRICE_SECTIONS = {"pricing", "competitor and market research"}
+_UNCITED_POUND = re.compile(
+    r"(?:,\s*)?(?:\b(?:starting\s+from|priced\s+at|from|at|for|of)\s+)?"
+    r"£\s*\d[\d,]*(?:\.\d+)?(?:\s*(?:-|–|to)\s*£?\s*\d[\d,]*(?:\.\d+)?)?"
+    r"(?:\s+plus\s+vat)?(?:\s*/\s*[a-z]+|\s+per\s+[a-z]+)?",
+    re.I,
+)
+
+
+def _citation_gap(reason: str) -> bool:
+    """True when the failure is only a missing citation."""
+    lowered = (reason or "").lower()
+    if not lowered:
+        return True
+    gaps = (
+        "had no [f#]",
+        "without a valid [f#]",
+        "does not cite a £",
+        "without naming the opened page",
+        "not on an opened page",
+        "not labelled as an assumption",
+        "the model returned nothing",
+        "sentence filter removed",
+        "did not pass the sentence check",
+    )
+    return any(gap in lowered for gap in gaps)
+
+
+def _delete_uncited_pound(text: str) -> str:
+    """Delete an uncited £ clause. Keep the rest of the model's sentence."""
+    kept = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if "£" not in sentence or re.search(r"\[F\d+\]", sentence, re.I):
+            kept.append(sentence)
+            continue
+        stripped = _UNCITED_POUND.sub("", sentence)
+        stripped = re.sub(r"\s{2,}", " ", stripped)
+        stripped = re.sub(r"\s+([,.;:!?])", r"\1", stripped)
+        stripped = re.sub(r"\(\s*\)", "", stripped)
+        stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,;:-")
+        if "£" in stripped or len(stripped.split()) < 4:
+            continue
+        kept.append(stripped)
+    return "\n".join(kept).strip()
+
+
 def _cite_and_repair(programme: Programme, key: str, text: str, blob: str, raw: str = "") -> str:
     """Cite facts, then name the page on a £ line. A 24/7 reply is left for the retry."""
     cited = _prepare_cited(programme, text)
@@ -1923,7 +1972,27 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
                 and "£" not in (written or "")
                 and not re.search(r"\[F\d+\]", raw or "", re.I)
             ):
-                reason = "The £ line had no [F#], so it was not stored. Cite that fact as [F#] and keep the quantity and the unit."
+                # A price section still has to cite the figure. Any other section keeps the
+                # model's sentence once the uncited £ is deleted, and the retry hears the
+                # check that still fails.
+                if key in _PRICE_SECTIONS and _citation_gap(raw_reason):
+                    reason = "The £ line had no [F#], so it was not stored. Cite that fact as [F#] and keep the quantity and the unit."
+                elif key in _PRICE_SECTIONS:
+                    reason = raw_reason or reason
+                else:
+                    remainder_source = _section_body(_delete_uncited_pound(raw or ""), key, programme.objective)
+                    remainder = _cite_and_repair(programme, key, remainder_source, blob, remainder_source) if remainder_source else ""
+                    if remainder and not _section_missing(key, remainder, blob, programme.objective):
+                        written = remainder
+                        reason = ""
+                    else:
+                        after = _section_drop_reason(key, remainder or remainder_source, blob, programme.objective) if (remainder or remainder_source) else ""
+                        if after and not _citation_gap(after):
+                            reason = after
+                        elif raw_reason and not _citation_gap(raw_reason):
+                            reason = raw_reason
+                        else:
+                            reason = after or raw_reason or reason
             meta = dict(meta or {})
             meta["reason"] = reason
             _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept", attempt=attempt)

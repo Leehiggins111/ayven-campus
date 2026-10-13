@@ -1,5 +1,6 @@
 """Each hop from the model reply to the screen keeps the plan and the program."""
 
+import re
 import uuid
 
 from fastapi.testclient import TestClient
@@ -2206,3 +2207,128 @@ def test_a_cut_draft_keeps_the_continuation():
     assert not joined.rstrip().endswith(" The")
     assert "Unresolved" in joined
     assert "The measured inputs set the price." in joined
+
+
+def _door_sections(**overrides):
+    from app.intelligence.deliverable import _REQUIRED
+
+    sections = {key: "" for key in _REQUIRED}
+    sections.update({
+        "service": "The service replaces worn kitchen doors, worktops and handles for households that want to avoid a full kitchen replacement.",
+        "target customer": "The customer is a household that wants worn kitchen doors, worktops and handles replaced.",
+        "problem": "A full kitchen replacement costs more and takes longer when the doors, worktops and handles are the worn parts.",
+        "offer and positioning": "The package replaces the kitchen doors, the worktops, and the handles. The visit measures the door count and the worktop length. It differs from a full kitchen replacement.",
+        "competitor and market research": "Kitchen Door Co (https://doors.example/replace) states a standard door is £10 to £40 [F1].\nRefresh Kit (refreshkit.co.uk) charges £950, and the page says pay on completion [F2].\nThis service differs by replacing kitchen doors, worktops and handles rather than a full replacement.",
+        "pricing": "https://doors.example/replace states kitchen doors are £10 to £40 [F1].\nhttps://refreshkit.co.uk/offer can transform your kitchen in one day for only £950, and the page states pay on completion [F2].\nAssumption: price each door from the opened per door figures, price the worktop from the measured length and material, and count the handles. Measure the kitchen size, the door count, the door size, the worktop length, the worktop material, and the handle count before a price is written.",
+        "channels": "Households are reached through local search in the first week, where the owner posts one finished kitchen and asks for a reply.",
+        "advert": "Headline: Fresh kitchen doors\nBody: The service replaces kitchen doors, worktops and handles and differs from a full replacement.\nCall to action: Ask for a visit.",
+        "call to action": "Ask for a visit and a written scope before any booking is made.",
+        "next steps": "In the first week the owner opens two supplier pages and writes down the prices they publish for doors, worktops and handles. In the first month the owner visits one kitchen and sets the price after measuring.",
+        "assumptions": "The plan assumes a visit still has to see the doors, worktops and handles before any figure is used.",
+        "unresolved": "Still open: the towns to visit for kitchen door replacement are not settled.",
+    })
+    sections.update(overrides)
+    return sections
+
+
+def _door_programme():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(objective=DOOR, parent_id="", research={"evidence": [{
+        "source_url": "https://doors.example/replace",
+        "source_title": "Kitchen Door Co",
+        "extracted_content": "Kitchen Door Co states kitchen doors are £10 to £40.",
+    }, {
+        "source_url": "https://refreshkit.co.uk/offer",
+        "source_title": "Refresh Kit",
+        "extracted_content": "Refresh Kit can transform your kitchen in one day for only £950, pay on completion.",
+    }]}), (
+        "https://doors.example/replace\nKitchen Door Co states kitchen doors are £10 to £40.\n"
+        "https://refreshkit.co.uk/offer\nRefresh Kit can transform your kitchen in one day for only £950, pay on completion."
+    )
+
+
+def test_an_uncited_channel_price_is_deleted_and_the_sentence_stays(monkeypatch):
+    from app.intelligence.execution import _fill_plan_sections
+
+    reply = "The owner lists the service on the website, offering a first week rental at £495 plus VAT."
+    seen = []
+
+    def fake(role, system, user, max_tokens=400, programme=None, package_id="", plain=False, prefill="", stop=None, expand_unfinished=True, ollama_format=None, plan=False):
+        seen.append(user)
+        return reply, 12, {"backend": "test", "finish_reason": "stop", "raw_response": reply}
+
+    monkeypatch.setattr("app.intelligence.execution._complete", fake)
+    programme, blob = _door_programme()
+    sections = _door_sections(channels="")
+    rejected = _fill_plan_sections(programme, sections, blob)
+    stored = sections["channels"]
+    assert rejected == {}
+    assert "£" not in stored
+    assert "495" not in stored
+    assert "website" in stored
+    assert "lists" in stored
+    assert "first week" in stored
+    assert "had no [F#]" not in " ".join(seen)
+    model_words = set(re.findall(r"[a-z0-9']+", reply.lower()))
+    for word in re.findall(r"[a-z0-9']+", stored.lower()):
+        assert word in model_words
+
+
+def test_an_uncited_offer_price_retries_the_package_check(monkeypatch):
+    from app.intelligence.execution import _fill_plan_sections
+
+    missing = (
+        "The package replaces the kitchen doors and the worktops for £950. "
+        "The visit measures the door count and the worktop length. "
+        "It differs from a full kitchen replacement."
+    )
+    passing = (
+        "The package replaces the kitchen doors, the worktops, and the handles. "
+        "The visit measures the door count and the worktop length. "
+        "It differs from a full kitchen replacement."
+    )
+    seen = []
+
+    def fake(role, system, user, max_tokens=400, programme=None, package_id="", plain=False, prefill="", stop=None, expand_unfinished=True, ollama_format=None, plan=False):
+        seen.append(user)
+        text = missing if len(seen) == 1 else passing
+        return text, 12, {"backend": "test", "finish_reason": "stop", "raw_response": text}
+
+    monkeypatch.setattr("app.intelligence.execution._complete", fake)
+    programme, blob = _door_programme()
+    sections = _door_sections(**{"offer and positioning": ""})
+    rejected = _fill_plan_sections(programme, sections, blob)
+    assert rejected == {}
+    assert "handles" in sections["offer and positioning"]
+    assert "£" not in sections["offer and positioning"]
+    assert len(seen) == 2
+    assert "handles" in seen[1].lower()
+    assert "had no [F#]" not in seen[1]
+    assert "Cite that fact as [F#]" not in seen[1]
+
+
+def test_a_mixed_competitor_price_keeps_the_one_source_reason(monkeypatch):
+    from app.intelligence.execution import _fill_plan_sections
+
+    mixed = "The opened pages list replacement prices of £10 and £950 for this kitchen work."
+    passing = (
+        "Kitchen Door Co (https://doors.example/replace) states a standard door is £10 to £40 [F1].\n"
+        "Refresh Kit (refreshkit.co.uk) charges £950, and the page says pay on completion [F2].\n"
+        "This service differs by replacing kitchen doors, worktops and handles rather than a full replacement."
+    )
+    seen = []
+
+    def fake(role, system, user, max_tokens=400, programme=None, package_id="", plain=False, prefill="", stop=None, expand_unfinished=True, ollama_format=None, plan=False):
+        seen.append(user)
+        text = mixed if len(seen) == 1 else passing
+        return text, 12, {"backend": "test", "finish_reason": "stop", "raw_response": text}
+
+    monkeypatch.setattr("app.intelligence.execution._complete", fake)
+    programme, blob = _door_programme()
+    sections = _door_sections(**{"competitor and market research": ""})
+    rejected = _fill_plan_sections(programme, sections, blob)
+    assert rejected == {}
+    assert len(seen) == 2
+    assert "one claim, one source" in seen[1].lower()
+    assert "had no [F#]" not in seen[1]
