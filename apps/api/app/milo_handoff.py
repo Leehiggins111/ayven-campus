@@ -161,7 +161,14 @@ def job_status(project_id: str) -> dict:
         "recovery": _recovery(project_id),
         "mode": (project["run_mode"] or "").strip() or "UNVERIFIED",
         "constraints": job_constraints(project_id),
+        "criteria_results": _criteria(project_id),
     }
+
+
+def _criteria(project_id: str) -> list[dict]:
+    from .goals import criteria_for
+
+    return criteria_for(project_id)
 
 
 def _stored_mode(project_id: str) -> str:

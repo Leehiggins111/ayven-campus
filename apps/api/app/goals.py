@@ -471,6 +471,45 @@ def save_criteria(project_id: str, results: list[dict]) -> None:
     conn.close()
 
 
+_CRITERIA_STOP = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "each", "for", "from", "has", "have", "in", "include",
+    "includes", "is", "it", "its", "least", "must", "no", "not", "of", "on", "or", "should", "that", "the",
+    "their", "this", "to", "with", "within", "without",
+}
+
+
+def _criterion_terms(criterion: str) -> list[str]:
+    import re
+
+    words = re.findall(r"[a-z0-9£$][a-z0-9£$.,'-]*", (criterion or "").lower())
+    return [w.strip(".,'-") for w in words if len(w.strip(".,'-")) >= 3 and w.strip(".,'-") not in _CRITERIA_STOP]
+
+
+def evaluate_criteria(project_id: str, report: str) -> list[dict]:
+    """Check each acceptance criterion against the delivered report and store the result.
+
+    Deterministic term coverage, not a model judgement: ``met`` when at least
+    70% of the criterion's terms appear in the report, ``not_met`` otherwise,
+    ``unverified`` when the criterion has no checkable term.
+    """
+    goal = get_goal(project_id)
+    criteria = (goal or {}).get("acceptance_criteria") or []
+    if not criteria:
+        return []
+    text = (report or "").lower()
+    results = []
+    for criterion in criteria:
+        terms = _criterion_terms(criterion)
+        if not terms:
+            status = "unverified"
+        else:
+            found = sum(1 for term in terms if term in text)
+            status = "met" if text.strip() and found / len(terms) >= 0.7 else "not_met"
+        results.append({"criterion": criterion, "status": status})
+    save_criteria(project_id, results)
+    return results
+
+
 def criteria_for(project_id: str) -> list[dict]:
     ensure_schema()
     conn = connect()

@@ -58,6 +58,11 @@ def finalize_project(project_id: str) -> None:
             row.get("parent_id") or row["id"], findings,
             row.get("research_json") or "", row.get("observability_json") or "",
         )
+    if pkg and state in ("AWAITING_APPROVAL", "FAILED", "UNRESOLVED", "COMPLETED", "APPROVED"):
+        # Acceptance criteria are checked against what was delivered, so criteria_results is never left empty.
+        from .goals import evaluate_criteria
+
+        evaluate_criteria(project_id, findings or "")
     conn.execute("UPDATE projects SET status=?, result=? WHERE id=?", (project_status, findings, project_id))
     conn.execute("UPDATE tasks SET status=? WHERE id=?", (project_status, f"engine:{project_id}"))
     conn.commit()

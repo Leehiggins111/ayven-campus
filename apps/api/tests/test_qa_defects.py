@@ -237,3 +237,21 @@ def test_acceptance_brief_runs_end_to_end_simulated(tmp_path, monkeypatch):
     assert report["scores"]["total"] >= 80
     assert (tmp_path / "qa" / "reg-wf1" / "verdict.json").is_file()
     assert (tmp_path / "qa" / "reg-wf1" / "verdict.md").is_file()
+
+
+def test_acceptance_criteria_are_evaluated_and_shown():
+    from app.goals import criteria_for, open_goal
+    from app.milo_handoff import job_status
+    from app.orchestrator import finalize_project
+
+    project = _project("Find vending prospects.")
+    open_goal(project, ["Lists three named prospects", "Explains the refund policy"])
+    parent = insert_package(
+        project_id=project, task_id="criteria", title="Research programme", objective="Find vending prospects.",
+        origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="complete",
+    )
+    update_package(parent, findings="Three named prospects: A, B and C. Lists each one.", workflow_state="COMPLETED")
+    finalize_project(project)
+    results = {row["criterion"]: row["status"] for row in criteria_for(project)}
+    assert results == {"Lists three named prospects": "met", "Explains the refund policy": "not_met"}
+    assert job_status(project)["criteria_results"] == criteria_for(project)
