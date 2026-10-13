@@ -307,7 +307,9 @@ class Programme:
         if self.task_class == "web_research" and os.environ.get("AYVEN_LLM_STUB", "1") == "0":
             from .delivery_plan import plan_delivery
             self.plan, planning_meta = plan_delivery(
-                self.objective + ("\nUser clarification: " + self.clarification_answer if self.clarification_answer else ""), self.plan,
+                self.objective + ("\nUser clarification: " + self.clarification_answer if self.clarification_answer else ""),
+                self.plan,
+                project_id=self.project_id,
             )
             save_model_call(self.parent_id, "PLANNING", self.task_class, planning_meta, json.dumps(self.plan))
             self.tokens += int(planning_meta.get("completion_tokens") or 0)
@@ -1150,7 +1152,7 @@ def _finalize_resumed(project_id: str) -> None:
 def _finish_roles(programme: Programme) -> None:
     from .steps import bind_owner, current_step, reset_owner, start_task
 
-    step = current_step(programme.project_id)
+    step = current_step(getattr(programme, "project_id", "") or "")
     token = bind_owner(step["owner"] if step else "")
     try:
         if step and step["status"] == "queued":
@@ -1724,7 +1726,7 @@ def _employee_user(programme: Programme, child: dict) -> str:
 def _with_step(programme: Programme, text: str) -> str:
     from .steps import current_step, scoped_prompt
 
-    extra = scoped_prompt(current_step(programme.project_id))
+    extra = scoped_prompt(current_step(getattr(programme, "project_id", "") or ""))
     if not extra:
         return text
     return text.rstrip() + "\n\n" + extra
@@ -2359,7 +2361,7 @@ def _supervisor_user(programme: Programme, child: dict) -> str:
     rules = hard_constraint_text(getattr(programme, "constraints", []))
     from .steps import review_prompt, review_step
 
-    review = review_prompt(review_step(programme.project_id))
+    review = review_prompt(review_step(getattr(programme, "project_id", "") or ""))
     return (
         f"Objective:\n{programme.objective}\n\nPlan class: {programme.task_class}\n"
         f"Gaps: {gaps}\n\nDraft:\n{clip_at_boundary(child['report'], limit)}\n\nClaims:\n{brief}"

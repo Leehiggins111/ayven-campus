@@ -100,6 +100,8 @@ def validate_public_configuration():
     if not local_mode():
         if len(token()) < 32:
             raise RuntimeError('Non-local mode refuses to start without AYVEN_ACCESS_KEY or AYVEN_API_TOKEN of at least 32 characters')
+    if os.environ.get('AYVEN_THREAD_STUB') == '1' and os.environ.get('AYVEN_ENV') != 'local':
+        raise RuntimeError('AYVEN_THREAD_STUB is a test switch and cannot run outside local mode')
     if os.environ.get('AYVEN_PUBLIC_MODE') == '1':
         if len(token()) < 32:
             raise RuntimeError('Public deployment requires AYVEN_API_TOKEN of at least 32 characters')

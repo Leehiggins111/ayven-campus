@@ -153,9 +153,13 @@ def test_campus_ui_approve_reject_clarify_repair_and_evidence():
 
                 page.click(f"[data-testid='work-package'][data-package='{reject_id}']")
                 page.wait_for_selector("[data-testid='needs-you']", timeout=20000)
+                page.fill("[data-testid='reject-reason']", "The draft is not ready.")
                 page.click("[data-testid='reject']")
                 page.wait_for_selector("[data-testid='final-result']", timeout=20000)
-                assert "Rejected" in page.locator("[data-testid='final-result']").inner_text()
+                panel = page.locator("[data-testid='final-result']").inner_text()
+                doing = page.locator("[data-testid='glance-doing']").inner_text()
+                assert "Rejected" in panel
+                assert "Rejected. Nothing was sent." in doing
                 page.locator("[data-testid='final-result']").scroll_into_view_if_needed()
                 _shot(page, "06-rejected.png")
 

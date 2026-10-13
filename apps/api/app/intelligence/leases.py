@@ -126,14 +126,21 @@ def heartbeat(job_id: str, owner: str, fence: int, *, now: int | None = None) ->
 
 
 def finish(job_id: str, owner: str, fence: int) -> None:
+    release(job_id, owner, fence, "done")
+
+
+def release(job_id: str, owner: str, fence: int, state: str) -> None:
+    """Drop the lease. ``done`` is a finished job. ``failed`` is a stopped one."""
+    if state not in {"done", "failed"}:
+        raise ValueError("lease release state must be done or failed")
     from ..db import open_raw
 
     conn = open_raw()
     try:
         conn.execute(
-            """UPDATE job_leases SET state='done'
+            """UPDATE job_leases SET state=?
                WHERE job_id=? AND owner=? AND fence=? AND state='running'""",
-            (job_id, owner, int(fence)),
+            (state, job_id, owner, int(fence)),
         )
         conn.commit()
     finally:

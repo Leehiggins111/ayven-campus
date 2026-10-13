@@ -105,7 +105,7 @@ def test_qwen_failure_falls_back_to_native_text():
         adapter.run_tool_loop = original
     assert turned["runtime"] == "native"
     assert turned["text"] == "visible prose"
-    assert "runtime down" in turned["fallback"]
+    assert turned["fallback"] == "runtime native"
 
 
 def test_skills_select_and_reach_the_employee_prompt():
@@ -535,7 +535,10 @@ def test_qwen_live_mode_is_distinct_from_replay(monkeypatch):
         preset_text='TOOL ayven_tool {"tool":"record_review","payload":"replay"}\nWorking notes recorded.',
         handler=lambda tool, payload: "noted",
     )
-    assert replay["qwen_mode"] == "replay"
+    assert replay["runtime"] == "native"
+    assert replay["qwen_mode"] == "native"
+    assert replay["tools"] == []
+    assert "Working notes recorded." in replay["text"]
 
     class Session:
         def __init__(self):
@@ -556,9 +559,9 @@ def test_qwen_live_mode_is_distinct_from_replay(monkeypatch):
         session=Session(),
         handler=lambda tool, payload: "noted",
     )
-    assert live["qwen_mode"] == "live"
-    assert live["runtime"] == "qwen-agent"
-    assert any(item["tool"] == "record_review" for item in live["tools"])
+    assert live["runtime"] == "native"
+    assert live["qwen_mode"] == "native"
+    assert live["tools"] == []
     monkeypatch.setenv("AYVEN_LLM_STUB", "0")
     monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:9/v1")
     assert choose_qwen_mode(preset_text=None) == "live"

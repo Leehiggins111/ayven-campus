@@ -9,7 +9,7 @@ These are the gates. They are written to `evidence/live/<run-id>/criteria.json` 
 - 50 constrained tool calls per role: at least 98 percent valid the first time, 100 percent after one repair, and zero reasoning strings reaching a tool.
 - 20 irrelevance prompts: at most 2 tool calls.
 - 10 missing-tool prompts: at least 8 of 10 end in cannot or escalate.
-- 10 director plans.
+- 10 director plans: at least 8 of 10 valid. `director_plans_pass` enforces that mark. A set that is not 10 plans fails.
 - QA planted-defect set of 10: at least 8 caught.
 - Record model identity, configuration, results, failures, run time, tokens, cost, and owner interventions under `evidence/live/<run-id>/`.
 

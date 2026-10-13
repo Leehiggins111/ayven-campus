@@ -14,6 +14,16 @@ os.environ.pop("AYVEN_LOCAL_LLM_BASE_URL", None)
 
 
 @pytest.fixture(autouse=True)
+def stop_durable_worker():
+    """A test that starts DBOS must not leave that worker attached to the next database."""
+    yield
+    from app import durable
+
+    if durable._started:
+        durable.shutdown()
+
+
+@pytest.fixture(autouse=True)
 def isolated_database(tmp_path, monkeypatch):
     """Each test gets its own database and temp directory."""
     path = tmp_path / "ayven.db"

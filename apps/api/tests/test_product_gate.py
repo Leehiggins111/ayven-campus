@@ -150,7 +150,7 @@ def test_local_model_is_used_when_the_stub_is_off(monkeypatch):
     monkeypatch.setenv("AYVEN_ALLOW_ESCALATION", "0")
     monkeypatch.setenv("AYVEN_EMPLOYEE_MODEL", "qwen3:4b")
 
-    def fake(base, key, model, system, user, max_tokens, schema=None):
+    def fake(base, key, model, system, user, max_tokens, schema=None, prefill="", stop=None, expand_unfinished=True, ollama_format=None):
         assert base.startswith("http://127.0.0.1:11434")
         assert model == "qwen3:4b"
         return "The local model answered.", 4, {}
@@ -248,7 +248,7 @@ def test_live_employee_asks_through_the_closed_think_client(monkeypatch):
     monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
     seen = {}
 
-    def fake_complete(role, system, user, max_tokens=500, schema=None):
+    def fake_complete(role, system, user, max_tokens=500, schema=None, prefill="", stop=None, expand_unfinished=True, ollama_format=None, model=None):
         seen["role"] = role
         seen["max_tokens"] = max_tokens
         return (
@@ -273,7 +273,8 @@ def test_live_employee_asks_through_the_closed_think_client(monkeypatch):
     assert seen["max_tokens"] == 2048
     assert "on-site cabinet respray" in turned["text"]
     assert "SECRET" not in turned["text"]
-    assert turned["qwen_mode"] == "live"
+    assert turned["runtime"] == "native"
+    assert turned["qwen_mode"] == "native"
     assert turned["meta"]["backend"] == "local_openai_compat"
     assert turned["meta"]["completion_tokens"] == 40
 

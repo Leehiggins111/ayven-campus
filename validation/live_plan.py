@@ -167,14 +167,38 @@ def session_plan() -> dict:
 
 
 # Written before any live run. These are the gates. They are not results.
+DIRECTOR_PLAN_COUNT = 10
+DIRECTOR_PLAN_PASS = 8
+_PLAN_KINDS = {"briefing", "comparison", "prospect_list", "marketing_drafts", "document"}
+
 ACCEPTANCE_CRITERIA = [
     "50 constrained tool calls per role: at least 98 percent valid the first time, 100 percent after one repair, and zero reasoning strings reaching a tool.",
     "20 irrelevance prompts: at most 2 tool calls.",
     "10 missing-tool prompts: at least 8 of 10 end in cannot or escalate.",
-    "10 director plans.",
+    "10 director plans: at least 8 of 10 are valid. The code enforces this mark.",
     "QA planted-defect set of 10: at least 8 caught.",
     "Record latency, tokens, and pounds for the run.",
 ]
+
+
+def valid_director_plan(plan: dict) -> bool:
+    """A plan names an allowed deliverable and at least one requirement."""
+    if not isinstance(plan, dict):
+        return False
+    title = str(plan.get("title") or plan.get("deliverable") or "").strip()
+    requirements = plan.get("requirements")
+    if not title or plan.get("output_kind") not in _PLAN_KINDS:
+        return False
+    if not isinstance(requirements, list) or not any(str(item).strip() for item in requirements):
+        return False
+    return isinstance(plan.get("needs_current_sources"), bool)
+
+
+def director_plans_pass(plans) -> bool:
+    """Pass mark: at least 8 valid plans in a set of 10. Fewer than 10 is a fail."""
+    if not isinstance(plans, list) or len(plans) != DIRECTOR_PLAN_COUNT:
+        return False
+    return sum(1 for plan in plans if valid_director_plan(plan)) >= DIRECTOR_PLAN_PASS
 
 MULTI_STEP_TASK = {
     "id": "weakness-multistep",

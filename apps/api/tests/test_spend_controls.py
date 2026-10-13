@@ -125,6 +125,23 @@ def test_live_plan_uses_the_2507_model_and_records_load_time():
     assert "--structured-outputs-config.backend xgrammar" in manager
 
 
+def test_director_plans_need_eight_valid_out_of_ten():
+    from validation.live_plan import director_plans_pass, valid_director_plan
+
+    good = {
+        "title": "Guest records note",
+        "output_kind": "briefing",
+        "requirements": ["One sentence from the page"],
+        "needs_current_sources": True,
+    }
+    bad = {"title": "", "output_kind": "send_email", "requirements": [], "needs_current_sources": False}
+    assert valid_director_plan(good) is True
+    assert valid_director_plan(bad) is False
+    assert director_plans_pass([good] * 8 + [bad] * 2) is True
+    assert director_plans_pass([good] * 7 + [bad] * 3) is False
+    assert director_plans_pass([good] * 8) is False
+
+
 def test_live_evidence_writes_criteria_before_a_result(tmp_path, monkeypatch):
     from validation.live_session import prepare_evidence, record_result, run_confirmed_session
 

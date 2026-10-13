@@ -17,6 +17,7 @@ from validation.live_plan import (
     ACCEPTANCE_CRITERIA,
     MULTI_STEP_TASK,
     PRIMARY_MODEL,
+    director_plans_pass,
     session_plan,
     steps_for_session,
 )
@@ -51,6 +52,8 @@ def record_result(dest: Path, body: dict) -> None:
     criteria = dest / "criteria.json"
     if not criteria.is_file():
         raise RuntimeError("criteria.json must exist before a result is written")
+    if "director_plans" in body and not director_plans_pass(body.get("director_plans")):
+        raise RuntimeError("Director plans failed the pass mark: at least 8 of 10 must be valid.")
     (dest / "result.json").write_text(json.dumps(body, indent=2), encoding="utf-8")
 
 

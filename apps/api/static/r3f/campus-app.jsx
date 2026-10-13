@@ -362,12 +362,17 @@ class SceneBoundary extends React.Component {
 function NeedsYou() {
   const view = useCampus((s) => s.campus_view) || {};
   const card = view.approval;
+  const [reason, setReason] = useState("");
   if (!view.needs_you || !card) return null;
-  const decide = (decision) => fetch(`/approvals/${card.id}/resolve`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ decision }),
-  }).then(() => useCampus.hydrate());
+  const decide = (decision) => {
+    const text = reason.trim();
+    if (decision === "rejected" && !text) return;
+    fetch(`/approvals/${card.id}/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(decision === "rejected" ? { decision, reason: text } : { decision }),
+    }).then(() => useCampus.hydrate());
+  };
   return (
     <div className="needs-you" data-testid="needs-you">
       <strong>NEEDS YOU</strong>
@@ -376,6 +381,7 @@ function NeedsYou() {
       <p><b>If approved</b> {card.if_approved}</p>
       <p><b>If rejected</b> {card.if_rejected}</p>
       {(card.evidence || []).map((item, index) => <p key={index} className="muted">{item.source} {item.note}</p>)}
+      <textarea data-testid="reject-reason" value={reason} placeholder="Reason for a rejection" onChange={(e) => setReason(e.target.value)} />
       <button data-testid="approve" onClick={() => decide("approved")}>Approve</button>
       <button className="ghost" data-testid="reject" onClick={() => decide("rejected")}>Reject</button>
     </div>

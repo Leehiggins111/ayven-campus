@@ -7,8 +7,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import threading
 
-_synced_urls: set[str] = set()
-
 _stage_connection = ContextVar("stage_connection", default=None)
 
 
@@ -160,11 +158,7 @@ class _MappedConnection:
 
 
 def _libsql_connect(url: str, auth_token: str):
-    """Local file, or an embedded replica when both URL and token are set.
-
-    Sync runs once per URL. A file URL does not contact Turso and does not
-    fall back to the SQLite file when libsql is missing.
-    """
+    """A local ``file:`` URL. Remote libsql sync is unsupported and is not contacted."""
     try:
         import libsql
     except ImportError:
@@ -178,12 +172,7 @@ def _libsql_connect(url: str, auth_token: str):
             local = local[2:]
         conn = libsql.connect(local)
     else:
-        path = db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = libsql.connect(str(path), sync_url=url, auth_token=auth_token)
-        if url not in _synced_urls and hasattr(conn, "sync"):
-            conn.sync()
-            _synced_urls.add(url)
+        raise RuntimeError("AYVEN_DB_URL remote libsql sync is unsupported. Use a file: URL.")
     if hasattr(conn, "row_factory"):
         conn.row_factory = sqlite3.Row
         return conn

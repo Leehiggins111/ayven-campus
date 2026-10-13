@@ -1,16 +1,9 @@
 from __future__ import annotations
 
-import threading
-import uuid
 from datetime import datetime, timezone
 
 from . import events
 from .db import connect
-from .llm import complete
-from .researcher import run_package
-from .workforce import run_objective as run_workforce
-
-COST_PER_1K = 0.002
 
 
 def _set_agent(agent_id: str, **fields) -> None:
@@ -22,55 +15,16 @@ def _set_agent(agent_id: str, **fields) -> None:
 
 
 def run_project(project_id: str) -> None:
-    from .durable import enabled, enqueue_project
+    """Start a job on the durable workflow. The thread stub does not run it."""
+    from .durable import enqueue_project, thread_stub_armed
 
-    if enabled():
-        enqueue_project(project_id)
-    else:
-        threading.Thread(target=_run_project, args=(project_id,), daemon=True).start()
+    if thread_stub_armed():
+        return
+    enqueue_project(project_id)
 
 
 def _run_project(project_id: str) -> None:
-    conn = connect()
-    project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-    conn.close()
-    if not project:
-        return
-    objective = project["objective"]
-    from .milo_handoff import hard_constraint_text, job_constraints
-
-    rules = hard_constraint_text(job_constraints(project_id))
-    from .intelligence.steps import current_step, scoped_prompt
-
-    step = scoped_prompt(current_step(project_id))
-    _set_agent("milo", status="working", visual_state="PLANNING", last_summary="Deciding required work", progress=0.15)
-    events.emit("agent.started_task", project_id=project_id, agent_id="milo", department_id="command", status="PLANNING", summary="Milo is scoping the objective for Research Lab", progress=0.15)
-    director_prompt = f"Lee's objective:\n{objective}"
-    if rules:
-        director_prompt = f"{director_prompt}\n\n{rules}"
-    if step:
-        director_prompt = f"{director_prompt}\n\n{step}"
-    brief, tokens = complete("You are Milo, Ayven Chief of Staff. Write a short research brief. No chain-of-thought. Obey every hard constraint.", director_prompt, max_tokens=280)
-    conn = connect()
-    conn.execute("UPDATE agents SET tokens=tokens+?, cost_usd=cost_usd+? WHERE id=?", (tokens, tokens / 1000 * COST_PER_1K, "milo"))
-    conn.commit()
-    conn.close()
-    tid = str(uuid.uuid4())
-    pid = str(uuid.uuid4())
-    ts = datetime.now(timezone.utc).isoformat()
-    conn = connect()
-    conn.execute("INSERT INTO tasks(id,project_id,agent_id,title,brief,status,requires_approval,created_at) VALUES(?,?,?,?,?,?,?,?)", (tid, project_id, "research-mgr", "Research programme", brief, "queued", 0, ts))
-    conn.execute("INSERT INTO work_packages(id,project_id,task_id,title,objective,origin,agent_id,department_id,stage,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (pid, project_id, tid, "Research programme", objective, "milo", "research-mgr", "research", "command", "assigned", ts, ts))
-    conn.commit()
-    conn.close()
-    events.emit("task.created", project_id=project_id, task_id=tid, agent_id="research-mgr", department_id="research", status="queued", summary="Task created: Research programme")
-    events.emit("package.created", project_id=project_id, task_id=tid, agent_id="milo", department_id="command", status="assigned", summary="Handed to Research Manager")
-    _set_agent("milo", status="waiting", visual_state="WAITING", last_summary="Waiting on Research Lab", progress=0.4)
-    try:
-        run_workforce(project_id, objective, tid)
-    except Exception:
-        run_package(pid)
-    finalize_project(project_id)
+    raise RuntimeError("Thread execution is not available. Jobs run through the durable workflow.")
 
 
 def finalize_project(project_id: str) -> None:

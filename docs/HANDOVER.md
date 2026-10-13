@@ -6,7 +6,13 @@ Milo calls Campus at `CAMPUS_BASE_URL`. `AYVEN_ENGINE_TOKEN` equals `AYVEN_ACCES
 
 ## Recovery
 
-One design. DBOS keeps the stage checkpoints from PRs #2 and #5. A local SQLite lease (`job_leases`) and an outbox (`side_effects`) cover the gaps those PRs left open: two workers, a late write, and a repeated tool call. Claims use `BEGIN IMMEDIATE` on the local file, with WAL and `busy_timeout`. They do not use Turso concurrent writes. `AYVEN_DURABLE=1` is the only recovery path when it is on. Otherwise `AYVEN_RESUME=1` claims, then resumes. Startup recovery is a background thread, so `/health` is not blocked.
+One design. Durable mode is the only way a job runs. DBOS keeps the stage checkpoints from PRs #2 and #5. A local SQLite lease (`job_leases`) and an outbox (`side_effects`) cover two workers, a late write, and a repeated tool call. Claims use `BEGIN IMMEDIATE` on the local file, with WAL and `busy_timeout`. They do not use Turso concurrent writes. A refused claim does not start a workflow. Heartbeat runs during prepare and during each role. Finish sets the lease to `done`. Failure sets it to `failed`. Startup recovery is a background thread, so `/health` is not blocked.
+
+`AYVEN_THREAD_STUB=1` is a local test switch. It does not execute a job. Outside `AYVEN_ENV=local` it refuses to start. The old in-process resume runs only when that stub and `AYVEN_RESUME=1` are both set.
+
+The outbox covers `web_search` and `fetch_page`. These side effects are not in the outbox: model HTTP calls (they are retried on purpose, so a replay can call the model again), crawl4ai and browser fetches after the first page open, preview server binds, and paid escalation HTTP (off unless armed). Email, purchase, and publish are not implemented. The permission gate blocks them.
+
+DBOS system tables stay on local SQLite. A remote `AYVEN_DB_URL` does not move them. Remote libsql sync is unsupported. A `file:` URL is supported and pinned as `libsql==0.1.11`. Model calls run outside the stage write lock. The planning call, the delivery review, and search planning go through `run_retries`. A plan that still fails records a blocker.
 
 | Test | Proves | Does not prove |
 |---|---|---|
@@ -15,7 +21,9 @@ One design. DBOS keeps the stage checkpoints from PRs #2 and #5. A local SQLite 
 | `test_model_retries_go_through_complete` | A timeout is retried inside `_complete`. A returned tool error is not retried again on top of the research retry. | A live model timeout, or jitter. |
 | `test_a_superseded_fence_cannot_commit` | The fencing token is checked at commit. A superseded update is rolled back. | An operating-system thread that was killed. |
 | `test_a_recorded_side_effect_is_not_sent_again` | The tool function runs once. A pending row is not sent again. | That a remote server saw only one request if the process died after sending and before the receipt. |
-| `test_durable_mode_does_not_also_thread_resume` | Thread resume stays idle when durable mode is on. | That DBOS launched. |
+| `test_durable_mode_does_not_also_thread_resume` | Thread resume stays idle when the stub is off. | That DBOS launched. |
+| `test_a_refused_claim_does_not_start_the_workflow` | A missed claim does not enqueue a new workflow. | Two live API processes. |
+| `test_a_barrier_kills_the_process_mid_stage_and_the_restart_finishes` | `AYVEN_CRASH_STAGE` exits before the employee receipt. The next process finishes once and releases the lease. | A live model call. |
 | `test_health_answers_while_recovery_is_blocked` | `/health` returns while recovery is blocked. | That a job was recovered. |
 
 Earlier rows that cited the scripted `validation/wf1.py` harness as verified were wrong. That harness is `SIMULATED`. It does not prove model quality. R7 was not verified by the older resume tests: those did not exclude a second live worker.
@@ -44,13 +52,13 @@ The director's owned tasks are the coordination record. `start_task` refuses a s
 | R10 | Implemented awaiting live verification | `bash scripts/run_ayven_live.sh` prints the plan and exits 0. No pod. |
 | R11 | Implemented awaiting live verification | This branch is not deployed. Render is still the old build. |
 | R12 | Implemented awaiting live verification | `test_milo_contract.py` and `test_a_repeated_submission_returns_the_same_project`. The Node harness was not run. |
-| R13 | Implemented awaiting live verification | Campus view fields exist. The reject control must send a reason. No browser pass on this turn. |
+| R13 | Implemented awaiting live verification | The reject control sends a reason. No browser pass on this turn. |
 | R14 | Implemented awaiting live verification | No GPU cost report. |
 | R15 | Implemented awaiting live verification | Session TTL test. This branch is not deployed. |
-| R16 | Implemented awaiting live verification | Simulated harness. The GPU run was not done. |
+| R16 | Not verified | `validation/wf1.py` is SIMULATED. It does not show model quality. The GPU run was not done. |
 | R17 | Implemented and verified | Escalation stays off. Startup refuses armed escalation with no prices. |
 
-Focused run: `test_steps.py`, `test_milo_contract.py`, `test_leases.py`, `test_durable.py`, and `test_release_handoff.py` passed. A wider `apps/api/tests` run, excluding browser tests, was 324 passed and 13 failed. The 13 are missing optional runtimes (Playwright, crawl4ai, qwen-agent), not the contract or lease tests. Do not use the older "293 passed, 17 failed" figure.
+Focused run: `test_leases.py`, `test_durable.py`, `test_delivery_plan.py`, and `test_qa_defects.py` passed, including the mid-stage barrier restart. A wider `apps/api/tests` run, excluding the browser test, was 344 passed and 12 failed. The 12 are missing optional runtimes (Playwright, crawl4ai, qwen-agent, browser-use) and the local sandbox preflight, not the lease or durable tests. The browser test was not run. Do not use the older "324 passed, 13 failed" figure.
 
 ## Backup model
 
@@ -66,7 +74,7 @@ Steps 1 and 2 are one session under the community cap ($1.10, $0.34/h). `bash sc
 
 ## Deferred
 
-Rate limit on `/session`, backoff jitter, a bounded attempt log, UI copy beyond the mode flag, trusted proxy headers for the Secure cookie, keeping the read token off `/admin/backup` by a further check, rewriting the isolation test, and changing `atomic_stage` so it does not hold the write lock across a model call. `render.yaml` was not changed.
+Rate limit on `/session`, backoff jitter, a bounded attempt log, UI copy beyond the mode flag, trusted proxy headers for the Secure cookie, keeping the read token off `/admin/backup` by a further check, and rewriting the isolation test. `render.yaml` was not changed. Remote libsql sync stays unsupported.
 
 ## Lee still has to do
 

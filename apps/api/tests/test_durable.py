@@ -45,8 +45,9 @@ else:
     parents=[dict(x) for x in conn.execute('SELECT * FROM work_packages WHERE project_id="proof" AND tier="MANAGER"')]
     calls=[dict(x) for x in conn.execute('SELECT * FROM model_calls')]
     checkpoints=[dict(x) for x in conn.execute('SELECT stage FROM durable_checkpoints WHERE job_id="proof"')]
+    lease=conn.execute('SELECT state FROM job_leases WHERE job_id="proof"').fetchone()
     conn.close()
-    (root/'proof.json').write_text(json.dumps({'status':status,'project':project,'parents':parents,'calls':calls,'checkpoints':checkpoints}))
+    (root/'proof.json').write_text(json.dumps({'status':status,'project':project,'parents':parents,'calls':calls,'checkpoints':checkpoints,'lease':dict(lease)['state'] if lease else ''}))
     durable.shutdown()
 '''
 
@@ -69,6 +70,60 @@ def test_real_project_recovers_without_duplicate_writes(tmp_path, crash_point):
     assert proof['parents'][0]['workflow_state']=='COMPLETED'
     assert len(proof['calls'])==3  # One employee, supervisor and manager invocation persisted.
     assert {x['stage'] for x in proof['checkpoints']}=={'prepare','EMPLOYEE','SUPERVISOR','MANAGER','finish'}
+    assert proof['lease']=='done'
+
+
+def test_a_model_call_does_not_hold_the_write_lock(tmp_path, monkeypatch):
+    """A second connection can write while the role model call is in progress."""
+    import sqlite3
+    import threading
+
+    from app.db import connect, reset_connection_state
+    from app.models import set_role_generator
+    from app import durable
+
+    path = tmp_path / "lock.sqlite"
+    monkeypatch.setenv("AYVEN_DB", str(path))
+    monkeypatch.setenv("AYVEN_DURABLE", "1")
+    monkeypatch.setenv("AYVEN_LLM_STUB", "1")
+    monkeypatch.setenv("AYVEN_RESEARCH_MODE", "fixtures")
+    monkeypatch.setenv("AYVEN_ALLOW_ESCALATION", "0")
+    monkeypatch.delenv("AYVEN_WORKFLOW_DATABASE_URL", raising=False)
+    monkeypatch.delenv("AYVEN_DB_URL", raising=False)
+    reset_connection_state()
+    conn = connect()
+    conn.execute(
+        "INSERT INTO projects(id,title,objective,status,result,created_at) VALUES(?,?,?,?,?,?)",
+        ("lock-job", "Lock", "Calculate 6 * 7.", "running", None, "2026-10-13"),
+    )
+    conn.commit()
+    conn.close()
+    wrote = {"ok": False, "error": ""}
+
+    def generator(role, system, user, max_tokens):
+        def writer():
+            try:
+                other = sqlite3.connect(path, timeout=1)
+                other.execute("UPDATE projects SET result=? WHERE id=?", ("during-call", "lock-job"))
+                other.commit()
+                other.close()
+                wrote["ok"] = True
+            except Exception as exc:
+                wrote["error"] = f"{type(exc).__name__}: {exc}"
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        thread.join(3)
+        return "42", 1, {"backend": "stub"}
+
+    set_role_generator(generator)
+    try:
+        durable.enqueue_project("lock-job").get_result()
+    finally:
+        set_role_generator(None)
+        durable.shutdown()
+        reset_connection_state()
+    assert wrote["ok"], wrote["error"]
 
 
 def test_approval_is_atomic_idempotent_and_conflicts_are_rejected(tmp_path, monkeypatch):
@@ -143,6 +198,7 @@ else:
 conn=connect()
 assert conn.execute('SELECT status FROM projects WHERE id="live-failure"').fetchone()['status']=='rejected'
 assert conn.execute('SELECT workflow_state FROM work_packages WHERE tier="MANAGER"').fetchone()['workflow_state']=='FAILED'
+assert conn.execute('SELECT state FROM job_leases WHERE job_id="live-failure"').fetchone()['state']=='failed'
 conn.close()
 durable.shutdown()
 '''
@@ -152,3 +208,62 @@ durable.shutdown()
         env.pop(key,None)
     result=subprocess.run([sys.executable,'-c',script],env=env,capture_output=True,text=True,timeout=60)
     assert result.returncode==0,result.stdout+result.stderr
+
+
+def test_a_barrier_kills_the_process_mid_stage_and_the_restart_finishes(tmp_path):
+    """The crash hook exits before the stage receipt. The next process finishes that stage once."""
+    barrier = tmp_path / "barrier"
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(API),
+        "AYVEN_DURABLE": "1",
+        "AYVEN_ENV": "local",
+        "AYVEN_DB": str(tmp_path / "barrier.sqlite"),
+        "AYVEN_LLM_STUB": "1",
+        "AYVEN_RESEARCH_MODE": "fixtures",
+        "AYVEN_USE_QWEN_AGENT": "0",
+        "AYVEN_ALLOW_ESCALATION": "0",
+        "AYVEN_CRASH_STAGE": "EMPLOYEE",
+        "AYVEN_CRASH_BARRIER": str(barrier),
+    }
+    for key in ("AYVEN_LOCAL_LLM_BASE_URL", "AYVEN_LLM_API_KEY", "AYVEN_WORKFLOW_DATABASE_URL", "AYVEN_THREAD_STUB"):
+        env.pop(key, None)
+    crash_script = r"""
+from app.db import connect
+from app import durable
+conn = connect()
+conn.execute(
+    "INSERT INTO projects(id,title,objective,status,result,created_at) VALUES(?,?,?,?,?,?)",
+    ("barrier-job", "Calculation", "Calculate 6 * 7.", "running", None, "2026-10-13"),
+)
+conn.commit()
+conn.close()
+durable.enqueue_project("barrier-job").get_result()
+"""
+    crash = subprocess.run([sys.executable, "-c", crash_script], env=env, capture_output=True, text=True, timeout=60)
+    assert crash.returncode == 23, crash.stderr
+    assert barrier.read_text() == "EMPLOYEE"
+    resume_env = dict(env)
+    resume_env.pop("AYVEN_CRASH_STAGE")
+    resume_env.pop("AYVEN_CRASH_BARRIER")
+    resume_script = r"""
+from app.db import connect
+from app import durable
+durable.initialize()
+from dbos import DBOS
+status = DBOS.retrieve_workflow("project:barrier-job").get_result()
+assert status == "complete", status
+conn = connect()
+calls = conn.execute("SELECT COUNT(*) FROM model_calls").fetchone()[0]
+stages = [row[0] for row in conn.execute("SELECT stage FROM durable_checkpoints WHERE job_id='barrier-job'")]
+lease = conn.execute("SELECT state FROM job_leases WHERE job_id='barrier-job'").fetchone()[0]
+conn.close()
+assert calls == 3, calls
+assert set(stages) == {"prepare", "EMPLOYEE", "SUPERVISOR", "MANAGER", "finish"}
+assert lease == "done"
+durable.shutdown()
+print("resumed")
+"""
+    resume = subprocess.run([sys.executable, "-c", resume_script], env=resume_env, capture_output=True, text=True, timeout=60)
+    assert resume.returncode == 0, resume.stderr
+    assert "resumed" in resume.stdout

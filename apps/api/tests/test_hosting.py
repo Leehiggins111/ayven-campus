@@ -1,7 +1,11 @@
 """Hosting rules: Turso is optional, files live in the DB, sessions expire, jobs resume."""
 
+import os
+import subprocess
+import sys
 import time
 import uuid
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -33,6 +37,43 @@ def test_a_database_url_without_a_token_or_driver_does_not_fall_back(monkeypatch
         raised = True
         assert "libsql" in str(exc).lower() or "AYVEN_DB_URL" in str(exc)
     assert raised
+
+
+def test_libsql_file_rows_survive_a_new_process(tmp_path, monkeypatch):
+    """A real libsql file accepts row['id'] and dict(row), and the row is still there in a new process."""
+    url = "file:" + str(tmp_path / "campus.db")
+    monkeypatch.setenv("AYVEN_DB_URL", url)
+    monkeypatch.delenv("AYVEN_DB_AUTH_TOKEN", raising=False)
+    reset_connection_state()
+    conn = connect()
+    conn.execute(
+        "INSERT INTO projects(id, title, objective, status, created_at) VALUES(?,?,?,?,?)",
+        ("libsql-job", "Libsql", "Calculate 6 * 7.", "running", "2026-10-13T00:00:00+00:00"),
+    )
+    conn.commit()
+    row = conn.execute("SELECT id, title FROM projects WHERE id=?", ("libsql-job",)).fetchone()
+    assert row["id"] == "libsql-job"
+    assert row[0] == "libsql-job"
+    assert dict(row)["title"] == "Libsql"
+    conn.close()
+    script = r"""
+from app.db import connect, reset_connection_state
+reset_connection_state()
+conn = connect()
+row = conn.execute("SELECT id, title FROM projects WHERE id=?", ("libsql-job",)).fetchone()
+assert row["id"] == "libsql-job", row
+assert dict(row)["title"] == "Libsql"
+print("survived")
+conn.close()
+"""
+    env = os.environ.copy()
+    env["AYVEN_DB_URL"] = url
+    env.pop("AYVEN_DB_AUTH_TOKEN", None)
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "survived" in result.stdout
+    reset_connection_state()
 
 
 def test_files_and_traces_survive_a_process_restart():
@@ -71,6 +112,8 @@ def test_a_session_older_than_twelve_hours_is_refused(monkeypatch):
 
 def test_a_running_job_resumes_after_the_worker_sleeps(monkeypatch):
     monkeypatch.setenv("AYVEN_RESUME", "1")
+    monkeypatch.setenv("AYVEN_THREAD_STUB", "1")
+    monkeypatch.setenv("AYVEN_ENV", "local")
     project_id = str(uuid.uuid4())
     conn = connect()
     conn.execute(

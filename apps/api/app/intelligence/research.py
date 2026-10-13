@@ -276,23 +276,35 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
             try:
                 from .boundary import queries_from_plan_text
                 from .deliverable import targeted_queries, usable_search_queries
+                from .recovery import run_retries
                 from .schemas import ResearchPlan
 
-                text, _tokens, _meta = complete_role(
-                    "EMPLOYEE",
-                    "You plan searches. Return one search per line, or a JSON object with a queries array. Do not answer the task.",
-                    user,
-                    max_tokens=220,
-                    schema=ResearchPlan,
-                )
-                planned = usable_search_queries(queries_from_plan_text(text), objective)
-                if planned and not _queries_cover_anchor(planned, objective):
-                    for extra in targeted_queries(objective):
-                        if extra not in planned:
-                            planned.append(extra)
-                if planned:
-                    _put_service_queries_first(planned, objective)
-                    return _stamp_region(planned[:8], objective), "model"
+                def attempt(_number: int):
+                    try:
+                        text, _tokens, _meta = complete_role(
+                            "EMPLOYEE",
+                            "You plan searches. Return one search per line, or a JSON object with a queries array. Do not answer the task.",
+                            user,
+                            max_tokens=220,
+                            schema=ResearchPlan,
+                        )
+                    except Exception as exc:
+                        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                    planned = usable_search_queries(queries_from_plan_text(text), objective)
+                    if not planned:
+                        return {"ok": False, "error": "malformed_queries"}
+                    return {"ok": True, "planned": planned}
+
+                outcome = run_retries(attempt, stage="search-plan", project_id="")
+                if outcome["ok"]:
+                    planned = outcome["result"]["planned"]
+                    if planned and not _queries_cover_anchor(planned, objective):
+                        for extra in targeted_queries(objective):
+                            if extra not in planned:
+                                planned.append(extra)
+                    if planned:
+                        _put_service_queries_first(planned, objective)
+                        return _stamp_region(planned[:8], objective), "model"
             except Exception:
                 pass
     return generic_from_objective(objective), "objective-fallback"
@@ -803,10 +815,18 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
     seen.add(url)
 
     def _fetch(u=url, h=hit):
-        page = open_fn(u)
+        from .leases import perform_side_effect
+
+        job = project_id or package_id or "unscoped"
+
+        def _open_once(target, fn):
+            opened = perform_side_effect(job, "research", "fetch_page", target, fn)
+            return opened if isinstance(opened, dict) else {"error": "fetch_unavailable", "url": u}
+
+        page = _open_once(u, lambda: open_fn(u))
         attempts = 1
         if page.get("error"):
-            retried = open_fn(u)
+            retried = _open_once(u + "#retry", lambda: open_fn(u))
             attempts = 2
             retried = dict(retried)
             retried["retried"] = True
@@ -1002,7 +1022,22 @@ def _agentic_review(objective: str, evidence: list, gaps: list, searched: list, 
         return "SUFFICIENT\nreviewer: stub", "stub"
     from ..models import complete_role
 
-    text, _tokens, meta = complete_role("EMPLOYEE", "You are reviewing research coverage.", user, max_tokens=120)
+    from .recovery import run_retries
+
+    def attempt(_number: int):
+        try:
+            text, _tokens, meta = complete_role("EMPLOYEE", "You are reviewing research coverage.", user, max_tokens=120)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if not (text or "").strip():
+            return {"ok": False, "error": "empty_review"}
+        return {"ok": True, "text": text, "meta": meta}
+
+    outcome = run_retries(attempt, stage="research-review", project_id="")
+    if not outcome["ok"]:
+        raise RuntimeError("reviewer returned nothing")
+    text = outcome["result"]["text"]
+    meta = outcome["result"]["meta"]
     if not text:
         raise RuntimeError("reviewer returned nothing")
     if (meta or {}).get("backend") == "stub" or "reviewer: stub" in text.lower():

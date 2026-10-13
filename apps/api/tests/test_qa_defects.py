@@ -41,6 +41,8 @@ def _calls(package_id: str, role: str) -> int:
 
 def test_startup_resumes_a_killed_run_without_redoing_finished_work(monkeypatch):
     monkeypatch.setenv("AYVEN_RESUME", "1")
+    monkeypatch.setenv("AYVEN_ENV", "local")
+    monkeypatch.setenv("AYVEN_THREAD_STUB", "1")
     objective = "What is the sum of 12 and 30?"
     project = _project(objective)
     parent = insert_package(
@@ -104,6 +106,8 @@ def test_resume_keeps_the_same_package_and_does_not_repeat_model_calls(monkeypat
     conn.commit()
     conn.close()
     monkeypatch.setenv("AYVEN_RESUME", "1")
+    monkeypatch.setenv("AYVEN_ENV", "local")
+    monkeypatch.setenv("AYVEN_THREAD_STUB", "1")
     resumed = resume_unfinished()
     assert resumed == [project]
     assert _calls(parent, "MANAGER") == before

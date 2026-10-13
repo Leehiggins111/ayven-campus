@@ -29,6 +29,32 @@ def test_current_prices_require_research():
     assert plan["required_tools"] == ["web_search", "fetch_page"]
 
 
+def test_a_timeout_then_bad_json_is_retried_and_records_a_blocker():
+    from app.db import connect
+    from app.goals import list_blockers
+
+    calls = {"n": 0}
+
+    def generator(*_args):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("timed out")
+        return "not json", 4, {"backend": "test"}
+
+    models.set_role_generator(generator)
+    conn = connect()
+    conn.execute(
+        "INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)",
+        ("plan-job", "Plan", "Write a plan", "running", "2026-10-13T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(ValueError):
+        plan_delivery("Write a plan", build_plan("request", "web_research", []), project_id="plan-job")
+    assert calls["n"] == 3
+    assert list_blockers("plan-job")
+
+
 def test_invalid_model_plan_fails_instead_of_inventing_a_deliverable():
     models.set_role_generator(lambda *args: ('{"title":"Fake", "output_kind":"send_email", "requirements":[], "needs_current_sources":false}', 10, {}))
     with pytest.raises(ValueError):

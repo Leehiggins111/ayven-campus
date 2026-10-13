@@ -198,6 +198,44 @@ def test_exhausted_attempts_escalate_the_job():
     assert claim("tired-job", "owner-b") is None
 
 
+def test_a_refused_claim_does_not_start_the_workflow(monkeypatch):
+    """A missed claim returns no new workflow. This does not prove two live processes."""
+    from dbos._error import DBOSNonExistentWorkflowError
+
+    from app import durable
+
+    monkeypatch.setattr(durable, "initialize", lambda: None)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("workflow started")
+
+    monkeypatch.setattr(durable, "_projects", type("Queue", (), {"enqueue": staticmethod(boom)})())
+
+    def missing(*_args, **_kwargs):
+        raise DBOSNonExistentWorkflowError("target", "project:job")
+
+    monkeypatch.setattr("app.intelligence.leases.claim", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(durable.DBOS, "retrieve_workflow", missing)
+    assert durable.enqueue_project("job") is None
+
+
+def test_the_thread_stub_does_not_execute_a_job(monkeypatch):
+    monkeypatch.setenv("AYVEN_ENV", "local")
+    monkeypatch.setenv("AYVEN_THREAD_STUB", "1")
+    started = []
+    monkeypatch.setattr("app.durable.enqueue_project", lambda project_id: started.append(project_id))
+    from app.orchestrator import _run_project, run_project
+
+    run_project("stub-job")
+    assert started == []
+    try:
+        _run_project("stub-job")
+        raised = False
+    except RuntimeError:
+        raised = True
+    assert raised
+
+
 def test_durable_mode_does_not_also_thread_resume(monkeypatch):
     """Proves the thread resume stays idle when DBOS recovery is on. Does not prove DBOS launched."""
     from app.intelligence.recovery import resume_unfinished
@@ -213,6 +251,8 @@ def test_a_second_resume_does_not_run_the_job_again(monkeypatch):
 
     monkeypatch.setenv("AYVEN_RESUME", "1")
     monkeypatch.setenv("AYVEN_DURABLE", "0")
+    monkeypatch.setenv("AYVEN_THREAD_STUB", "1")
+    monkeypatch.setenv("AYVEN_ENV", "local")
     calls = []
     monkeypatch.setattr(
         "app.intelligence.execution.run_objective",
@@ -222,6 +262,59 @@ def test_a_second_resume_does_not_run_the_job_again(monkeypatch):
     assert resume_unfinished() == ["resume-job"]
     assert resume_unfinished() == []
     assert calls == ["resume-job"]
+
+
+def test_two_processes_resuming_run_the_job_once(tmp_path):
+    """Proves two live resume processes execute the job once. Does not prove a crash mid-model-call."""
+    db = tmp_path / "resume.sqlite"
+    env = os.environ.copy()
+    env.update({
+        "PYTHONPATH": str(API) + os.pathsep + env.get("PYTHONPATH", ""),
+        "AYVEN_DB": str(db),
+        "AYVEN_RESUME": "1",
+        "AYVEN_DURABLE": "0",
+        "AYVEN_THREAD_STUB": "1",
+        "AYVEN_ENV": "local",
+        "AYVEN_LLM_STUB": "1",
+        "AYVEN_RESEARCH_MODE": "fixtures",
+        "AYVEN_ALLOW_ESCALATION": "0",
+    })
+    env.pop("AYVEN_DB_URL", None)
+    env.pop("AYVEN_WORKFLOW_DATABASE_URL", None)
+    setup = r"""
+from app.db import connect
+conn = connect()
+conn.execute(
+    "INSERT INTO projects(id, title, objective, status, created_at) VALUES(?,?,?,?,?)",
+    ("once-job", "Once", "Calculate 6 * 7.", "running", "2026-10-13T00:00:00+00:00"),
+)
+conn.commit()
+conn.close()
+"""
+    made = subprocess.run([sys.executable, "-c", setup], env=env, capture_output=True, text=True, timeout=30)
+    assert made.returncode == 0, made.stderr
+    script = r"""
+from app.intelligence.recovery import resume_unfinished
+found = resume_unfinished()
+print("RESUMED " + ",".join(found))
+"""
+    procs = [
+        subprocess.Popen([sys.executable, "-c", script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(2)
+    ]
+    outputs = []
+    for proc in procs:
+        out, err = proc.communicate(timeout=60)
+        assert proc.returncode == 0, err
+        outputs.append(out)
+    resumed = [text for text in outputs if "RESUMED once-job" in text]
+    assert len(resumed) == 1, outputs
+    count = subprocess.run(
+        [sys.executable, "-c", "from app.db import connect\nconn=connect()\nprint(conn.execute('SELECT COUNT(*) FROM model_calls').fetchone()[0])\nconn.close()"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert count.returncode == 0, count.stderr
+    assert int(count.stdout.strip()) == 3
 
 
 def test_health_answers_while_recovery_is_blocked(monkeypatch):

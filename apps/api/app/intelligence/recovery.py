@@ -115,11 +115,14 @@ def run_retries(fn, *, stage: str = "stage", max_attempts: int | None = None, pr
 def resume_unfinished() -> list[str]:
     """Re-dispatch projects left ``running`` when the worker process died.
 
-    ``AYVEN_RESUME=1`` is required. ``AYVEN_DURABLE=1`` does not use this path:
-    DBOS recovery is the only resume when it is on. A waiting package is
-    finalized so the project is not left ``running``. The claim is exclusive.
+    ``AYVEN_RESUME=1`` and the local test stub are both required. Production
+    recovery is the durable workflow. A waiting package is finalized so the
+    project is not left ``running``. The claim is exclusive.
     """
-    if os.environ.get("AYVEN_DURABLE", "0") == "1":
+    from ..durable import thread_stub_armed
+
+    # The in-process resume runs only as a local test stub. Production uses DBOS.
+    if not thread_stub_armed():
         return []
     if os.environ.get("AYVEN_RESUME", "0") != "1":
         return []

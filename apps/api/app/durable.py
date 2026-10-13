@@ -21,8 +21,89 @@ STATE_VERSION = 1
 _projects = None
 
 
+def thread_stub_armed() -> bool:
+    """The old in-process runner is a local test switch. It does not execute a job."""
+    if os.environ.get("AYVEN_THREAD_STUB") != "1":
+        return False
+    if os.environ.get("AYVEN_ENV") != "local":
+        raise RuntimeError("AYVEN_THREAD_STUB is a test switch and cannot run outside AYVEN_ENV=local")
+    return True
+
+
 def enabled() -> bool:
-    return os.environ.get('AYVEN_DURABLE', '0') == '1'
+    """Durable mode is the only execution mode. The thread stub turns it off in tests."""
+    if thread_stub_armed():
+        return False
+    return True
+
+
+def _workflow_database_url() -> str:
+    """DBOS system tables stay on local SQLite.
+
+    A remote ``AYVEN_DB_URL`` is not a workflow database. DBOS does not speak
+    libsql, and remote sync of these tables is unsupported.
+    """
+    explicit = (os.environ.get("AYVEN_WORKFLOW_DATABASE_URL") or "").strip()
+    if explicit:
+        return explicit
+    url = (os.environ.get("AYVEN_DB_URL") or "").strip()
+    if url.startswith("file:"):
+        local = url[5:]
+        if local.startswith("//"):
+            local = local[2:]
+        parent = Path(local).resolve().parent
+        parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{parent / 'ayven-workflows.sqlite'}"
+    return f"sqlite:///{db_path().resolve().parent / 'ayven-workflows.sqlite'}"
+
+
+def _maybe_crash(stage: str) -> None:
+    """Test hook. ``AYVEN_CRASH_STAGE`` exits the process before that stage commits."""
+    if os.environ.get("AYVEN_ENV") != "local":
+        return
+    wanted = (os.environ.get("AYVEN_CRASH_STAGE") or "").strip()
+    if not wanted or wanted != stage:
+        return
+    barrier = (os.environ.get("AYVEN_CRASH_BARRIER") or "").strip()
+    if barrier:
+        Path(barrier).write_text(stage)
+    os._exit(23)
+
+
+def _pulse(project_id: str, owner: str, fence: int):
+    """Extend the lease while a step runs. A lost lease is visible to the step."""
+    stop = threading.Event()
+    lost = threading.Event()
+    if not owner or not int(fence or 0):
+        return stop.set, lost
+    from .intelligence.leases import heartbeat, lease_seconds
+
+    def beat() -> None:
+        interval = max(5, lease_seconds() // 3)
+        while not stop.wait(interval):
+            if not heartbeat(project_id, owner, int(fence)):
+                lost.set()
+                return
+
+    heartbeat(project_id, owner, int(fence))
+    threading.Thread(target=beat, name="ayven-lease", daemon=True).start()
+    return stop.set, lost
+
+
+def _hold(project_id: str, owner: str, fence: int):
+    if not owner or not int(fence or 0):
+        return None
+    from .intelligence.leases import bind
+
+    return bind(project_id, owner, int(fence))
+
+
+def _drop(token) -> None:
+    if token is None:
+        return
+    from .intelligence.leases import reset
+
+    reset(token)
 
 
 def initialize() -> None:
@@ -33,19 +114,33 @@ def initialize() -> None:
         conn = connect()
         conn.execute('CREATE TABLE IF NOT EXISTS durable_checkpoints (job_id TEXT NOT NULL, stage TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY(job_id,stage))')
         conn.commit(); conn.close()
-        system_url = os.environ.get('AYVEN_WORKFLOW_DATABASE_URL') or f'sqlite:///{db_path().resolve().parent}/ayven-workflows.sqlite'
+        system_url = _workflow_database_url()
         DBOS(config={'name': 'ayven-engine', 'system_database_url': system_url,
                      'application_version': 'durable-v1', 'enable_otlp': False})
         DBOS.launch()
         _projects = DBOS.register_queue("ayven-projects", concurrency=1)
         _started = True
     # Recover API admission crashes (project committed before DBOS enqueue).
+    # DBOS.launch already resumes a workflow that exists. This loop only starts
+    # a job that never got a workflow, and only after a claim.
+    from .intelligence.leases import claim
+
     conn = connect()
     rows = conn.execute("SELECT p.id FROM projects p WHERE p.status='running' AND (EXISTS(SELECT 1 FROM tasks t WHERE t.id='engine:'||p.id) OR NOT EXISTS(SELECT 1 FROM work_packages w WHERE w.project_id=p.id))").fetchall()
     conn.close()
     for row in rows:
-        with SetWorkflowID(f"project:{row['id']}"):
-            _projects.enqueue(project_workflow, row['id'])
+        workflow_id = f"project:{row['id']}"
+        try:
+            DBOS.retrieve_workflow(workflow_id)
+            continue
+        except Exception:
+            pass
+        owner = f"dbos:{os.getpid()}"
+        fence = claim(row['id'], owner)
+        if fence is None:
+            continue
+        with SetWorkflowID(workflow_id):
+            _projects.enqueue(project_workflow, row['id'], owner, int(fence))
 
 
 def shutdown() -> None:
@@ -79,8 +174,29 @@ def restore(state: dict):
     return programme
 
 
+def saved_stage(job_id: str, stage: str):
+    """Read a committed receipt. This does not open a write transaction."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            'SELECT state_json FROM durable_checkpoints WHERE job_id=? AND stage=?',
+            (job_id, stage),
+        ).fetchone()
+    except Exception:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return json.loads(row['state_json'])
+
+
 def atomic_stage(job_id: str, stage: str, action):
-    """Close the app-commit/DBOS-checkpoint crash window with a local receipt."""
+    """Commit the stage receipt with the action's writes.
+
+    The action may write rows. It must not call the model. Model calls happen
+    before this function so the write lock is not held while the model runs.
+    """
     with stage_transaction() as conn:
         old = conn.execute('SELECT state_json FROM durable_checkpoints WHERE job_id=? AND stage=?', (job_id, stage)).fetchone()
         if old:
@@ -91,53 +207,121 @@ def atomic_stage(job_id: str, stage: str, action):
 
 
 @DBOS.step()
-def prepare_project(project_id: str) -> dict:
-    def action():
+def prepare_project(project_id: str, owner: str = "", fence: int = 0) -> dict:
+    """Plan and research outside the write lock. The receipt is a short commit."""
+    saved = saved_stage(project_id, 'prepare')
+    if saved is not None:
+        return saved
+    token = _hold(project_id, owner, fence)
+    stop, lost = _pulse(project_id, owner, fence)
+    try:
         from .intelligence.execution import Programme
+        from .intelligence.recovery import resume_parent
+
         conn = connect()
         project = conn.execute('SELECT * FROM projects WHERE id=?', (project_id,)).fetchone()
+        conn.close()
         if not project:
             raise KeyError('project not found')
-        # Stable task identity also permits Milo/Campus to correlate a recovered job.
         task_id = f'engine:{project_id}'
+        conn = connect()
         conn.execute('INSERT OR IGNORE INTO tasks(id,project_id,agent_id,title,brief,status,created_at) VALUES(?,?,?,?,?,?,?)',
                      (task_id, project_id, 'research-mgr', project['title'], project['objective'], 'running', project['created_at']))
+        conn.commit()
+        conn.close()
         programme = Programme(project_id, project['objective'], task_id)
+        parent = resume_parent(project_id)
+        if parent:
+            programme.resume_id = parent
         programme.prepare_all()
-        return snapshot(programme)
+        if lost.is_set():
+            from .intelligence.run_token import StaleWrite
+            raise StaleWrite('lease lost during prepare')
+        snap = snapshot(programme)
+    finally:
+        stop()
+        _drop(token)
+
+    def action():
+        return snap
+
     return atomic_stage(project_id, 'prepare', action)
 
 
 @DBOS.step()
-def execute_role(project_id: str, role: str, state: dict) -> dict:
-    def action():
-        from .intelligence.execution import _complete
+def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence: int = 0) -> dict:
+    """Call the model first. The write transaction starts only when the reply is stored."""
+    saved = saved_stage(project_id, role)
+    if saved is not None:
+        return saved
+    from .intelligence.execution import _complete
+
+    token = _hold(project_id, owner, fence)
+    stop, lost = _pulse(project_id, owner, fence)
+    try:
         programme = restore(state)
+        calls = []
         for prompt in programme.prompts(role):
-            text, _, meta = _complete(role, prompt['system'], prompt['user'],
-                max_tokens=480 if role == 'MANAGER' else (1400 if role == 'EMPLOYEE' and programme.plan.get('planning_source') == 'live_model' else 320),
-                programme=programme, package_id=prompt['id'])
+            limit = 480 if role == 'MANAGER' else (1400 if role == 'EMPLOYEE' and programme.plan.get('planning_source') == 'live_model' else 320)
+            text, _, meta = _complete(
+                role, prompt['system'], prompt['user'], max_tokens=limit,
+                programme=programme, package_id=prompt['id'],
+            )
             if meta.get('error'):
                 raise RuntimeError('Workforce model call failed; no fixture fallback was used')
-            programme.bind(role, prompt['id'], text, meta)
-        return snapshot(programme)
+            calls.append((prompt['id'], text, meta))
+        if lost.is_set():
+            from .intelligence.run_token import StaleWrite
+            raise StaleWrite('lease lost during the model call')
+        _maybe_crash(role)
+    finally:
+        stop()
+        _drop(token)
+
+    def action():
+        stored = restore(state)
+        for package_id, text, meta in calls:
+            stored.bind(role, package_id, text, meta)
+        return snapshot(stored)
+
     return atomic_stage(project_id, role, action)
 
 
 @DBOS.step()
-def finish_project(project_id: str) -> str:
-    def action():
-        from .orchestrator import finalize_project
-        finalize_project(project_id)
-        conn = connect()
-        row = conn.execute('SELECT status FROM projects WHERE id=?', (project_id,)).fetchone()
-        conn.execute('UPDATE tasks SET status=? WHERE id=?', (row['status'], f'engine:{project_id}'))
-        return row['status']
-    return atomic_stage(project_id, 'finish', action)
+def finish_project(project_id: str, owner: str = "", fence: int = 0) -> str:
+    token = _hold(project_id, owner, fence)
+    try:
+        def action():
+            from .orchestrator import finalize_project
+            finalize_project(project_id)
+            conn = connect()
+            row = conn.execute('SELECT status FROM projects WHERE id=?', (project_id,)).fetchone()
+            conn.execute('UPDATE tasks SET status=? WHERE id=?', (row['status'], f'engine:{project_id}'))
+            return row['status']
+        return atomic_stage(project_id, 'finish', action)
+    finally:
+        _drop(token)
 
 
 @DBOS.step()
-def fail_project(project_id: str, error_type: str) -> None:
+def release_lease(project_id: str, owner: str, fence: int, state: str) -> None:
+    if not owner or not int(fence or 0):
+        return
+    from .intelligence.leases import release
+
+    release(project_id, owner, int(fence), state)
+
+
+@DBOS.step()
+def fail_project(project_id: str, error_type: str, owner: str = "", fence: int = 0) -> None:
+    token = _hold(project_id, owner, fence)
+    try:
+        return _fail_project(project_id, error_type)
+    finally:
+        _drop(token)
+
+
+def _fail_project(project_id: str, error_type: str) -> None:
     def action():
         conn = connect()
         conn.execute('UPDATE projects SET status=?, result=? WHERE id=?',
@@ -153,26 +337,37 @@ def fail_project(project_id: str, error_type: str) -> None:
 
 
 @DBOS.workflow()
-def project_workflow(project_id: str) -> str:
+def project_workflow(project_id: str, owner: str = "", fence: int = 0) -> str:
     try:
-        state = prepare_project(project_id)
+        state = prepare_project(project_id, owner, int(fence or 0))
         if not state['programme']['paused']:
             for role in ('EMPLOYEE', 'SUPERVISOR', 'MANAGER'):
-                state = execute_role(project_id, role, state)
-        return finish_project(project_id)
+                state = execute_role(project_id, role, state, owner, int(fence or 0))
+        status = finish_project(project_id, owner, int(fence or 0))
     except Exception as exc:
-        fail_project(project_id, type(exc).__name__)
+        fail_project(project_id, type(exc).__name__, owner, int(fence or 0))
+        release_lease(project_id, owner, int(fence or 0), 'failed')
         raise
+    release_lease(project_id, owner, int(fence or 0), 'done')
+    return status
 
 
 def enqueue_project(project_id: str):
     initialize()
-    # The lease records the owner. DBOS workflow ids still dedupe a replay,
-    # so a missed claim must not skip recovery of an already-started workflow.
     from .intelligence.leases import claim
-    claim(project_id, f"dbos:{os.getpid()}")
-    with SetWorkflowID(f'project:{project_id}'):
-        return _projects.enqueue(project_workflow, project_id)
+
+    owner = f"dbos:{os.getpid()}"
+    fence = claim(project_id, owner)
+    workflow_id = f'project:{project_id}'
+    if fence is None:
+        # Another owner holds the job, or the attempt cap is spent.
+        # Return the workflow if one was already started. Do not start another.
+        try:
+            return DBOS.retrieve_workflow(workflow_id)
+        except Exception:
+            return None
+    with SetWorkflowID(workflow_id):
+        return _projects.enqueue(project_workflow, project_id, owner, int(fence))
 
 
 @DBOS.step()
