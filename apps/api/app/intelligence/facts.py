@@ -499,22 +499,35 @@ def _fold(text: str) -> str:
     return (text or "").replace("’", "'").replace("‘", "'").replace("`", "'").lower()
 
 
+def _compact_name(text: str) -> str:
+    """'Coffee Nerds' and the entity 'coffeenerds' are the same name."""
+    return re.sub(r"[^a-z0-9]", "", _fold(text))
+
+
+def _name_allowed(phrase: str, objective: str, facts: list[dict]) -> bool:
+    folded = _fold(phrase)
+    if folded and folded in _fold(objective or ""):
+        return True
+    compact = _compact_name(phrase)
+    for fact in facts:
+        entity = fact.get("entity") or ""
+        quote = fact.get("quote") or ""
+        if folded and folded in _fold(f"{entity} {quote}"):
+            return True
+        if compact and compact == _compact_name(entity):
+            return True
+    return False
+
+
 def _foreign_names(sentence: str, objective: str, facts: list[dict]) -> list[str]:
     from .deliverable import _IDENTITY
 
     if _title_line(sentence):
         return []
-    allowed = _fold(
-        " ".join(
-            [objective or ""]
-            + [fact.get("entity") or "" for fact in facts]
-            + [fact.get("quote") or "" for fact in facts]
-        )
-    )
     names = []
     for match in _IDENTITY.finditer(sentence or ""):
         phrase = re.sub(r"\s+", " ", match.group(0)).strip()
-        if _fold(phrase) in allowed:
+        if _name_allowed(phrase, objective, facts):
             continue
         names.append(phrase)
     return names
@@ -538,7 +551,7 @@ def _derived(value: float, cited_values: list[float]) -> bool:
         return True
     for index, left in enumerate(cited_values):
         for right in cited_values[index:]:
-            if abs(value - (left + right)) < 0.02 or (right and abs(value - (left * right)) < 0.02):
+            if abs(value - (left + right)) < 0.02:
                 return True
     return False
 
@@ -565,6 +578,18 @@ def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> st
     kept = []
     for sentence in _sentence_list(text):
         cited = _cited(sentence, table)
+        if _promise_blocked(sentence, objective, cited) and not re.search(r"24/7|always ready", sentence, re.I):
+            trimmed = _without_promise_clause(sentence)
+            from .deliverable import _ASK
+
+            if (
+                trimmed
+                and trimmed != sentence
+                and not _promise_blocked(trimmed, objective, cited)
+                and (len(trimmed.split()) >= 4 or _ASK.search(trimmed))
+            ):
+                sentence = trimmed
+                cited = _cited(sentence, table)
         if _promise_blocked(sentence, objective, cited):
             continue
         named = _foreign_names(sentence, objective, table)
@@ -574,10 +599,22 @@ def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> st
             continue
         if not cited:
             # A count is not a market figure. Drop the digits and keep the action.
-            if named or _MONEY.search(sentence) or re.search(r"%", sentence):
+            # An invented title is deleted. The rest of the model's sentence stays.
+            if _MONEY.search(sentence) or re.search(r"%", sentence):
+                continue
+            if named:
+                stripped = sentence
+                for name in sorted(named, key=len, reverse=True):
+                    stripped = re.sub(rf"\b{re.escape(name)}\b", "", stripped)
+                stripped = re.sub(r"\s{2,}", " ", stripped)
+                stripped = re.sub(r"\s+([,.;:!?])", r"\1", stripped).strip(" ,;:-")
+                if stripped and not re.search(r"[.!?]$", stripped):
+                    stripped += "."
+                if len(stripped.split()) >= 4:
+                    kept.append(stripped)
                 continue
             stripped = _YEAR.sub(" ", sentence)
-            stripped = re.sub(r"\b\d+(?:\.\d+)?\b", "", stripped)
+            stripped = re.sub(r"\b\d+(?:,\d{3})*(?:\.\d+)?\+?", "", stripped)
             stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,;:-")
             if len(stripped.split()) >= 4:
                 kept.append(stripped)
@@ -1042,6 +1079,23 @@ def _without_saving_clause(sentence: str) -> str:
     return nxt
 
 
+def _without_promise_clause(sentence: str) -> str:
+    """Delete a promise hung on the end of the model's sentence. Leave the rest."""
+    nxt = sentence or ""
+    nxt = re.sub(
+        r",?\s+\b(?:for\s+(?:a|an)\s+(?:free quote|free consultation|free home visit)|without(?:\s+the)?\s+upfront costs?|with(?:\s+no)?\s+upfront costs?|for free)\b",
+        "",
+        nxt,
+        flags=re.I,
+    )
+    nxt = re.sub(r"\s{2,}", " ", nxt)
+    nxt = re.sub(r"\s+([.!?])", r"\1", nxt)
+    nxt = re.sub(r"\s+,", ",", nxt).strip(" ,;:-")
+    if nxt and nxt != (sentence or "").strip() and not re.search(r"[.!?]$", nxt):
+        nxt += "."
+    return nxt
+
+
 def _drop_failed_sentences(key: str, text: str, objective: str, blob: str) -> str:
     """Delete a sentence the check rejects. Do not write a replacement."""
     from .deliverable import (
@@ -1064,6 +1118,17 @@ def _drop_failed_sentences(key: str, text: str, objective: str, blob: str) -> st
                 kept.append(trimmed)
             continue
         if unsupported_promise(stripped, objective, blob):
+            if re.search(r"24/7|always ready", stripped, re.I):
+                continue
+            trimmed = _without_promise_clause(stripped)
+            from .deliverable import _ASK
+
+            if (
+                trimmed
+                and not unsupported_promise(trimmed, objective, blob)
+                and (len(trimmed.split()) >= 4 or _ASK.search(trimmed))
+            ):
+                kept.append(trimmed)
             continue
         if _invented_saving(stripped, blob):
             trimmed = _without_saving_clause(stripped)

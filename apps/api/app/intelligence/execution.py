@@ -1998,6 +1998,13 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
                             reason = raw_reason
                         else:
                             reason = after or raw_reason or reason
+            if (
+                reason
+                and raw_reason
+                and "does not cite a £" in reason.lower()
+                and not _citation_gap(raw_reason)
+            ):
+                reason = raw_reason
             meta = dict(meta or {})
             meta["reason"] = reason
             _record_generation(programme, programme.parent_id or "", f"section:{key}", raw, meta, kept="" if reason else "kept", attempt=attempt)

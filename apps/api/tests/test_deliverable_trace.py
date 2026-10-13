@@ -2440,3 +2440,92 @@ def test_a_second_business_is_not_part_of_the_first_price():
     assert "Headline:" in kept
     assert "Call to action:" in kept
     assert section_rejection("advert", kept, blob, DOOR) == ""
+
+
+def test_a_lowercase_description_does_not_name_another_site():
+    from app.intelligence.deliverable import _names_opened_page, claim_mismatch
+    from app.intelligence.facts import enforce_citations, name_the_page
+
+    blob = (
+        "https://www.nationwidecoffee.co.uk/\n"
+        "Nationwide Coffee £2.70 per day.\n"
+        "https://www.coffeemachinerentals.co.uk/\n"
+        "prices ranging from £1,000 to £12,000\n"
+        "https://coffeenerds.co.uk/pages/cost\n"
+        "Most UK businesses renting a commercial coffee machine pay between £19 and £96 per week.\n"
+        "https://stafco.co.uk/\n"
+        "StafCo Coffee Machine Rentals\n"
+    )
+    facts = [
+        {"id": "F1", "entity": "Nationwide Coffee", "source": "https://www.nationwidecoffee.co.uk/", "quote": "£2.70 per day."},
+        {"id": "F2", "entity": "coffeemachinerentals", "source": "https://www.coffeemachinerentals.co.uk/", "quote": "prices ranging from £1,000 to £12,000"},
+        {"id": "F3", "entity": "coffeenerds", "source": "https://coffeenerds.co.uk/pages/cost", "quote": "Most UK businesses renting a commercial coffee machine pay between £19 and £96 per week."},
+    ]
+    sentence = (
+        "Nationwide Coffee offers coffee machine rentals at £2.70 per day [F1], "
+        "while Coffee Nerds provides weekly rental rates starting from £19 [F3]."
+    )
+    kept = enforce_citations(sentence, facts, "A coffee machine rental company.")
+    assert "2.70" in kept
+    assert "19" in kept
+    assert "Coffee Nerds" in kept
+    assert claim_mismatch(name_the_page(kept, facts), blob) == ""
+    assert _names_opened_page(
+        "offers coffee machine rentals at £2.70 per day",
+        "https://www.coffeemachinerentals.co.uk/",
+    ) is False
+    assert _names_opened_page("Nationwide Coffee offers rentals", "https://www.nationwidecoffee.co.uk/") is True
+    assert _names_opened_page(
+        "coffeemachinerentals offers machines from £1,000",
+        "https://www.coffeemachinerentals.co.uk/",
+    ) is True
+    blamed = "At StafCo, businesses can rent coffee machines for as little as £19 per week [F3] (coffeenerds.co.uk)."
+    assert "which opened page" in claim_mismatch(blamed, blob)
+
+
+def test_an_invented_offer_title_does_not_drop_the_package():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import enforce_citations
+
+    objective = "The service replaces kitchen doors, worktops and handles, and it avoids a full kitchen replacement."
+    text = (
+        "The Kitchen Revival Offer includes doors, worktops, and handles, leaving out structural changes and major fittings. "
+        "The visit measures the existing space to custom-fit the new elements, differing from a full kitchen renovation by focusing solely on surface updates."
+    )
+    kept = enforce_citations(text, [], objective)
+    assert "Kitchen Revival" not in kept
+    assert "doors" in kept and "worktops" in kept and "handles" in kept
+    assert section_rejection("offer and positioning", kept, "", objective) == ""
+
+
+def test_an_upfront_cost_clause_is_deleted_and_the_advert_stays():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import repair_before_gate
+
+    advert = (
+        "Headline: The service offers flexible coffee machine rental options.\n"
+        "Body: The service ensures your business has access to premium equipment without the upfront cost.\n"
+        "Call to action: Contact us today to find the perfect coffee solution for your needs."
+    )
+    kept = repair_before_gate("advert", advert, [], "A coffee machine rental company.", "")
+    assert "upfront" not in kept.lower()
+    assert "premium equipment" in kept
+    assert "Headline:" in kept and "Body:" in kept and "Call to action:" in kept
+    assert section_rejection("advert", kept, "", "A coffee machine rental company.") == ""
+
+
+def test_a_free_quote_clause_is_deleted_and_the_ask_stays():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import enforce_citations
+
+    text = (
+        "30,000+ homeowners how replacing your doors, worktops, and handles can transform your kitchen without the hassle of a full refit. "
+        "Contact us today for a free quote."
+    )
+    kept = enforce_citations(text, [], DOOR)
+    assert "free quote" not in kept.lower()
+    assert "+" not in kept
+    assert "30" not in kept
+    assert "Contact us today" in kept
+    assert "doors" in kept
+    assert section_rejection("call to action", kept, "", DOOR) == ""

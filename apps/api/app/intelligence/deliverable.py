@@ -1292,12 +1292,23 @@ def _ungrounded_amount(body: str, blob: str, allow_assumption: bool = True) -> b
 
 
 def _host_words_match(sentence: str, token: str) -> bool:
-    """The site name is a run of whole words. 'doors and worktops' is not a site."""
-    words = [word for word in re.findall(r"[a-z0-9]+", (sentence or "").lower()) if word not in {"and", "or"}]
-    for start in range(len(words)):
+    """A site is one word, or a run of capitalised words.
+
+    'coffee machine rentals' is a description. 'Joe's Doors' is the site.
+    """
+    words = re.findall(r"[A-Za-z0-9]+(?:['’]s)?", sentence or "")
+    words = [word for word in words if re.sub(r"[^a-z0-9]", "", word.lower()) not in {"and", "or"}]
+    for start, word in enumerate(words):
+        piece = re.sub(r"[^a-z0-9]", "", word.lower())
+        if piece == token:
+            return True
+        if not word[:1].isupper():
+            continue
         joined = ""
-        for word in words[start:]:
-            joined += word
+        for later in words[start:]:
+            if not later[:1].isupper():
+                break
+            joined += re.sub(r"[^a-z0-9]", "", later.lower())
             if len(joined) > len(token):
                 break
             if joined == token:
