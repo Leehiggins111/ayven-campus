@@ -451,7 +451,7 @@ class Programme:
             prompts = []
             for child in self.children:
                 if self.task_class == "business_research" and child.get("focus") == "draft":
-                    limit = 640
+                    limit = 2048
                 elif self.task_class == "business_research":
                     limit = 160
                 else:
@@ -983,7 +983,59 @@ def _finish_roles(programme: Programme) -> None:
                 child = next((item for item in programme.children if item["id"] == prompt["id"]), None)
                 plan_write = bool(child and child.get("focus") == "draft")
             text, _tokens, meta = _complete(role, prompt["system"], prompt["user"], max_tokens=limit, programme=programme, package_id=prompt["id"], plan=plan_write)
+            if plan_write and _draft_was_cut(text, meta):
+                text, meta = _continue_cut_draft(programme, prompt, text, meta)
             programme.bind(role, prompt["id"], text, meta)
+
+
+def _draft_was_cut(text: str, meta: dict | None) -> bool:
+    """A token limit that stops mid-sentence is not a finished draft."""
+    if str((meta or {}).get("finish_reason") or "") == "length":
+        return True
+    body = (text or "").strip()
+    if not body:
+        return False
+    last = body.splitlines()[-1].strip()
+    if not last:
+        return False
+    return not re.search(r"[.!?]$", last) and last.lower() != "nothing was sent."
+
+
+def _join_continuation(head: str, tail: str) -> str:
+    """Drop the unfinished last line and keep the continuation that finishes the draft."""
+    lines = (head or "").rstrip().splitlines()
+    if lines and not re.search(r"[.!?]$", lines[-1].strip()):
+        lines = lines[:-1]
+    body = "\n".join(lines).rstrip()
+    rest = (tail or "").strip()
+    if not rest:
+        return body
+    if body and rest.lower().startswith(body.lower()[:80]):
+        return rest if rest.endswith("\n") else rest + "\n"
+    return (body + "\n" + rest).strip() + "\n"
+
+
+def _continue_cut_draft(programme: Programme, prompt: dict, text: str, meta: dict) -> tuple[str, dict]:
+    """Ask the model to finish a draft the token limit cut off. Do not invent the missing lines."""
+    continued, _tokens, next_meta = _complete(
+        "EMPLOYEE",
+        prompt["system"],
+        prompt["user"]
+        + "\n\nThe draft stopped before it was finished. Continue from the last complete sentence. "
+        + "Do not repeat earlier sections. Finish every heading through Unresolved. End with: Nothing was sent.\n\n"
+        + "Draft so far:\n"
+        + (text or ""),
+        max_tokens=1200,
+        programme=programme,
+        package_id=prompt["id"],
+        plan=True,
+    )
+    joined = _join_continuation(text, continued)
+    kept = dict(next_meta or {})
+    kept["continued_from"] = (meta or {}).get("finish_reason") or "cut"
+    if not (continued or "").strip():
+        return _join_continuation(text, ""), meta
+    return joined, kept
 
 
 def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
@@ -1587,12 +1639,18 @@ def _check_for_model(reason: str) -> str:
         return "Use that page's £ figure and the condition stated with it, such as pay on completion or what the price excludes. Keep the citation. Paraphrase. Do not copy a run of the page's words."
     if "shared form" in lowered:
         return "Name a place and an action that fit this business. A sentence that would fit a different trade is not stored."
+    if "does not name a timeframe" in lowered:
+        return "The channel and the action can stay. Say first week or first month in the same sentence."
+    if "does not name a practical action" in lowered:
+        return "Name the action the owner takes on that channel. Say first week or first month."
     if "does not name a channel" in lowered or "timeframe" in lowered:
         return (
             "Name where a customer hears about the service: a showroom, Facebook, a directory, "
             "a leaflet, a website, or a workshop. Name the action and say first week or first month. "
             "Do not name a competitor."
         )
+    if "one source" in lowered or "which opened page" in lowered:
+        return "Put each £ figure in its own sentence with that figure's own opened page and [F#]. One claim, one source."
     if "fewer than two" in lowered:
         return "Name two opened businesses and what each offers. Say how this service differs. Do not invent a name."
     if "does not cite a £" in lowered:
@@ -1601,8 +1659,8 @@ def _check_for_model(reason: str) -> str:
         return "Paraphrase the page. Do not copy a run of its words. Keep the citation and the £ figure."
     if "page title" in lowered or "opened page text" in lowered:
         return "Do not paste a page title or an opened-sources dump. Say what the figure buys, or that the page does not give the unit."
-    if "not a complete phrase" in lowered or "ask about" in lowered:
-        return "Write a complete headline under 10 words. Do not start with Ask about."
+    if "not a complete phrase" in lowered or "fragment" in lowered or "ask about" in lowered:
+        return "Write a complete headline under 10 words. Do not start with Without or Ask about."
     if "assumption line restates" in lowered:
         return "Keep the cited fact on its own line. An Assumption line has no [F#] and no £ figure."
     if "prioritised" in lowered or "first month" in lowered:

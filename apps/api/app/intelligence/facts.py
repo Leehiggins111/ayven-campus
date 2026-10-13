@@ -721,19 +721,31 @@ def _market_line(fact: dict) -> str:
 
 
 def name_the_page(text: str, facts: list[dict] | None) -> str:
-    """A cited £ sentence names the opened host. The amount stays the fact's own."""
+    """Each cited £ names its own opened host. The first fact's host is not stamped on a second claim."""
     kept = []
     for sentence in _sentence_list(text):
-        hosts = []
-        for fact in _cited(sentence, facts or []):
-            host = _host(fact.get("source") or "")
+        cited = [fact for fact in _cited(sentence, facts or []) if "£" in sentence]
+        if len(cited) == 1:
+            host = _host(cited[0].get("source") or "")
             shown = host.removeprefix("www.")
-            if not host or host in sentence.lower() or (shown and shown in sentence.lower()) or "£" not in sentence:
-                continue
-            if host not in hosts:
-                hosts.append(host)
-        if hosts:
-            sentence = sentence.rstrip(" .") + f" ({hosts[0]})."
+            if host and host not in sentence.lower() and shown not in sentence.lower():
+                sentence = sentence.rstrip(" .") + f" ({shown})."
+        else:
+            for fact in cited:
+                host = _host(fact.get("source") or "")
+                shown = host.removeprefix("www.")
+                cite = str(fact.get("id") or "")
+                if not host or not cite or shown in sentence.lower():
+                    continue
+                tagged = re.sub(
+                    rf"(\[{re.escape(cite)}\])",
+                    rf"\1 ({shown})",
+                    sentence,
+                    count=1,
+                    flags=re.I,
+                )
+                if tagged != sentence:
+                    sentence = tagged
         kept.append(sentence)
     return "\n".join(kept).strip()
 

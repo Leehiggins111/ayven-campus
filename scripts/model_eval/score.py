@@ -46,9 +46,9 @@ def _amounts_outside_assumptions(text: str) -> list[str]:
 
 def score_plan(plan: str, objective: str, evidence: str, attempts: list[dict] | None = None) -> dict:
     """Section-gate results, invented prices, and how often replies talk about the task."""
-    from app.intelligence.deliverable import parse_sections, plan_sections_filled, section_rejection
+    from app.intelligence.deliverable import plan_sections_filled, section_rejection, sections_for_gate
 
-    sections = parse_sections(plan or "")
+    sections = sections_for_gate(plan or "")
     reasons = {}
     for key, body in sections.items():
         reason = section_rejection(key, body or "", evidence or "", objective or "")

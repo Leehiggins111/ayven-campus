@@ -848,21 +848,27 @@ def _advert_ok(sections: dict[str, str]) -> bool:
     return bool(owner_section("advert", prose))
 
 
+def sections_for_gate(text: str) -> dict[str, str]:
+    """The sections the product gate checks. Advert includes the call to action when it was parsed apart."""
+    sections = dict(parse_sections(text or ""))
+    advert = sections.get("advert") or ""
+    extra = sections.get("call to action") or ""
+    if extra and "call to action" not in advert.lower():
+        sections["advert"] = (advert + "\nCall to action: " + extra).strip()
+    if not (sections.get("call to action") or "").strip() and advert:
+        sections["call to action"] = advert
+    return sections
+
+
 def plan_sections_filled(text: str, evidence_blob: str = "", objective: str = "") -> bool:
     """True only when the owner sections are written, not left as Unresolved."""
-    sections = parse_sections(text)
+    sections = sections_for_gate(text)
     if not sections:
         return False
     for key in _REQUIRED:
         raw = sections.get(key) or ""
         if any(narration_reason(line) for line in raw.splitlines()):
             return False
-        if key == "advert":
-            extra = sections.get("call to action") or ""
-            if extra and "call to action" not in raw.lower():
-                raw = (raw + "\nCall to action: " + extra).strip()
-        elif key == "call to action" and not raw.strip():
-            raw = sections.get("advert") or ""
         if section_rejection(key, raw, evidence_blob, objective):
             return False
     return True
@@ -1132,7 +1138,9 @@ _OWNER_ACTIONS = (
     "count", "draft", "publish", "phone", "email", "list", "choose", "check",
     "collect", "decide", "photograph", "call", "meet", "read", "ask", "record",
     "book", "research", "scope", "note", "post", "reach", "start", "use", "operate",
-    "send", "share", "target", "outreach",
+    "send", "share", "target", "outreach", "register", "schedule", "gather",
+    "refine", "assess", "observe", "promote", "arrange", "install", "select",
+    "source", "secure", "partner",
 )
 _CONFIRM_REQUEST = re.compile(
     r"\b(?:could you confirm|can you confirm|please confirm if|confirm if this|"
@@ -1672,24 +1680,46 @@ def _page_text(blob: str, url: str) -> str:
     return ""
 
 
-def claim_mismatch(sentence: str, blob: str) -> str:
-    """The quantity, the unit, or the product is not what the opened page says.
+def _separate_price_claims(sentence: str, blob: str) -> list[str]:
+    """Two priced claims joined by while or by and. A range such as £19 and £96 stays one claim."""
+    parts = re.split(r"\b(?:while|whereas)\b", sentence or "", flags=re.I)
+    claims: list[str] = []
+    for part in parts:
+        bits = re.split(r"\band\b", part, flags=re.I)
+        if (
+            len(bits) >= 2
+            and all(_pound_amounts(bit) for bit in bits)
+            and all(_names_opened_page(bit, blob) for bit in bits)
+        ):
+            claims.extend(bit.strip() for bit in bits)
+        else:
+            claims.append(part.strip())
+    priced = [claim for claim in claims if claim and _pound_amounts(claim)]
+    return priced
 
-    An Assumption line that does not name a page may state a planning figure.
-    A line that names a page has to use that page's quantity, unit, and words.
-    A line that names two pages is checked clause by clause, so a figure cannot
-    borrow the other page.
-    """
-    if not _pound_amounts(sentence or ""):
-        return ""
+
+def _match_one_claim(sentence: str, blob: str, *, require_named: bool) -> str:
+    """One £ claim against the one page it names."""
     named = [url for url, _text in _pages_in_blob(blob) if url and _names_opened_page(sentence, url)]
     if not named:
-        # A planning line that uses a page's figure still has to use that page's words.
         holders: list[str] = []
-        for number in _claimed_numbers(sentence):
+        numbers = _claimed_numbers(sentence)
+        for number in numbers:
             for url, text in _pages_in_blob(blob):
                 if url and _number_on_page(number, text) and url not in holders:
                     holders.append(url)
+        if len(holders) > 1 and len(numbers) > 1:
+            co_located = False
+            for url in holders:
+                text = _page_text(blob, url)
+                if all(_number_on_page(number, text) for number in numbers):
+                    co_located = True
+                    break
+            if not co_located:
+                return "The claim mixes prices from more than one opened page. One claim, one source."
+        if require_named:
+            number = _claimed_numbers(sentence)[0]
+            return f"The claim states {number}, and it does not say which opened page that figure is on."
         if len(holders) == 1:
             return _mismatch_against(sentence, _page_text(blob, holders[0]))
         return ""
@@ -1704,10 +1734,15 @@ def claim_mismatch(sentence: str, blob: str) -> str:
                 return _mismatch_against(sentence, _page_text(blob, holders[0]))
             if holders:
                 return _mismatch_against(sentence, "\n".join(_page_text(blob, url) for url in holders))
+            number = _claimed_numbers(sentence)[0]
+            return f"The claim states {number}, and the opened page does not."
         pieces = re.split(r"\b(?:and|while|whereas)\b", sentence or "", flags=re.I)
         clauses: list[str] = []
         for piece in pieces:
-            # "doors and worktops" is one title. A price with no site stays with the previous clause.
+            # A host tag after the price stays with that price. "doors and worktops" stays one title.
+            if clauses and not _pound_amounts(piece):
+                clauses[-1] = clauses[-1] + " and " + piece
+                continue
             if clauses and _pound_amounts(piece) and not any(_names_opened_page(piece, url) for url in named):
                 clauses[-1] = clauses[-1] + " and " + piece
             else:
@@ -1718,10 +1753,18 @@ def claim_mismatch(sentence: str, blob: str) -> str:
                 continue
             saw_price = True
             pages = [url for url in named if _names_opened_page(clause, url)]
-            if len(pages) != 1:
+            page_hosts = {re.sub(r"^https?://", "", url, flags=re.I).split("/")[0].lower() for url in pages}
+            if len(page_hosts) != 1:
                 number = _claimed_numbers(clause)[0]
                 return f"The claim states {number}, and it does not say which opened page that figure is on."
-            reason = _mismatch_against(clause, _page_text(blob, pages[0]))
+            holders = [
+                url for url in pages
+                if any(_pound_supported(amount, _page_text(blob, url)) for amount in _pound_amounts(clause))
+            ]
+            source = _page_text(blob, holders[0]) if len(holders) == 1 else "\n".join(
+                _page_text(blob, url) for url in (holders or pages)
+            )
+            reason = _mismatch_against(clause, source)
             if reason:
                 return reason
         if saw_price:
@@ -1730,6 +1773,25 @@ def claim_mismatch(sentence: str, blob: str) -> str:
     if not source:
         return ""
     return _mismatch_against(sentence, source)
+
+
+def claim_mismatch(sentence: str, blob: str) -> str:
+    """The quantity, the unit, or the product is not what the opened page says.
+
+    An Assumption line that does not name a page may state a planning figure.
+    A line that names a page has to use that page's quantity, unit, and words.
+    Two prices in one sentence are two claims. Each names its own page.
+    """
+    if not _pound_amounts(sentence or ""):
+        return ""
+    claims = _separate_price_claims(sentence, blob)
+    if len(claims) > 1:
+        for claim in claims:
+            reason = _match_one_claim(claim, blob, require_named=True)
+            if reason:
+                return reason
+        return ""
+    return _match_one_claim(sentence, blob, require_named=False)
 
 
 def _claim_mismatches(body: str, blob: str) -> str:
@@ -1823,6 +1885,14 @@ def _headline_problem(title: str) -> str:
     words = re.findall(r"[A-Za-z0-9'’%]+", title or "")
     if words and (title.strip().lower().startswith("ask about") or len(words) >= 10 or len(words) < 3):
         return "The headline is not a complete phrase under 10 words."
+    # "Without a Full Refit" is a prepositional fragment. A headline names the result.
+    if re.match(r"^(?:without|with|for|from|by|through|via|about|over|under)\b", (title or "").strip(), re.I):
+        if not re.search(
+            r"\b(?:replace|replacing|refresh|rent|hire|install|avoid|keep|get|book|save|upgrade|transform|paint|call|contact)\b",
+            title or "",
+            re.I,
+        ):
+            return "The headline is a fragment, not a complete phrase under 10 words."
     return ""
 
 
@@ -2020,8 +2090,12 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
             return "The section does not name a channel, a practical action, and a timeframe."
         named = [word for word in _CHANNELS if _has_word(lowered, word)]
         actions = [word for word in _OWNER_ACTIONS if _has_action(lowered, word) and word not in named]
-        if not named or not actions or not _WHEN.search(body or ""):
-            return "The section does not name a channel, a practical action, and a timeframe."
+        if not named:
+            return "The section does not name a channel."
+        if not actions:
+            return "The channel section does not name a practical action."
+        if not _WHEN.search(body or ""):
+            return "The channel section does not name a timeframe."
     elif key == "next steps":
         if _shared_steps(body):
             return "The section uses the shared form. Name an action that fits this business."

@@ -2107,3 +2107,102 @@ def test_a_borrowed_name_is_deleted_and_the_model_sentence_stays():
     rejected = repair_before_gate("channels", still, [], objective, blob)
     assert "Joe's Doors" in rejected
     assert section_rejection("channels", rejected, blob, objective)
+
+
+def test_registering_the_service_is_an_owner_action():
+    from app.intelligence.deliverable import section_rejection
+
+    objective = "The service is a mobile visit. Do not invent a service area."
+    register = "Register the service on pettrader.co.uk and local community boards."
+    reason = section_rejection("next steps", register, "", objective)
+    assert "repeats the service" not in reason
+    assert "first week" in reason
+    scheduled = (
+        "In the first week, the owner will schedule a trial session at a local park. "
+        "In the first month, the owner will gather feedback from the customers."
+    )
+    assert section_rejection("next steps", scheduled, "", objective) == ""
+
+
+def test_each_price_names_its_own_page():
+    from app.intelligence.deliverable import claim_mismatch
+    from app.intelligence.facts import name_the_page
+
+    blob = (
+        "https://cocosdoggrooming.co.uk/prices/\n"
+        "Puppy grooms are £40.\n"
+        "https://www.bluedogmobile.co.uk/prices\n"
+        "Afghan Hound £95+\n"
+    )
+    mixed = (
+        "Coco's Mobile Dog Grooming offers puppy grooms for £40 [F1], "
+        "while Blue Dog Mobile Grooming charges £95 for an Afghan Hound [F2]."
+    )
+    reason = claim_mismatch(mixed, blob)
+    assert "40" in reason
+    assert "which opened page" in reason
+    assert "95" not in reason or "which opened page" in reason
+    one_block = "Guide prices are £40, £65 and £90 with no page named for each figure."
+    many = (
+        "https://cocosdoggrooming.co.uk/prices/\nPuppy grooms are £40.\n"
+        "https://pettrader.co.uk/prices\nMobile prices are £40 to £90.\n"
+        "https://www.groomeroo.co.uk/guides\nA full groom is £45 to £65.\n"
+    )
+    assert "one source" in claim_mismatch(one_block, many)
+    facts = [
+        {"id": "F1", "source": "https://refreshkitchen.co.uk/", "quote": "£950"},
+        {"id": "F2", "source": "https://www.kitchenfaces.co.uk/pricing", "quote": "£1,300"},
+    ]
+    tagged = name_the_page(
+        "Refresh Kitchen offers the work for £950 [F1], while Kitchen Faces charges £1,300 [F2].",
+        facts,
+    )
+    assert "[F1] (refreshkitchen.co.uk)" in tagged
+    assert "[F2] (kitchenfaces.co.uk)" in tagged
+    assert tagged.rstrip(".").endswith("refreshkitchen.co.uk)") is False
+
+
+def test_a_prepositional_headline_is_a_fragment():
+    from app.intelligence.deliverable import plan_sections_filled, section_rejection, sections_for_gate
+    from scripts.model_eval.score import score_plan
+
+    body = "The service replaces kitchen doors, worktops and handles and differs from painting."
+    cta = "Contact us today and ask for a visit."
+    fragment = f"Headline: Without a Full Refit\nBody: {body}\nCall to action: {cta}"
+    assert "complete phrase" in section_rejection("advert", fragment, "", DOOR)
+    whole = f"Headline: New doors without a full refit\nBody: {body}\nCall to action: {cta}"
+    assert section_rejection("advert", whole, "", DOOR) == ""
+    plan = f"Advert\nHeadline: New doors without a full refit\nBody: {body}\n\nCall to action\n{cta}\n"
+    joined = sections_for_gate(plan)["advert"]
+    assert "Call to action:" in joined
+    scored = score_plan(plan, DOOR, "", [])
+    assert scored["section_reasons"].get("advert", "") == section_rejection("advert", joined, "", DOOR)
+    assert plan_sections_filled(plan, "", DOOR) is False or "advert" not in scored["section_reasons"]
+
+
+def test_a_channel_without_a_timeframe_names_that_gap():
+    from app.intelligence.deliverable import section_rejection
+
+    reason = section_rejection(
+        "channels",
+        "The owner promotes the service through the website by offering a rental option.",
+        "",
+        "The service is coffee machine rental.",
+    )
+    assert reason == "The channel section does not name a timeframe."
+
+
+def test_a_cut_draft_keeps_the_continuation():
+    from app.intelligence.execution import _draft_was_cut, _join_continuation
+
+    cut = "Assumptions\nThe price follows the measurements. The"
+    assert _draft_was_cut(cut, {"finish_reason": "length"})
+    assert _draft_was_cut("Assumptions\nThe price follows the measurements.", {"finish_reason": "stop"}) is False
+    joined = _join_continuation(
+        cut,
+        "The measured inputs set the price.\n\nUnresolved\nThe service area is still open.\n\nNothing was sent.",
+    )
+    assert " The\n" not in joined
+    assert not joined.rstrip().endswith(" The")
+    assert "Unresolved" in joined
+    assert "The measured inputs set the price." in joined
