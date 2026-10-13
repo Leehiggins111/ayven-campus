@@ -988,7 +988,7 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
 _UNSUPPORTED_PROMISES = (
     "free consultation", "free quote", "free home visit", "free home",
     "in one day", "same day", "same-day", "guaranteed", "upfront cost",
-    "free trial",
+    "free trial", "free introductory", "free mini",
 )
 
 
@@ -1205,7 +1205,7 @@ _OWNER_ACTIONS = (
     "book", "research", "scope", "note", "post", "reach", "start", "use", "operate",
     "send", "share", "target", "outreach", "register", "schedule", "gather",
     "refine", "assess", "observe", "promote", "arrange", "install", "select",
-    "source", "secure", "partner",
+    "source", "secure", "partner", "set", "host",
 )
 _CONFIRM_REQUEST = re.compile(
     r"\b(?:could you confirm|can you confirm|please confirm if|confirm if this|"
@@ -2275,6 +2275,8 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
             return "The offer is one generic sentence. Name what the package includes and what the visit measures."
         if not _offer_names_measurement(body, objective):
             return "The offer does not say what the visit measures."
+        if _pasted_quote(body, blob):
+            return "The offer pastes an opened page. Name what this service includes in your own words."
     elif key == "channels":
         if _shared_channel(body):
             return "The section uses the shared form. Name an action that fits this business."
@@ -2286,6 +2288,16 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
             return "The section does not name a channel, a practical action, and a timeframe."
         if _price_is_the_channel(body):
             return "Name how a customer hears about the service. Listing a price is not the channel."
+        if (
+            re.search(r"\blists?\b", lowered)
+            and re.search(r"\bwebsite\b", lowered)
+            and not any(_has_word(lowered, word) for word in _HEARD_BY)
+            and not any(
+                _has_word(lowered, word)
+                for word in ("directory", "leaflet", "facebook", "instagram", "google", "workshop", "checkatrade")
+            )
+        ):
+            return "The channel only lists the service on a website. Name where a customer hears about this service."
         named = [word for word in _CHANNELS if _has_word(lowered, word)]
         actions = [word for word in _OWNER_ACTIONS if _has_action(lowered, word) and word not in named]
         if not named:

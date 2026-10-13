@@ -2543,6 +2543,35 @@ def test_an_invented_offer_title_does_not_drop_the_package():
     assert section_rejection("offer and positioning", kept, "", objective) == ""
 
 
+def test_a_park_setup_is_an_owner_action_and_a_pasted_menu_is_not_the_offer():
+    from app.intelligence.deliverable import section_rejection
+
+    objective = "The service is a home visit. The owner is willing to travel."
+    steps = (
+        "In the first week, the owner will set up a station at a local pet park and invite customers. "
+        "In the first month, the owner will host a demonstration at a community centre."
+    )
+    assert "repeats the service" not in section_rejection("next steps", steps, "", objective)
+    assert section_rejection("next steps", steps, "", objective) == ""
+    free = (
+        "In the first week, the owner will set up a station at a local pet park to offer free introductory sessions. "
+        "In the first month, the owner will host a demonstration and invite customers."
+    )
+    assert "free introductory" in section_rejection("next steps", free, "", objective).lower()
+    listed = "The owner lists the service on the website during the first week."
+    assert "only lists" in section_rejection("channels", listed, "", objective).lower()
+    offer = (
+        "The offer includes a full service with bath, blow dry, brush out, nail trim, ear clean, "
+        "hygiene trim, breed or pet style, finishing cologne, and a health check. "
+        "It differs from a shop visit by coming to the home."
+    )
+    blob = (
+        "Full service from £45. Bath, blow dry, brush out, nail trim, ear clean, "
+        "hygiene trim, breed or pet style, finishing cologne, and a health check."
+    )
+    assert "pastes an opened page" in section_rejection("offer and positioning", offer, blob, objective)
+
+
 def test_a_unit_retry_names_the_page_unit():
     from app.intelligence.execution import _check_for_model
 

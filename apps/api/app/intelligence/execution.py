@@ -1655,6 +1655,9 @@ def _check_for_model(reason: str) -> str:
     if "does not say how this service differs" in lowered:
         return "Say how this service differs from the two businesses. Use differs, unlike, or instead."
     if "promises '" in lowered:
+        named = re.search(r"promises '([^']+)'", text, re.I)
+        if named and named.group(1).lower().startswith("free"):
+            return "Do not promise anything free. Name the action without a free offer."
         return "The previous line promised something the request does not say. Do not repeat that promise."
     if "does not ask the customer" in lowered or "names the person who wrote" in lowered:
         return "Ask the reader to get in touch. Do not name the person who wrote the request."
@@ -1668,6 +1671,11 @@ def _check_for_model(reason: str) -> str:
         return "The channel and the action can stay. Say first week or first month in the same sentence."
     if "does not name a practical action" in lowered:
         return "Name the action the owner takes on that channel. Say first week or first month."
+    if "only lists the service" in lowered:
+        return (
+            "Name where a customer hears about this service: Facebook, a directory, a leaflet, "
+            "or a workshop. Listing it on the website is not enough."
+        )
     if "does not name a channel" in lowered or "timeframe" in lowered:
         return (
             "Name where a customer hears about the service: Facebook, a directory, "
@@ -1682,6 +1690,8 @@ def _check_for_model(reason: str) -> str:
         return "Keep the section short. For pricing, one £ line with its [F#] and one Assumption line."
     if "does not cite a £" in lowered:
         return "Put [F#] in the same sentence as the £ figure. Keep the quantity and the unit."
+    if "pastes an opened page" in lowered:
+        return "Do not copy the opened page's list. Name what this service includes in your own words."
     if "page heading" in lowered or "pastes the page" in lowered:
         return "Paraphrase the page. Do not copy a run of its words. Keep the citation and the £ figure."
     if "page title" in lowered or "opened page text" in lowered:
