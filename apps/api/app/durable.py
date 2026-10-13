@@ -167,6 +167,10 @@ def project_workflow(project_id: str) -> str:
 
 def enqueue_project(project_id: str):
     initialize()
+    # The lease records the owner. DBOS workflow ids still dedupe a replay,
+    # so a missed claim must not skip recovery of an already-started workflow.
+    from .intelligence.leases import claim
+    claim(project_id, f"dbos:{os.getpid()}")
     with SetWorkflowID(f'project:{project_id}'):
         return _projects.enqueue(project_workflow, project_id)
 

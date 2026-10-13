@@ -18,7 +18,7 @@ root=Path(os.environ['PROBE_ROOT'])
 mode=sys.argv[1]
 if mode=='crash':
     conn=connect()
-    conn.execute('INSERT INTO projects VALUES(?,?,?,?,?,?)',('proof','Calculation','Calculate 6 * 7.','running',None,'2026-10-09'))
+    conn.execute('INSERT INTO projects(id,title,objective,status,result,created_at) VALUES(?,?,?,?,?,?)',('proof','Calculation','Calculate 6 * 7.','running',None,'2026-10-09'))
     conn.commit(); conn.close()
     if os.environ['CRASH_POINT']=='admission':
         os._exit(23)
@@ -78,7 +78,7 @@ def test_approval_is_atomic_idempotent_and_conflicts_are_rejected(tmp_path, monk
     reset_connection_state()
     conn=connect()
     conn.execute('CREATE TABLE durable_checkpoints(job_id TEXT,stage TEXT,state_json TEXT,PRIMARY KEY(job_id,stage))')
-    conn.execute('INSERT INTO projects VALUES(?,?,?,?,?,?)',('approval-project','Approval','Draft only','waiting',None,'2026-10-09'))
+    conn.execute('INSERT INTO projects(id,title,objective,status,result,created_at) VALUES(?,?,?,?,?,?)',('approval-project','Approval','Draft only','waiting',None,'2026-10-09'))
     conn.execute('INSERT INTO work_packages(id,project_id,title,objective,origin,stage,status,created_at,updated_at,tier,workflow_state,findings) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',('parent','approval-project','Draft','Draft only','milo','approval','needs_approval','now','now','MANAGER','AWAITING_APPROVAL','Verified draft'))
     conn.execute('INSERT INTO approvals(id,task_id,project_id,agent_id,summary,status,created_at) VALUES(?,?,?,?,?,?,?)',('approval','parent','approval-project','research-mgr','Review draft','pending','now'))
     conn.commit();conn.close()
@@ -132,7 +132,7 @@ def test_unconfigured_live_model_is_visible_as_failure(tmp_path):
 from app.db import connect
 from app import durable
 conn=connect()
-conn.execute('INSERT INTO projects VALUES(?,?,?,?,?,?)',('live-failure','Failure','Calculate 6 * 7.','running',None,'2026-10-09'))
+conn.execute('INSERT INTO projects(id,title,objective,status,result,created_at) VALUES(?,?,?,?,?,?)',('live-failure','Failure','Calculate 6 * 7.','running',None,'2026-10-09'))
 conn.commit();conn.close()
 try:
     durable.enqueue_project('live-failure').get_result()

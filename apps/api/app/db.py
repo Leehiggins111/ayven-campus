@@ -1,3 +1,4 @@
+import collections.abc
 import sqlite3
 from pathlib import Path
 
@@ -5,6 +6,8 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 import threading
+
+_synced_urls: set[str] = set()
 
 _stage_connection = ContextVar("stage_connection", default=None)
 
@@ -40,6 +43,15 @@ def stage_transaction():
     try:
         yield proxy
         with proxy.lock:
+            from .intelligence.leases import assert_fence
+            from .intelligence.run_token import StaleWrite
+
+            try:
+                target = getattr(connection, "_connection", connection)
+                assert_fence(target)
+            except StaleWrite:
+                connection.rollback()
+                raise
             connection.commit()
     except BaseException:
         with proxy.lock:
@@ -64,8 +76,95 @@ def reset_connection_state() -> None:
     _state["path"] = None
 
 
+class _MappedRow(collections.abc.Mapping):
+    """libsql rows are tuples. Callers use row['id'] and dict(row)."""
+
+    def __init__(self, keys, values):
+        self._keys = list(keys)
+        self._values = tuple(values)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return self._values[self._keys.index(key)]
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __len__(self):
+        return len(self._keys)
+
+
+class _MappedCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        description = cursor.description or []
+        self._keys = [item[0] for item in description]
+
+    def _wrap(self, row):
+        if row is None or isinstance(row, collections.abc.Mapping):
+            return row
+        return _MappedRow(self._keys, row)
+
+    def fetchone(self):
+        return self._wrap(self._cursor.fetchone())
+
+    def fetchall(self):
+        return [self._wrap(row) for row in self._cursor.fetchall()]
+
+    def __iter__(self):
+        return (self._wrap(row) for row in self._cursor)
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+
+class _MappedConnection:
+    """A libsql connection whose rows behave like sqlite3.Row."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def execute(self, sql, params=()):
+        cursor = self._raw.execute(sql, params if params is not None else ())
+        if hasattr(self._raw, "row_factory"):
+            return cursor
+        return _MappedCursor(cursor)
+
+    def executemany(self, sql, seq):
+        return self._raw.executemany(sql, seq)
+
+    def executescript(self, sql):
+        if hasattr(self._raw, "executescript"):
+            return self._raw.executescript(sql)
+        for statement in sql.split(";"):
+            if statement.strip():
+                self._raw.execute(statement)
+        return self
+
+    def commit(self):
+        return self._raw.commit()
+
+    def rollback(self):
+        return self._raw.rollback()
+
+    def close(self):
+        return self._raw.close()
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
 def _libsql_connect(url: str, auth_token: str):
-    """Embedded replica. The local file is a cache; Turso is the durable copy."""
+    """Local file, or an embedded replica when both URL and token are set.
+
+    Sync runs once per URL. A file URL does not contact Turso and does not
+    fall back to the SQLite file when libsql is missing.
+    """
     try:
         import libsql
     except ImportError:
@@ -73,14 +172,22 @@ def _libsql_connect(url: str, auth_token: str):
             import libsql_experimental as libsql
         except ImportError as exc:
             raise RuntimeError("AYVEN_DB_URL is set but the libsql package is not installed") from exc
-    path = db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = libsql.connect(str(path), sync_url=url, auth_token=auth_token)
-    if hasattr(conn, "sync"):
-        conn.sync()
+    if url.startswith("file:"):
+        local = url[5:]
+        if local.startswith("//"):
+            local = local[2:]
+        conn = libsql.connect(local)
+    else:
+        path = db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = libsql.connect(str(path), sync_url=url, auth_token=auth_token)
+        if url not in _synced_urls and hasattr(conn, "sync"):
+            conn.sync()
+            _synced_urls.add(url)
     if hasattr(conn, "row_factory"):
         conn.row_factory = sqlite3.Row
-    return conn
+        return conn
+    return _MappedConnection(conn)
 
 
 _MUTATIONS = {"INSERT", "UPDATE", "DELETE", "REPLACE", "BEGIN"}
@@ -114,17 +221,32 @@ class _GuardedConnection:
 
         reject_if_stale()
 
+    def commit(self):
+        from .intelligence.leases import assert_fence
+        from .intelligence.run_token import StaleWrite
+
+        try:
+            assert_fence(self._connection)
+        except StaleWrite:
+            self._connection.rollback()
+            raise
+        return self._connection.commit()
+
+    def rollback(self):
+        return self._connection.rollback()
+
     def __getattr__(self, name):
         return getattr(self._connection, name)
 
 
-def connect() -> sqlite3.Connection:
-    owned = _stage_connection.get()
-    if owned is not None:
-        return owned
+def open_raw():
+    """A connection that is not the stage proxy. Claims use this so two processes can lock."""
     url = os.environ.get("AYVEN_DB_URL", "").strip()
     auth_token = os.environ.get("AYVEN_DB_AUTH_TOKEN", "").strip()
-    if url or auth_token:
+    if url.startswith("file:"):
+        conn = _libsql_connect(url, "")
+        identity = f"libsql:{url}"
+    elif url or auth_token:
         if not url or not auth_token:
             raise RuntimeError("AYVEN_DB_URL and AYVEN_DB_AUTH_TOKEN must be set together")
         conn = _libsql_connect(url, auth_token)
@@ -134,11 +256,20 @@ def connect() -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path, check_same_thread=False, timeout=180)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        conn.execute("PRAGMA busy_timeout=5000")
         identity = str(path)
     if _state["path"] != identity:
         init_db(conn)
         _state["path"] = identity
-    return _GuardedConnection(conn)
+    return conn
+
+
+def connect() -> sqlite3.Connection:
+    owned = _stage_connection.get()
+    if owned is not None:
+        return owned
+    return _GuardedConnection(open_raw())
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -164,6 +295,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_v22(conn)
     migrate_v23(conn)
     migrate_v24(conn)
+    migrate_v25(conn)
+    migrate_v26(conn)
     from .blobs import ensure_schema as blob_schema
     from .goals import ensure_schema as goal_schema
     from .intelligence.budget import ensure_schema as budget_schema
@@ -409,6 +542,41 @@ def migrate_v23(conn: sqlite3.Connection) -> None:
 def migrate_v24(conn: sqlite3.Connection) -> None:
     """Prompt-eval, generation, and load durations. Additive only."""
     _add_columns(conn, "model_calls", {"prompt_eval_s": "REAL", "eval_s": "REAL", "load_s": "REAL"})
+    conn.commit()
+
+
+def migrate_v25(conn: sqlite3.Connection) -> None:
+    """Exclusive job claim and the side-effect outbox. Local SQLite is the claim store."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS job_leases (
+            job_id TEXT PRIMARY KEY,
+            owner TEXT NOT NULL DEFAULT '',
+            lease_until INTEGER NOT NULL DEFAULT 0,
+            fence INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            state TEXT NOT NULL DEFAULT 'ready'
+        );
+        CREATE TABLE IF NOT EXISTS side_effects (
+            idem_key TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            fence INTEGER NOT NULL DEFAULT 0,
+            stage TEXT NOT NULL,
+            action TEXT NOT NULL,
+            target TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_json TEXT,
+            created_at INTEGER NOT NULL
+        );
+        """
+    )
+    conn.commit()
+
+
+def migrate_v26(conn: sqlite3.Connection) -> None:
+    """Milo constraints and the job mode Milo reads back."""
+    _add_columns(conn, "projects", {"constraints_json": "TEXT", "run_mode": "TEXT"})
     conn.commit()
 
 

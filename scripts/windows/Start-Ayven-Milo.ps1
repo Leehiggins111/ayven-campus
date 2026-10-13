@@ -76,7 +76,7 @@ if (-not $Existing) {
     if (-not $Ready) { throw "Engine did not become ready. Read $Data\engine-error.log." }
 }
 $env:MILO_ENGINE_ENABLED = '1'
-$env:AYVEN_ENGINE_BASE_URL = 'http://127.0.0.1:8000'
+$env:CAMPUS_BASE_URL = 'http://127.0.0.1:8000'
 $env:AYVEN_ENGINE_TOKEN = $Key
 $env:MILO_MODEL_PROVIDER = 'ollama'
 $env:MILO_MODEL_NAME = 'qwen3:4b'

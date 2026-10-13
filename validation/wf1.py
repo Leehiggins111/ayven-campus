@@ -51,17 +51,18 @@ FILES = [
 
 ACCEPTANCE_OBJECTIVE = (
     "Prepare a ready-to-paste Payhip listing draft and an Etsy draft listing for the "
-    "Scottish Short-Term Let Host Kit, fixture wf1-stl-kit. Package the eight QA-passed files. "
+    "Scottish Short-Term Let Host Kit, fixture wf1-stl-kit. "
+    "Build the eight kit files from the spec in the inputs. Finished files are not supplied. "
     "Publish nothing. Send nothing. Spend nothing. "
-    "Prices come from offer-final.md: Payhip £9.00 VAT included, Etsy £7.50. "
+    "Prices come from offer-final.md: Payhip £9.00 VAT included, Etsy £7.50, net £6.02. "
     "Consent is collected only at the Payhip checkout and on the receipt."
 )
 
 FIXTURES = {
-    "I2-readme.md": "Product name: Scottish Short-Term Let Host Kit. Files: 4 PDFs + 4 DOCX. Read me first 1 page A4 portrait. Welcome Book 9 pages A4 portrait, good practice, not a Schedule 3 item. Host Record Logs 16 pages A4 landscape. Guest Info Pages 6 pages A4 portrait. PDFs are print-ready, print-and-handwrite, not fillable. DOCX tested in LibreOffice only. Last checked 13 Oct 2026. No consent box in the files.",
+    "I2-readme.md": "Product name: Scottish Short-Term Let Host Kit. Files to build: 4 PDFs + 4 DOCX. Read me first 1 page A4 portrait. Welcome Book 9 pages A4 portrait, good practice, not a Schedule 3 item. Host Record Logs 16 pages A4 landscape. Guest Info Pages 6 pages A4 portrait. PDFs are print-ready, print-and-handwrite, not fillable. DOCX tested in LibreOffice only. Last checked 13 Oct 2026. Build these files from this spec.",
     "I3-content.md": "A record-keeping and guest-information aid for short-term let hosts in Scotland. Not legal advice, not an application form. Legal basis: Sch. 3 of SSI 2022/32 as amended, including para 12(g)(h) by SSI 2024/227 from 30 Aug 2024, plus gov.scot guidance. Not included: licence application forms, a fire risk assessment template, filled certificates or reports, legal advice, your council's conditions. Disclaimer: aid not advice, check your own licence and council conditions, not affiliated with the Scottish Government or councils.",
     "I4-verify.md": "Max guests is good practice per gov.scot guidance para 5.7. The only legal statement is para 11: do not exceed the licence maximum.",
-    "I5-offer-final.md": "Buyer pays £9.00. Payhip list £9.00 VAT included, Handle UK and EU VAT ON. Etsy list £7.50 and Etsy adds VAT so UK/EU buyers pay £9.00. VAT status assumed not registered, Lee to confirm. Support: first reply within 2 working days Monday to Friday. Free updates for 12 months. Faulty files fixed or replaced within 2 working days otherwise a full refund, reports accepted for 6 months. Etsy honours 14-day cancellation. Consent only at Payhip checkout and receipt.",
+    "I5-offer-final.md": "Buyer pays £9.00. Payhip list £9.00 VAT included, Handle UK and EU VAT ON. Etsy list £7.50 and Etsy adds VAT so UK/EU buyers pay £9.00. Net to the seller £6.02. VAT status assumed not registered, Lee to confirm. Support: first reply within 2 working days Monday to Friday. Free updates for 12 months. Faulty files fixed or replaced within 2 working days otherwise a full refund, reports accepted for 6 months. Etsy honours 14-day cancellation. Consent only at Payhip checkout and receipt.",
     "I6-payhip.md": f"Tickbox, required and unticked: {TICKBOX} Fallback: if a TEST checkout cannot capture the unticked box, honour 14-day cancellations with a full refund.",
     "I7-qa.md": "v3 retest verdict READY TO LIST. DOCX tested in LibreOffice. Word and Google Docs were not tested.",
     "I8-channels.md": "PECR: no cold email, SMS, WhatsApp or social DMs to hosts or sole traders. A newsletter opt-in must be unticked by default.",

@@ -2,9 +2,32 @@
 
 No pod was created and no money was spent. The default command path prints the plan and exits. A pod is refused unless `AYVEN_CONFIRM_SPEND=YES`, which this run does not set.
 
+## Acceptance criteria
+
+These are the gates. They are written to `evidence/live/<run-id>/criteria.json` before any result file. This run did not create that directory.
+
+- 50 constrained tool calls per role: at least 98 percent valid the first time, 100 percent after one repair, and zero reasoning strings reaching a tool.
+- 20 irrelevance prompts: at most 2 tool calls.
+- 10 missing-tool prompts: at least 8 of 10 end in cannot or escalate.
+- 10 director plans.
+- QA planted-defect set of 10: at least 8 caught.
+- Record model identity, configuration, results, failures, run time, tokens, cost, and owner interventions under `evidence/live/<run-id>/`.
+
+The multi-step task that exposes the long-chain weakness: search once for a public page about Scottish short-term let guest records, fetch that page, calculate 9.00 minus 2.98 as a check rather than a price, write one sentence that uses only a sentence from the page, then stop. Tools are `web_search`, `fetch_page`, and `calculator`. Code checks the calculator. The sentence must not add a claim that was not on the page.
+
 ## Model
 
-Primary: `Qwen3-30B-A3B-Instruct-2507`, one model for every role, llama.cpp `llama-server`, GGUF `Q4_K_M` (bartowski, about 18.6 GB), 16K context, `--reasoning off`, `--jinja`.
+Primary, step 1: `Qwen3-30B-A3B-Instruct-2507`, one model for every role, llama.cpp `llama-server`, GGUF `Q4_K_M` (bartowski, about 18.6 GB), 16K context, `--reasoning off`, `--jinja`. UNVERIFIED. Off until `AYVEN_CONFIRM_SPEND=YES`.
+
+## Backup order
+
+UNVERIFIED. Off by default. No paid external model. BFCL figures came from DashScope's API with native function calling. They do not transfer directly to Q4_K_M on llama.cpp. That comparison is an assumption.
+
+1. Test step 1.
+2. If the director plan test fails, try `Qwen3-8B` in BF16 with thinking on (about 16 GB, fits a 24 GB 4090). R9 strip tests must pass on that thinking output. Community 4090 was $0.34/h at 11:30; a 3090 was $0.22/h.
+3. Only then `Qwen3-32B` Q4_K_M, 19.8 GB. On 24 GB that fits about 8K context. Otherwise a 48 GB A6000 at $0.33/h community. The live script does not start step 3.
+
+Steps 1 and 2 run in one session under the same cap ($1.10 community, $0.34/h, or the secure cap if that tier is selected). Wall clock 3 hours. Delete the pod. Do not stop it.
 
 Fallback A, only if llama.cpp will not load: vLLM AWQ `Sophia-AI/Qwen3-30B-A3B-Instruct-2507-AWQ-W4A16` with `--structured-outputs-config.backend xgrammar`. Do not pass `--reasoning-parser qwen3`. vLLM 0.12 removed `--guided-decoding-backend` and `guided_json`. `scripts/gpu_employee.sh` and `scripts/gpu_manager.sh` now use the structured-outputs flag. They still name the older 8B and 30B-A3B checkpoints and are not the live-test command.
 
@@ -38,13 +61,13 @@ Community rate `$0.34/h`, hard cap `$1.10`. Secure rate `$0.89/h`, hard cap `$2.
 | Row | Status | Evidence |
 |---|---|---|
 | R1 | Implemented and verified | Caps in `budget.py`. Tests: `test_a_job_over_its_cap_halts`, `test_the_monthly_cap_refuses_a_new_job`. |
-| R2 | Implemented and verified | `test_wf1_harness` task count. |
+| R2 | Implemented awaiting live verification | Scripted harness task count. Not a model run. |
 | R3 | Implemented awaiting live verification | Tool gate tests pass. A live per-step tool log does not exist yet. |
 | R4 | Implemented awaiting live verification | `test_files_and_traces_survive_a_process_restart`. No Turso database was created. |
-| R5 | Implemented and verified | `test_wf1_harness` handovers. |
-| R6 | Implemented and verified | `test_wf1_harness` reject and fix. |
-| R7 | Implemented and verified | Resume tests in `test_qa_defects.py` and `test_a_running_job_resumes_after_the_worker_sleeps`. |
-| R8 | Implemented and verified | `completion_allowed` in `test_wf1_harness`. |
+| R5 | Implemented awaiting live verification | Scripted handovers. Not a model run. |
+| R6 | Implemented awaiting live verification | Scripted reject-and-fix. Not a model run. |
+| R7 | Implemented awaiting live verification | Lease, fence, and outbox tests. Not a live host restart. |
+| R8 | Implemented awaiting live verification | Scripted completion gate. Not a model run. |
 | R9 | Implemented and verified | `test_r9_reasoning.py`. The six leak cases are CPU tests. No model was loaded, so `load_s` is unmeasured. |
 | R10 | Implemented awaiting live verification | `bash scripts/run_ayven_live.sh` prints the plan and refuses a pod. `record_load` stores `load_s` when the pod supplies clocks. |
 | R11 | Implemented awaiting live verification | Not deployed from this branch. |

@@ -3,19 +3,69 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 
 from .db import connect
 from . import events
-from . import orchestrator
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def submit_job(objective: str, idempotency_key: str = "", title: str | None = None) -> dict:
+def constraint_list(value) -> list[str]:
+    """Milo may send a string or a list. Blank items are dropped."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()][:20]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def current_run_mode() -> str:
+    """The mode of this process. REAL is not inferred from a missing flag."""
+    if os.environ.get("AYVEN_DEMO") == "1":
+        return "DEMO"
+    if os.environ.get("AYVEN_DRY_RUN") == "1":
+        return "DRY_RUN"
+    stub = os.environ.get("AYVEN_LLM_STUB", "1") != "0"
+    fixtures = os.environ.get("AYVEN_RESEARCH_MODE", "fixtures") != "live"
+    if stub and fixtures:
+        return "SIMULATED"
+    if stub or fixtures:
+        return "PARTLY_SIMULATED"
+    return "UNVERIFIED"
+
+
+def hard_constraint_text(items: list[str]) -> str:
+    clean = constraint_list(items)
+    if not clean:
+        return ""
+    lines = "\n".join(f"- {item}" for item in clean)
+    return "Hard constraints. Do not relax, skip, or reinterpret these:\n" + lines
+
+
+def job_constraints(project_id: str) -> list[str]:
+    if not project_id:
+        return []
+    conn = connect()
+    row = conn.execute("SELECT constraints_json FROM projects WHERE id=?", (project_id,)).fetchone()
+    conn.close()
+    if not row or not row["constraints_json"]:
+        return []
+    try:
+        return constraint_list(json.loads(row["constraints_json"]))
+    except (TypeError, ValueError):
+        return []
+
+
+def submit_job(objective: str, idempotency_key: str = "", title: str | None = None, constraints=None) -> dict:
     from fastapi import HTTPException
     objective = objective.strip()
     idempotency_key = idempotency_key.strip()
@@ -23,6 +73,8 @@ def submit_job(objective: str, idempotency_key: str = "", title: str | None = No
         raise HTTPException(400, "Objective is empty")
     if len(idempotency_key) > 200:
         raise HTTPException(400, "Idempotency key is too long")
+    held = constraint_list(constraints)
+    mode = current_run_mode()
     project_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "ayven-project:" + idempotency_key)) if idempotency_key else str(uuid.uuid4())
     title = title or objective[:80]
     conn = connect()
@@ -34,23 +86,37 @@ def submit_job(objective: str, idempotency_key: str = "", title: str | None = No
         ).fetchone()
         if existing:
             conn.close()
-            if existing["objective"] != objective or existing["title"] != title:
+            # A new title on the same key is the same job. A different objective is not.
+            # A different key is a different id, so an explicit re-run is inserted below.
+            if existing["objective"] != objective:
                 raise HTTPException(409, "Idempotency key already belongs to another request")
-            return {"project_id": existing["id"], "duplicate": True, "status": existing["status"]}
+            return {
+                "project_id": existing["id"],
+                "duplicate": True,
+                "status": existing["status"],
+                "mode": _stored_mode(existing["id"]),
+                "constraints": job_constraints(existing["id"]),
+            }
     else:
         for existing in conn.execute("SELECT id, status, objective FROM projects WHERE status IN ('running','waiting')").fetchall():
             if " ".join(existing["objective"].split()).casefold() == " ".join(objective.split()).casefold():
                 conn.close()
-                return {"project_id": existing["id"], "duplicate": True, "status": existing["status"]}
+                return {
+                    "project_id": existing["id"],
+                    "duplicate": True,
+                    "status": existing["status"],
+                    "mode": _stored_mode(existing["id"]),
+                    "constraints": job_constraints(existing["id"]),
+                }
     conn.execute(
-        "INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)",
-        (project_id, title, objective, "running", _now()),
+        """INSERT INTO projects(id,title,objective,status,created_at,constraints_json,run_mode)
+           VALUES(?,?,?,?,?,?,?)""",
+        (project_id, title, objective, "running", _now(), json.dumps(held), mode),
     )
     conn.commit()
     conn.close()
     events.emit("project.created", project_id=project_id, agent_id="milo", department_id="command", status="running", summary="Milo submitted a job")
-    orchestrator.run_project(project_id)
-    return {"project_id": project_id, "duplicate": False, "status": "running"}
+    return {"project_id": project_id, "duplicate": False, "status": "running", "mode": mode, "constraints": held}
 
 
 def job_status(project_id: str) -> dict:
@@ -92,4 +158,25 @@ def job_status(project_id: str) -> dict:
         "research_mode": research.get("mode") if isinstance(research, dict) else "unknown",
         "web_artifact_verified": web_ready,
         "artifacts": [{"name": name, "content": source} for name, source in artifact_files(package.get("findings") or "").items()] if web_ready else [],
+        "recovery": _recovery(project_id),
+        "mode": (project["run_mode"] or "").strip() or "UNVERIFIED",
+        "constraints": job_constraints(project_id),
     }
+
+
+def _stored_mode(project_id: str) -> str:
+    conn = connect()
+    row = conn.execute("SELECT run_mode FROM projects WHERE id=?", (project_id,)).fetchone()
+    conn.close()
+    if not row:
+        return "UNVERIFIED"
+    return (row["run_mode"] or "").strip() or "UNVERIFIED"
+
+
+def _recovery(project_id: str) -> dict:
+    from .intelligence.leases import lease_view
+
+    row = lease_view(project_id)
+    if not row:
+        return {"state": "none"}
+    return {"state": row["state"], "attempts": row["attempts"], "fence": row["fence"]}

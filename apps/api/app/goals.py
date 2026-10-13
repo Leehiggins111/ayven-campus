@@ -241,18 +241,21 @@ def _task(row) -> dict:
     return item
 
 
-def split_goal(project_id: str, objective: str, criteria: list[str]) -> list[dict]:
-    """The director's split. Handover to the first owner is recorded, not typed by a person."""
+def split_goal(project_id: str, objective: str, criteria: list[str], constraints: list[str] | None = None) -> list[dict]:
+    """The director's split. Milo's constraints are hard rules for the director and for QA."""
+    hard = [f"Hard constraint: {item}" for item in (constraints or []) if item and str(item).strip()]
+    research_criteria = [*(criteria or ["Every claim cites a source"]), *hard]
+    qa_criteria = ["A defect is numbered and sent back to its owner", *hard]
     specs = [
-        {"id": f"{project_id}:research", "owner": "research", "title": "Research with evidence", "acceptance_criteria": criteria or ["Every claim cites a source"], "output_path": "outputs/research.md", "depends_on": ""},
-        {"id": f"{project_id}:commercial", "owner": "commercial", "title": "Commercial assessment", "acceptance_criteria": ["Prices come from the commercial file"], "output_path": "outputs/commercial.md", "depends_on": f"{project_id}:research"},
-        {"id": f"{project_id}:creation", "owner": "creation", "title": "Create the draft", "acceptance_criteria": criteria or ["The draft matches the evidence"], "output_path": "outputs/draft.md", "depends_on": f"{project_id}:commercial"},
-        {"id": f"{project_id}:qa", "owner": "qa", "title": "Independent QA", "acceptance_criteria": ["A defect is numbered and sent back to its owner"], "output_path": "outputs/qa.md", "depends_on": f"{project_id}:creation"},
-        {"id": f"{project_id}:listing", "owner": "sales", "title": "Listing draft and package", "acceptance_criteria": ["Nothing is published or sent"], "output_path": "outputs/listing.md", "depends_on": f"{project_id}:qa"},
+        {"id": f"{project_id}:research", "owner": "research", "title": "Research with evidence", "acceptance_criteria": research_criteria, "output_path": "outputs/research.md", "depends_on": ""},
+        {"id": f"{project_id}:commercial", "owner": "commercial", "title": "Commercial assessment", "acceptance_criteria": ["Prices come from the commercial file", *hard], "output_path": "outputs/commercial.md", "depends_on": f"{project_id}:research"},
+        {"id": f"{project_id}:creation", "owner": "creation", "title": "Create the draft", "acceptance_criteria": [*(criteria or ["The draft matches the evidence"]), *hard], "output_path": "outputs/draft.md", "depends_on": f"{project_id}:commercial"},
+        {"id": f"{project_id}:qa", "owner": "qa", "title": "Independent QA", "acceptance_criteria": qa_criteria, "output_path": "outputs/qa.md", "depends_on": f"{project_id}:creation"},
+        {"id": f"{project_id}:listing", "owner": "sales", "title": "Listing draft and package", "acceptance_criteria": ["Nothing is published or sent", *hard], "output_path": "outputs/listing.md", "depends_on": f"{project_id}:qa"},
     ]
     tasks = create_owned_tasks(project_id, specs)
     if not list_handovers(project_id):
-        handover(project_id, specs[0]["id"], "director", "research", specs[0]["acceptance_criteria"])
+        handover(project_id, specs[0]["id"], "director", "research", research_criteria)
     return tasks
 
 

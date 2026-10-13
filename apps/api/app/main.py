@@ -52,13 +52,11 @@ async def startup() -> None:
     conn = connect()
     init_db(conn)
     conn.close()
-    from .durable import enabled, initialize
-    if enabled():
-        await run_in_threadpool(initialize)
-    from .goals import resume_incomplete
-    await run_in_threadpool(resume_incomplete)
-    from .intelligence.recovery import resume_unfinished
-    await run_in_threadpool(resume_unfinished)
+    from .intelligence.recovery import start_recovery
+
+    thread, done = start_recovery()
+    app.state.recovery_thread = thread
+    app.state.recovery_done = done
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
@@ -71,6 +69,7 @@ class ObjectiveIn(BaseModel):
     objective: str
     title: str | None = None
     acceptance_criteria: list[str] = []
+    constraints: list[str] | str = []
     deadline: str | None = None
     job_cap_gbp: float | None = None
     budget_usd: float | None = None
@@ -347,7 +346,14 @@ def _attach_goal(project_id: str, body: ObjectiveIn, duplicate: bool) -> None:
         allow_paid_fallback=body.allow_paid_fallback,
         allow_publish=body.allow_publish,
     )
-    split_goal(project_id, body.objective, list(body.acceptance_criteria or []))
+    from .milo_handoff import constraint_list
+
+    split_goal(
+        project_id,
+        body.objective,
+        list(body.acceptance_criteria or []),
+        constraints=constraint_list(body.constraints),
+    )
 
 
 @app.post("/projects")
@@ -355,8 +361,10 @@ def create_project(body: ObjectiveIn, request: Request):
     from .milo_handoff import submit_job
     key = request.headers.get("Idempotency-Key", "").strip()
     try:
-        result = submit_job(body.objective, key, body.title)
+        result = submit_job(body.objective, key, body.title, constraints=body.constraints)
         _attach_goal(result["project_id"], body, bool(result.get("duplicate")))
+        if not result.get("duplicate"):
+            orchestrator.run_project(result["project_id"])
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {**result, "replayed": result.get("duplicate", False)}
@@ -522,8 +530,15 @@ def milo_submit(body: ObjectiveIn, request: Request, idempotency_key: str = ""):
     if header_key and idempotency_key and header_key != idempotency_key:
         raise HTTPException(400, "Idempotency keys disagree")
     try:
-        result = submit_job(body.objective, header_key or idempotency_key, body.title)
+        result = submit_job(
+            body.objective,
+            header_key or idempotency_key,
+            body.title,
+            constraints=body.constraints,
+        )
         _attach_goal(result["project_id"], body, bool(result.get("duplicate")))
+        if not result.get("duplicate"):
+            orchestrator.run_project(result["project_id"])
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return result

@@ -586,7 +586,14 @@ def research(
 
                     def _search(qq=q, dd=d):
                         try:
-                            found = search_impl(qq, limit=8)
+                            from .leases import perform_side_effect
+                            found = perform_side_effect(
+                                project_id or package_id or "unscoped",
+                                "research",
+                                "web_search",
+                                qq,
+                                lambda query=qq: search_impl(query, limit=8),
+                            ) or []
                         except Exception as exc:
                             box["hits"] = []
                             return ToolResult(tool="web_search", status="error", query=qq, error=str(exc)[:300], timestamp=now(), metadata={"mode": mode, "round": dd})

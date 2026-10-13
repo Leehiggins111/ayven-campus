@@ -115,30 +115,83 @@ def run_retries(fn, *, stage: str = "stage", max_attempts: int | None = None, pr
 def resume_unfinished() -> list[str]:
     """Re-dispatch projects left ``running`` when the worker process died.
 
-    ``AYVEN_RESUME=1`` is required. Packages waiting on Lee are left waiting.
-    Done work is not submitted again.
+    ``AYVEN_RESUME=1`` is required. ``AYVEN_DURABLE=1`` does not use this path:
+    DBOS recovery is the only resume when it is on. A waiting package is
+    finalized so the project is not left ``running``. The claim is exclusive.
     """
+    if os.environ.get("AYVEN_DURABLE", "0") == "1":
+        return []
     if os.environ.get("AYVEN_RESUME", "0") != "1":
         return []
+    from .leases import bind, claim, escalate_expired, finish, reset
+
+    escalate_expired()
     from ..db import connect
-    from .execution import run_objective
 
     conn = connect()
     rows = conn.execute(
         "SELECT id, objective FROM projects WHERE status IN ('running', 'queued')"
     ).fetchall()
     conn.close()
+    owner = f"resume:{os.getpid()}"
     resumed: list[str] = []
     for row in rows:
-        parent = resume_parent(row["id"])
-        if not parent:
+        fence = claim(row["id"], owner)
+        if fence is None:
             continue
-        state = _workflow(parent)
-        if state in WAITING_FOR_LEE:
-            continue
-        run_objective(row["id"], row["objective"] or "")
-        resumed.append(row["id"])
+        token = bind(row["id"], owner, fence)
+        try:
+            _resume_one(row["id"], row["objective"] or "")
+            finish(row["id"], owner, fence)
+            resumed.append(row["id"])
+        finally:
+            reset(token)
     return resumed
+
+
+def _resume_one(project_id: str, objective: str) -> None:
+    from .execution import run_objective
+    from ..orchestrator import finalize_project
+
+    parent = resume_parent(project_id)
+    if not parent:
+        run_objective(project_id, objective)
+        return
+    state = _workflow(parent)
+    if state in WAITING_FOR_LEE:
+        finalize_project(project_id)
+        return
+    run_objective(project_id, objective)
+
+
+def recover_once() -> list[str]:
+    """One recovery path. Durable mode does not also start the thread resume."""
+    from ..durable import enabled, initialize
+
+    if enabled():
+        initialize()
+        return []
+    from ..goals import resume_incomplete
+
+    resume_incomplete()
+    return resume_unfinished()
+
+
+def start_recovery():
+    """Return a background thread. Callers must not wait on it before /health."""
+    import threading
+
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            recover_once()
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, name="ayven-recover", daemon=True)
+    thread.start()
+    return thread, done
 
 
 def _workflow(package_id: str) -> str:

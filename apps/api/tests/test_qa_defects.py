@@ -75,6 +75,7 @@ def test_startup_resumes_a_killed_run_without_redoing_finished_work(monkeypatch)
     first = once(project, "research-notes", lambda: {"wrote": 1})
     assert first["replayed"] is False
     with TestClient(app):
+        app.state.recovery_done.wait(20)
         conn = connect()
         status = conn.execute("SELECT status FROM projects WHERE id=?", (project,)).fetchone()["status"]
         state = conn.execute("SELECT workflow_state FROM work_packages WHERE id=?", (parent,)).fetchone()["workflow_state"]

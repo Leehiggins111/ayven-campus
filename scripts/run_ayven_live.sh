@@ -14,11 +14,16 @@ import os
 import sys
 sys.path.insert(0, os.environ["PYTHONPATH"].split(":")[0])
 sys.path.insert(0, os.path.join(os.environ["PYTHONPATH"].split(":")[0], "apps/api"))
-from validation.live_plan import llama_server_args, plan, GGUF_FILE
+from validation.live_plan import llama_server_args, llama_server_args_8b, plan, GGUF_FILE, steps_for_session
 body = plan()
 print(json.dumps(body, indent=2))
-print("LLAMA_SERVER")
+print("LLAMA_SERVER_STEP_1")
 print(" ".join(llama_server_args("/models/" + GGUF_FILE)))
+print("LLAMA_SERVER_STEP_2")
+print(" ".join(llama_server_args_8b("/models/Qwen3-8B-BF16.gguf")))
+print("SESSION_IF_DIRECTOR_FAILS", steps_for_session(False))
+print("SESSION_IF_DIRECTOR_PASSES", steps_for_session(True))
+print("STEP_3_STARTED false")
 print("load_s: not measured (no model was loaded)")
 print("STOP ACTION: delete the pod. Do not stop it.")
 PY
@@ -36,9 +41,12 @@ if [[ -z "${RUNPOD_POD_ID:-}" ]]; then
   exit 0
 fi
 
-echo "On pod ${RUNPOD_POD_ID}. Exams use the already-running llama-server."
-echo "This script does not start a second model download."
-# The on-pod exam entry remains scripts/run_ayven_validation.sh.
+echo "On pod ${RUNPOD_POD_ID}. Steps 1 and 2 share this pod and the same cost cap."
+echo "This script does not start a second model download and does not start step 3."
+python3 - << 'PY'
+from validation.live_session import run_confirmed_session
+raise SystemExit(run_confirmed_session())
+PY
 # Termination is delete. A stopped pod keeps billing the volume disk.
 if [[ "${AYVEN_SELF_TERMINATE:-}" == "1" ]]; then
   echo "AYVEN lifetime or exam finished; deleting pod"

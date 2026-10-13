@@ -72,7 +72,7 @@ def _set_agent(agent_id: str, **fields) -> None:
     conn.close()
 
 
-def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, plan: bool = False):
+def _complete_once(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, plan: bool = False):
     from ..models import complete_role, plan_model
 
     override = plan_model() if plan else ""
@@ -170,6 +170,41 @@ def _complete(role: str, system: str, user: str, max_tokens: int = 400, programm
     return text, tokens, meta
 
 
+def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, plan: bool = False):
+    """The normal model path. A timeout, a malformed reply, or an empty reply is retried here."""
+    from .recovery import run_retries
+
+    def attempt(_number: int):
+        text, tokens, meta = _complete_once(
+            role, system, user, max_tokens=max_tokens, programme=programme, package_id=package_id,
+            plain=plain, prefill=prefill, stop=stop, expand_unfinished=expand_unfinished,
+            ollama_format=ollama_format, plan=plan,
+        )
+        meta = dict(meta or {})
+        failed = bool(meta.get("error")) or not isinstance(text, str) or not str(text).strip()
+        if failed:
+            return {"ok": False, "error": meta.get("error") or "empty_or_malformed", "text": text, "tokens": tokens, "meta": meta}
+        return {"ok": True, "text": text, "tokens": tokens, "meta": meta}
+
+    project_id = getattr(programme, "project_id", "") if programme is not None else ""
+    outcome = run_retries(
+        attempt, stage=f"model-{role}", project_id=project_id or "", task_id=package_id or "",
+    )
+    if not outcome["ok"]:
+        last = (outcome.get("attempts") or [{}])[-1]
+        return "", 0, {
+            "error": last.get("error") or "retries_exhausted",
+            "backend": "unavailable",
+            "completion_tokens": 0,
+            "execution": "fail",
+            "retries": len(outcome.get("attempts") or []),
+        }
+    result = outcome["result"]
+    meta = dict(result["meta"] or {})
+    meta["retries"] = max(0, len(outcome["attempts"]) - 1)
+    return result["text"], result["tokens"], meta
+
+
 def _research_kept_after_timeout(holder: dict, err: str) -> dict:
     """A stage timeout must not throw away pages that were already opened."""
     evidence = [item for item in (holder.get("evidence") or []) if isinstance(item, dict)]
@@ -237,6 +272,9 @@ class Programme:
         from .observability import new_trace_id
 
         self.trace_id = new_trace_id()
+        from ..milo_handoff import job_constraints
+
+        self.constraints = job_constraints(project_id)
 
     def prepare_all(self) -> str:
         from .observability import bind_trace, reset_trace
@@ -1036,6 +1074,7 @@ def run_objective(project_id: str, objective: str, task_id: str | None = None) -
             record_trace(existing, "resume", {"project_id": project_id})
             state = _package_state(existing)
             if state in WAITING_FOR_LEE:
+                _finalize_resumed(project_id)
                 return existing
             if _manager_saved(existing):
                 if state not in {"COMPLETED", "FAILED", "APPROVED", "UNRESOLVED", "AWAITING_APPROVAL"}:
@@ -1109,6 +1148,21 @@ def _finalize_resumed(project_id: str) -> None:
 
 
 def _finish_roles(programme: Programme) -> None:
+    from .steps import bind_owner, current_step, reset_owner, start_task
+
+    step = current_step(programme.project_id)
+    token = bind_owner(step["owner"] if step else "")
+    try:
+        if step and step["status"] == "queued":
+            step = start_task(step["id"])
+        _finish_role_prompts(programme, step)
+    finally:
+        reset_owner(token)
+
+
+def _finish_role_prompts(programme: Programme, step: dict | None) -> None:
+    from .steps import complete_task
+
     for role in ("EMPLOYEE", "SUPERVISOR", "MANAGER"):
         for prompt in programme.prompts(role):
             if programme.resume_id and _role_called(prompt["id"], role):
@@ -1132,6 +1186,9 @@ def _finish_roles(programme: Programme) -> None:
             if plan_write and _draft_was_cut(text, meta):
                 text, meta = _continue_cut_draft(programme, prompt, text, meta)
             programme.bind(role, prompt["id"], text, meta)
+        if role == "EMPLOYEE" and step:
+            report = "\n".join((child.get("report") or "") for child in programme.children)
+            complete_task(step["id"], report)
 
 
 def _draft_was_cut(text: str, meta: dict | None) -> bool:
@@ -1648,18 +1705,29 @@ def _employee_user(programme: Programme, child: dict) -> str:
             + _section_evidence(programme)
         )
     if child["focus"] == "deliverable":
-        return (
+        return _with_step(
+            programme,
             f"Objective:\n{programme.objective}\n"
             f"Required output: {programme.plan.get('deliverable')}\n"
             f"Required items: {programme.plan.get('requirements', [])}\n"
             f"Evidence:\n{json.dumps(programme.research.get('evidence') or [], ensure_ascii=False)[:10000]}\n"
-            f"Published draft:\n{child['report'][:2500]}{block}"
+            f"Published draft:\n{child['report'][:2500]}{block}",
         )
-    return (
+    return _with_step(
+        programme,
         "Ayven tool runtime. When you need a tool, emit a line "
         'TOOL ayven_tool {"tool":"record_review","payload":"why"} and then the answer.\n'
-        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\n{shown}{plan}{block}"
+        f"Focus: {child['focus']}\nObjective:\n{programme.objective}\n\n{shown}{plan}{block}",
     )
+
+
+def _with_step(programme: Programme, text: str) -> str:
+    from .steps import current_step, scoped_prompt
+
+    extra = scoped_prompt(current_step(programme.project_id))
+    if not extra:
+        return text
+    return text.rstrip() + "\n\n" + extra
 
 
 def _opened_index(programme: Programme) -> str:
@@ -2275,6 +2343,7 @@ def _supervisor_system() -> str:
     return (
         "You are the Ayven supervisor. Try to disprove material employee claims before you accept them. "
         "Check arithmetic, URLs, entailment, and unsupported specificity. "
+        "A hard constraint is a fail if the draft breaks it. Do not waive one. "
         "First line is one of ACCEPT, RETURN, TAKE_OVER, ESCALATE. "
         "Do not repeat the employee if the evidence disagrees. Do not emit think tags."
     )
@@ -2285,9 +2354,17 @@ def _supervisor_user(programme: Programme, child: dict) -> str:
     brief = "\n".join(f"- {c['status']} {c['claim_type']}: {c['claim_text'][:180]}" for c in claims[:8])
     gaps = "; ".join((programme.research.get("gaps") or [])[:4])
     limit = 1200 if programme.task_class == "business_research" else 6000
+    from ..milo_handoff import hard_constraint_text
+
+    rules = hard_constraint_text(getattr(programme, "constraints", []))
+    from .steps import review_prompt, review_step
+
+    review = review_prompt(review_step(programme.project_id))
     return (
         f"Objective:\n{programme.objective}\n\nPlan class: {programme.task_class}\n"
         f"Gaps: {gaps}\n\nDraft:\n{clip_at_boundary(child['report'], limit)}\n\nClaims:\n{brief}"
+        + (f"\n\n{rules}" if rules else "")
+        + (f"\n\n{review}" if review else "")
     )
 
 
@@ -2297,17 +2374,21 @@ def _manager_system() -> str:
         "the claim ledger, supervisor challenges, retries, contradictions, and gaps. "
         "First line is one of SYNTHESISE, RESEARCH_MORE, RETURN, CLARIFY, ESCALATE. "
         "Then one line: Rationale: a short reason. Do not emit think tags. Do not call a frontier model. "
-        "Safety and permissions can veto you."
+        "A hard constraint is not optional. Safety and permissions can veto you."
     )
 
 
 def _manager_user(programme: Programme) -> str:
     lines = [f"{audit['focus']}={audit['decision']}" for audit in programme.audits]
     gaps = "; ".join((programme.research.get("gaps") or [])[:4])
+    from ..milo_handoff import hard_constraint_text
+
+    rules = hard_constraint_text(getattr(programme, "constraints", []))
     return (
         "manager judgement\n"
         f"Objective:\n{programme.objective}\n\nSupervisor audits: {', '.join(lines) or 'pending'}\n"
         f"Unknowns: {programme.plan.get('unknowns', [])[:6]}\nGaps: {gaps}\nRetries: {programme.retries}"
+        + (f"\n\n{rules}" if rules else "")
     )
 
 

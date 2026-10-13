@@ -7,7 +7,7 @@ def test_milo_reads_completed_and_waiting_jobs_with_same_ids(tmp_path, monkeypat
     monkeypatch.setenv('AYVEN_DB',str(tmp_path/'bridge.sqlite'))
     reset_connection_state()
     conn=connect()
-    conn.executemany('INSERT INTO projects VALUES(?,?,?,?,?,?)',[
+    conn.executemany('INSERT INTO projects(id,title,objective,status,result,created_at) VALUES(?,?,?,?,?,?)',[
         ('finished','Calculation','Calculate 6 * 7.','complete','42.00','2026-10-09'),
         ('waiting','Research','Find suppliers','waiting','Draft','2026-10-09')])
     conn.commit();conn.close()

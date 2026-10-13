@@ -37,9 +37,20 @@ def _run_project(project_id: str) -> None:
     if not project:
         return
     objective = project["objective"]
+    from .milo_handoff import hard_constraint_text, job_constraints
+
+    rules = hard_constraint_text(job_constraints(project_id))
+    from .intelligence.steps import current_step, scoped_prompt
+
+    step = scoped_prompt(current_step(project_id))
     _set_agent("milo", status="working", visual_state="PLANNING", last_summary="Deciding required work", progress=0.15)
     events.emit("agent.started_task", project_id=project_id, agent_id="milo", department_id="command", status="PLANNING", summary="Milo is scoping the objective for Research Lab", progress=0.15)
-    brief, tokens = complete("You are Milo, Ayven Chief of Staff. Write a short research brief. No chain-of-thought.", f"Lee's objective:\n{objective}", max_tokens=280)
+    director_prompt = f"Lee's objective:\n{objective}"
+    if rules:
+        director_prompt = f"{director_prompt}\n\n{rules}"
+    if step:
+        director_prompt = f"{director_prompt}\n\n{step}"
+    brief, tokens = complete("You are Milo, Ayven Chief of Staff. Write a short research brief. No chain-of-thought. Obey every hard constraint.", director_prompt, max_tokens=280)
     conn = connect()
     conn.execute("UPDATE agents SET tokens=tokens+?, cost_usd=cost_usd+? WHERE id=?", (tokens, tokens / 1000 * COST_PER_1K, "milo"))
     conn.commit()

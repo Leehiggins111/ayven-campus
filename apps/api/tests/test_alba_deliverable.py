@@ -196,7 +196,8 @@ def test_a_relevant_page_and_a_written_plan_can_complete():
 def test_irrelevant_page_cannot_validate_a_claim_in_an_otherwise_relevant_plan():
     evidence = [_preview(PAINTER["url"], PAINTER["title"], PAINTER["text"])]
     plan = _filled_plan().replace(
-        "Start with local search", "Local search produces 75% of enquiries. Start with local search",
+        "The owner posts on local search",
+        "Local search produces 75% of enquiries. The owner posts on local search",
     )
     unrelated = _preview(
         "https://example.org/coffee", "Coffee machine rentals",

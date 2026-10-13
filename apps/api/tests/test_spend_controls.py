@@ -97,11 +97,21 @@ def test_live_plan_uses_the_2507_model_and_records_load_time():
     assert "--reasoning" in body["self_terminate"] or body["reasoning"] == "off"
     assert "runpodctl pod delete" in body["delete_command"]
     assert body["load"]["load_s"] is None
+    assert body["paid_external_by_default"] is False
+    assert body["session"]["status"] == "UNVERIFIED"
+    assert body["session"]["step_3_in_session"] is False
+    assert body["session"]["same_cap_usd"] == body["community_cap_usd"]
+    assert "assumption" in body["session"]["bfcl_assumption"].lower()
+    from validation.live_plan import steps_for_session
+    assert steps_for_session(True) == [1]
+    assert steps_for_session(False) == [1, 2]
     measured = record_load({"load_started": 10.0, "ready": 42.5, "first_token": 43.0})
     assert measured["load_s"] == 32.5
     assert measured["first_token_s"] == 0.5
     script = Path(__file__).resolve().parents[3] / "scripts" / "run_ayven_live.sh"
     text = script.read_text(encoding="utf-8")
+    assert "LLAMA_SERVER_STEP_2" in text
+    assert "Qwen3-8B" in text
     assert "AYVEN_CONFIRM_SPEND" in text
     assert "llama-server" in text or "live_plan" in text
     def commands(path: Path) -> str:
@@ -113,3 +123,25 @@ def test_live_plan_uses_the_2507_model_and_records_load_time():
     assert "--guided-decoding-backend" not in manager
     assert "--structured-outputs-config.backend xgrammar" in employee
     assert "--structured-outputs-config.backend xgrammar" in manager
+
+
+def test_live_evidence_writes_criteria_before_a_result(tmp_path, monkeypatch):
+    from validation.live_session import prepare_evidence, record_result, run_confirmed_session
+
+    dest = prepare_evidence(tmp_path)
+    assert (dest / "criteria.json").is_file()
+    assert not (dest / "result.json").exists()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    refused = False
+    try:
+        record_result(empty, {"status": "UNVERIFIED"})
+    except RuntimeError:
+        refused = True
+    assert refused
+    record_result(dest, {"status": "UNVERIFIED"})
+    assert (dest / "result.json").is_file()
+    monkeypatch.delenv("AYVEN_CONFIRM_SPEND", raising=False)
+    monkeypatch.delenv("RUNPOD_POD_ID", raising=False)
+    assert run_confirmed_session(tmp_path / "refused") == 0
+    assert not (tmp_path / "refused").exists()
