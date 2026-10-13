@@ -13,7 +13,7 @@ Costs are stored in USD. Responses that Milo shows use GBP via `AYVEN_FX_GBP_PER
   "objective": "Prepare the listing drafts for the Scottish Short-Term Let Host Kit. Publish nothing.",
   "acceptance_criteria": ["Drafts stay unpublished", "Prices match the commercial file"],
   "deadline": "2026-10-20",
-  "job_cap_gbp": 2.0,
+  "job_cap_gbp": 1.0,
   "budget_usd": null,
   "allow_paid_fallback": false,
   "allow_publish": false,
@@ -51,7 +51,7 @@ A job that would pass the cap pauses with a blocker of kind `cap`. Paid fallback
 
 `POST /work-packages/{id}/stop`
 
-`PATCH /work-packages/{id}` with `{ "job_cap_gbp": 2.0 }`
+`PATCH /work-packages/{id}` with `{ "job_cap_gbp": 1.0 }`
 
 ## Restart
 

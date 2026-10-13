@@ -275,7 +275,7 @@ def run(evidence_root: Path, run_id: str = "simulated-wf1") -> dict:
         conn.close()
         engine_state = (row["workflow_state"] if row else "") or ""
     criteria = ["Drafts stay unpublished", "Prices match offer-final.md", "QA must pass"]
-    open_goal(project_id, criteria, job_cap_gbp=2.0, allow_paid_fallback=False, allow_publish=False)
+    open_goal(project_id, criteria, job_cap_gbp=1.0, allow_paid_fallback=False, allow_publish=False)
     bind_job(project_id)
     split_goal(project_id, "STL host kit listing", criteria)
     tasks = list_tasks(project_id)
