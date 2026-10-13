@@ -1627,6 +1627,8 @@ def _check_for_model(reason: str) -> str:
         return "Do not use that business name. It is on an opened page. Write the sentence with the request's own words."
     if "the claim uses" in lowered:
         return "Do not use the words the check named. Use the opened page's own words for what the £ buys, and keep [F#] in that sentence."
+    if "gives the unit" in lowered:
+        return "Use the unit written next to that £ figure on the opened page. Keep the citation."
     if "does not say how this service differs" in lowered:
         return "Say how this service differs from the two businesses. Use differs, unlike, or instead."
     if "promises '" in lowered:
@@ -1818,13 +1820,13 @@ def _advert_saved_lines(raw: str) -> tuple[str, str]:
 
 def _clean_headline(raw: str) -> str:
     """A headline line that passes the same check as a stored advert line."""
-    from .deliverable import _advert_content_ok, _visible_answer
+    from .deliverable import _advert_content_ok, _headline_problem, _visible_answer
 
     for line in _visible_answer(raw or "").splitlines():
         stripped = line.strip().strip('"')
         match = re.match(r"^headline\s*:\s*(.+)$", stripped, re.I)
         content = match.group(1).strip() if match else stripped
-        if _advert_content_ok("headline", content):
+        if _advert_content_ok("headline", content) and not _headline_problem(content):
             return content
     return ""
 
@@ -1963,7 +1965,10 @@ def _fill_plan_sections(programme: Programme, sections: dict, blob: str) -> dict
                 written = cited
                 reason = "" if written and not _section_missing(key, written, blob, programme.objective) else _section_drop_reason(key, raw if not written else written, blob, programme.objective)
             if reason and raw_reason and (
-                "promises '" in raw_reason.lower() or "does not ask the customer" in raw_reason.lower()
+                "promises '" in raw_reason.lower()
+                or "does not ask the customer" in raw_reason.lower()
+                or "complete phrase" in raw_reason.lower()
+                or "fragment" in raw_reason.lower()
             ):
                 reason = raw_reason
             elif (

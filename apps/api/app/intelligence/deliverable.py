@@ -641,6 +641,22 @@ def _without_narration(sentence: str) -> str:
         clause = text[at:].strip()
         if clause and not _narration_line(clause):
             return clause
+    # "£1,300, though the page does not specify" still has the price. Drop the refusal clause.
+    for phrase in _REFUSAL:
+        at = lowered.find(phrase)
+        if at <= 0:
+            continue
+        head = re.sub(
+            r"(?:,\s*|\s+)(?:though|although|but|and|while|because|since)\s+(?:the\s+page\s+)?$",
+            "",
+            text[:at],
+            flags=re.I,
+        ).strip(" ,;:-")
+        if "£" not in head or _narration_line(head) or len(head.split()) < 4:
+            continue
+        if not re.search(r"[.!?]$", head):
+            head += "."
+        return head
     return ""
 
 
@@ -1475,6 +1491,27 @@ _EXCLUSION_PHRASES = (
 )
 
 
+def _unit_next_to_amount(text: str, number: str) -> str:
+    """The unit written beside this £ figure. A later 'per day' about cups is not that unit."""
+    patterns = (
+        (r"/\s*weeks?\b|\bper\s+weeks?\b|\ba\s+weeks?\b", "per week"),
+        (r"/\s*days?\b|\bper\s+days?\b|\ba\s+days?\b", "per day"),
+        (r"/\s*months?\b|\bper\s+months?\b|\ba\s+months?\b", "per month"),
+        (r"\bper\s+(?:standard\s+)?doors?\b", "per door"),
+        (r"\bper\s+hours?\b", "per hour"),
+    )
+    for match in re.finditer(r"£\s*([\d,]+(?:\.\d+)?)", text or ""):
+        value = re.sub(r",", "", match.group(1))
+        if value != (number or ""):
+            continue
+        window = (text or "")[match.end() : match.end() + 48]
+        for pattern, label in patterns:
+            if re.search(pattern, window, re.I):
+                return label
+        return ""
+    return ""
+
+
 def _units_in(text: str) -> set[str]:
     """Units a price sentence actually states. A page that says nothing of the kind has none."""
     raw = text or ""
@@ -1647,6 +1684,10 @@ def _mismatch_against(sentence: str, source: str) -> str:
     for number in _claimed_numbers(sentence):
         if not _number_on_page(number, source):
             return f"The claim states {number}, and the opened page does not."
+        claim_unit = _unit_next_to_amount(sentence, number)
+        page_unit = _unit_next_to_amount(source, number)
+        if claim_unit and page_unit and claim_unit != page_unit:
+            return f"The claim gives the unit '{claim_unit}', and the opened page states '{page_unit}'."
     missing_units = _units_in(sentence) - _units_in(source)
     if missing_units:
         unit = sorted(missing_units)[0]

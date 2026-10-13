@@ -2332,3 +2332,64 @@ def test_a_mixed_competitor_price_keeps_the_one_source_reason(monkeypatch):
     assert len(seen) == 2
     assert "one claim, one source" in seen[1].lower()
     assert "had no [F#]" not in seen[1]
+
+
+def test_a_price_note_that_the_page_is_silent_keeps_the_price():
+    from app.intelligence.deliverable import section_rejection
+
+    blob = (
+        "https://refreshkitchen.co.uk/\n"
+        "Refresh Your Kitchen can transform your kitchen in one day for only £950. PAY ON COMPLETION\n"
+        "https://www.kitchenfaces.co.uk/pricing\n"
+        "Kitchen Door Replacement Pricing | From £1,300 | Kitchen Faces\n"
+    )
+    body = (
+        "Refresh Kitchen offers a full kitchen transformation for £950 PAY ON COMPLETION [F1] (refreshkitchen.co.uk). "
+        "Kitchen Faces charges £1,300 for replacement doors and worktops, though the page does not specify the size or materials included [F2] (kitchenfaces.co.uk). "
+        "This service differs by replacing doors, worktops and handles rather than a full kitchen replacement."
+    )
+    reason = section_rejection("competitor and market research", body, blob, DOOR)
+    assert "fewer than two" not in reason
+    assert "worktop" in reason
+
+
+def test_a_week_price_is_not_a_day_because_the_page_says_cups_per_day():
+    from app.intelligence.deliverable import claim_mismatch
+
+    blob = (
+        "https://www.fullhousecoffee.com/\n"
+        "Starting From £31.00/week BESTIR BM50 - 100 Cups Per Day\n"
+    )
+    wrong = "Full House Coffee provides machines starting from £31.00 per day [F2] (fullhousecoffee.com)."
+    reason = claim_mismatch(wrong, blob)
+    assert "per day" in reason
+    assert "per week" in reason
+    right = "Full House Coffee provides machines starting from £31.00 a week [F2] (fullhousecoffee.com)."
+    assert claim_mismatch(right, blob) == ""
+
+
+def test_a_ten_word_headline_is_retried_as_a_headline(monkeypatch):
+    from app.intelligence.execution import _fill_plan_sections
+
+    long_headline = (
+        "Headline: Replace worn kitchen doors worktops and handles this week now\n"
+        "Body: The service replaces kitchen doors, worktops and handles and differs from a full replacement.\n"
+        "Call to action: Ask for a visit and a written scope before any booking is made.\n"
+    )
+    short = "Fresh kitchen doors without a full refit"
+    seen = []
+
+    def fake(role, system, user, max_tokens=400, programme=None, package_id="", plain=False, prefill="", stop=None, expand_unfinished=True, ollama_format=None, plan=False):
+        seen.append(user)
+        text = long_headline if len(seen) == 1 else short
+        return text, 12, {"backend": "test", "finish_reason": "stop", "raw_response": text}
+
+    monkeypatch.setattr("app.intelligence.execution._complete", fake)
+    programme, blob = _door_programme()
+    sections = _door_sections(advert="")
+    rejected = _fill_plan_sections(programme, sections, blob)
+    assert rejected == {}
+    assert sections["advert"].startswith("Headline: Fresh kitchen doors")
+    assert len(seen) == 2
+    assert "under 10 words" in seen[1]
+    assert "needs a headline, one body" not in seen[1]
