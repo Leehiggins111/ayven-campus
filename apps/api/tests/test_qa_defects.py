@@ -196,13 +196,27 @@ def test_retries_use_backoff_then_escalate_to_lee(monkeypatch):
     assert result["attempts"][0]["at"] < result["attempts"][1]["at"] < result["attempts"][2]["at"]
     assert result["blocker"]["kind"] == "error"
     assert "director" in result["blocker"]["reason"].lower()
-    assert result["approval"]
+    # The exact cause is the blocker. A failed step never advances to approval.
+    assert "model returned 500" in result["blocker"]["reason"]
+    assert result["approval"] is None
     assert continued == ["independent-task"]
     conn = connect()
-    approval = conn.execute("SELECT status, agent_id FROM approvals WHERE id=?", (result["approval"],)).fetchone()
+    approvals = conn.execute("SELECT COUNT(*) AS n FROM approvals WHERE project_id=?", (project,)).fetchone()["n"]
     conn.close()
-    assert approval["status"] == "pending"
-    assert approval["agent_id"] == "director"
+    assert approvals == 0
+
+
+def test_a_failed_delivery_records_the_exact_blocker():
+    from app.intelligence.execution import _delivery_blocker
+
+    reason = _delivery_blocker(
+        {"passed": False, "reason": "Invalid review", "missing_items": ["Three prospects"]},
+        ["OperationalError: database is locked"],
+    )
+    assert "OperationalError: database is locked" in reason
+    assert "Invalid review" in reason
+    assert "Three prospects" in reason
+    assert _delivery_blocker({"passed": False}, []) == "Required deliverable did not pass its checks"
 
 
 def test_acceptance_brief_runs_end_to_end_simulated(tmp_path, monkeypatch):
