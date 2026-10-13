@@ -2381,10 +2381,11 @@ def relevant_evidence(objective: str, evidence: list[dict] | None) -> list[dict]
 
 def business_can_complete(findings: str, evidence: list[dict] | None, objective: str) -> bool:
     """COMPLETED needs relevant opened pages and filled sections. Empty safety text cannot pass."""
-    blob = evidence_blob(evidence)
+    relevant = relevant_evidence(objective, evidence)
+    blob = evidence_blob(relevant)
     if not plan_sections_filled(findings or "", blob, objective):
         return False
-    return bool(relevant_evidence(objective, evidence))
+    return bool(relevant)
 
 
 def publish_business_plan(objective: str, research: dict | None, model_text: str) -> str:

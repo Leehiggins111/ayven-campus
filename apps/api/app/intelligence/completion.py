@@ -109,10 +109,11 @@ def score_task(task_class: str, text: str, research: dict | None = None, quote: 
     elif task_class == "business_research":
         from .deliverable import evidence_blob, plan_sections_filled, relevant_evidence
 
-        blob = evidence_blob(evidence)
         objective = str(research.get("objective") or "")
+        relevant = relevant_evidence(objective, evidence) if objective else []
+        blob = evidence_blob(relevant)
+        safety_outcome, safety = _safety(task_class, text, blob)
         filled = plan_sections_filled(text, blob, objective)
-        relevant = relevant_evidence(objective, evidence) if objective else [item for item in evidence if (item.get("source_url") or "").startswith("http")]
         useful = 1.0 if filled and relevant else 0.0
         requested = useful
         coverage = useful
