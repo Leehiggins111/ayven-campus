@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -245,17 +246,53 @@ def run_files(files: dict[str, str], test_name: str = "test_main.py", timeout: i
     }
 
 
+def _sandbox_interpreter() -> str:
+    """The interpreter that can start on this host. Windows has python.exe, not python3."""
+    override = (os.environ.get("AYVEN_SANDBOX_PYTHON") or "").strip()
+    if override:
+        return override
+    if os.name == "nt":
+        return sys.executable
+    return shutil.which("python3") or shutil.which("python") or sys.executable
+
+
+def _child_env(folder: str) -> dict:
+    """A small environment. Windows needs SYSTEMROOT or python.exe does not start."""
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUTF8": "1",
+        "HOME": folder,
+    }
+    if os.name == "nt":
+        for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SYSTEMDRIVE", "TEMP", "TMP"):
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
+        env["USERPROFILE"] = folder
+        env["TEMP"] = env.get("TEMP") or folder
+        env["TMP"] = env.get("TMP") or folder
+    else:
+        env["LANG"] = "C.UTF-8"
+    return env
+
+
 def _python_on_path(folder: str, env: dict) -> None:
     """A test that runs `python main.py` still runs where the executable is python3."""
     path = env.get("PATH", "")
     if shutil.which("python", path=path):
         return
-    py3 = shutil.which("python3", path=path)
-    if not py3:
+    executable = _sandbox_interpreter()
+    if not executable:
         return
-    wrapper = Path(folder) / "python"
-    wrapper.write_text(f"#!/bin/sh\nexec {py3} \"$@\"\n", encoding="utf-8")
-    wrapper.chmod(0o755)
+    if os.name == "nt":
+        wrapper = Path(folder) / "python.cmd"
+        wrapper.write_text(f'@echo off\r\n"{executable}" %*\r\n', encoding="utf-8")
+    else:
+        wrapper = Path(folder) / "python"
+        wrapper.write_text(f"#!/bin/sh\nexec {executable} \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
     env["PATH"] = folder + os.pathsep + path
 
 
@@ -271,19 +308,13 @@ def _execute_files(files: dict[str, str], test_name: str, timeout: int, level: s
         for name, source in files.items():
             (Path(folder) / name).write_text(source, encoding="utf-8")
         (Path(folder) / "run_check.py").write_text(runner, encoding="utf-8")
-        python = os.environ.get("AYVEN_SANDBOX_PYTHON") or shutil.which("python3") or shutil.which("python") or "python3"
+        python = _sandbox_interpreter()
         cmd = [python, "-I", "run_check.py"]
         if level == "unshare-user-net-pid":
             cmd = ["unshare", "--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc", *cmd]
         elif level == "bubblewrap-unshare-net":
             cmd = ["bwrap", "--unshare-net", "--unshare-pid", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib", "--proc", "/proc", "--dev", "/dev", "--", *cmd]
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "HOME": folder,
-            "LANG": "C.UTF-8",
-        }
+        env = _child_env(folder)
         _python_on_path(folder, env)
         proc = subprocess.run(cmd, cwd=folder, capture_output=True, text=True, timeout=timeout + 3, env=env, check=False)
         return proc.stdout or "", proc.stderr or "", proc.returncode
@@ -293,7 +324,7 @@ def _execute(source: str, timeout: int, level: str) -> tuple[str, str, int]:
     with tempfile.TemporaryDirectory(prefix="ayven-sandbox-") as folder:
         path = Path(folder) / "main.py"
         path.write_text(source, encoding="utf-8")
-        python = os.environ.get("AYVEN_SANDBOX_PYTHON", "python3")
+        python = _sandbox_interpreter()
         cmd = [python, "-I", str(path)]
         if level == "unshare-user-net-pid":
             cmd = ["timeout", str(timeout), "unshare", "--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc", *cmd]
@@ -301,12 +332,6 @@ def _execute(source: str, timeout: int, level: str) -> tuple[str, str, int]:
             cmd = ["timeout", str(timeout), "bwrap", "--unshare-net", "--unshare-pid", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib", "--proc", "/proc", "--dev", "/dev", "--", *cmd]
         else:
             cmd = ["timeout", str(timeout), *cmd]
-        env = {
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "HOME": folder,
-            "LANG": "C.UTF-8",
-        }
+        env = _child_env(folder)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 3, env=env, check=False)
         return proc.stdout or "", proc.stderr or "", proc.returncode

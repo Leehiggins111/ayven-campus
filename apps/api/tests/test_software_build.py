@@ -105,6 +105,30 @@ def test_a_fenced_program_is_split_and_run(monkeypatch):
     assert ran["passed"] is True
 
 
+def test_windows_child_env_keeps_systemroot_and_uses_this_python(monkeypatch):
+    """python.exe does not start on Windows when SYSTEMROOT is missing."""
+    import app.intelligence.code_sandbox as sandbox
+
+    monkeypatch.setattr(sandbox.os, "name", "nt")
+    monkeypatch.delenv("AYVEN_SANDBOX_PYTHON", raising=False)
+    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+    monkeypatch.setenv("WINDIR", r"C:\Windows")
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    env = sandbox._child_env(r"C:\temp\ayven-box")
+    assert env["SYSTEMROOT"] == r"C:\Windows"
+    assert env["USERPROFILE"] == r"C:\temp\ayven-box"
+    assert "LANG" not in env
+    assert sandbox._sandbox_interpreter() == sandbox.sys.executable
+
+
+def test_windows_acceptance_uses_the_milo_job_route():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[3] / "scripts" / "windows_campus_acceptance.py").read_text(encoding="utf-8")
+    assert 'post("/milo/jobs"' in text
+    assert 'post("/projects"' not in text
+
+
 def test_files_run_without_a_namespace_and_general_code_does_not(monkeypatch):
     import app.intelligence.code_sandbox as sandbox
 

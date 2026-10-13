@@ -920,7 +920,12 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
         for candidate in candidates:
             parts = [
                 part for part in re.findall(r"[a-z0-9]+", candidate.lower())
-                if part not in {"s", "the", "and", "for", "uk", "at", "your", "our", "new"} and len(part) > 1
+                if part not in {
+                "s", "the", "and", "for", "uk", "at", "your", "our", "new",
+                "across", "over", "than", "under", "after", "before", "within",
+                "during", "through", "into", "their", "about", "from", "with",
+                "more", "most",
+            } and len(part) > 1
             ]
             stems = {word[:-1] if word.endswith("s") and len(word) > 4 else word for word in words}
             if len(parts) < 2 or all(
@@ -1608,11 +1613,11 @@ def _claimed_numbers(sentence: str) -> list[str]:
 
 
 def _number_on_page(number: str, source: str) -> bool:
-    """£10 is not £10.60, and it is not the '.10' in £19.10."""
+    """£10 is not £10.60, and it is not the '.10' in £19.10. M25 is not £25."""
     compact = re.sub(r",", "", source or "")
     if "." in (number or ""):
-        return bool(re.search(rf"(?<!\d){re.escape(number)}(?!\d)", compact))
-    return bool(re.search(rf"(?<![\d.]){re.escape(number)}(?!\d)(?!\.\d)", compact))
+        return bool(re.search(rf"(?<![A-Za-z\d]){re.escape(number)}(?!\d)", compact))
+    return bool(re.search(rf"(?<![A-Za-z\d.]){re.escape(number)}(?!\d)(?!\.\d)", compact))
 
 
 def _price_span(source: str, sentence: str) -> str:
@@ -1866,10 +1871,14 @@ def _competitor_names(body: str, blob: str = "") -> list[str]:
                 continue
             names.append(phrase.lower())
         for match in re.finditer(
-            r"\b([A-Z][a-z]{5,})\s+(?:provides|offers|offer|charges|sells|rents|replaces)\b",
+            r"\b([A-Z][A-Za-z'’]{4,})\s+(?:provides|offers|offer|charges|sells|rents|replaces)\b",
             sentence,
         ):
-            token = match.group(1).lower()
+            token = match.group(1).lower().replace("’", "'")
+            if token in {"coffee", "kitchen", "service", "rental", "machine", "doors"}:
+                continue
+            if any(token == existing.replace("’", "'").split()[-1] for existing in names):
+                continue
             if token not in _NOT_COMPETITOR and token not in names:
                 names.append(token)
         for host in _HOST_IN_TEXT.findall(sentence):
@@ -2042,7 +2051,7 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
             return "Pricing lists references and does not state how to turn the measurements into a price."
         return ""
     elif key == "competitor and market research":
-        if _SHOUTED_HEADING.search(body or ""):
+        if re.search(r"(?m)^\s*" + _SHOUTED_HEADING.pattern, body or ""):
             return "The competitor line starts with a page heading. Paraphrase it and keep the citation."
         pasted_quote = _pasted_quote(body, blob)
         if pasted_quote:

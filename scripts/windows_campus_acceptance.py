@@ -149,6 +149,11 @@ def wait_health(timeout: int = 60) -> bool:
     return False
 
 
+def submit_job(client: Client, objective: str, title: str):
+    """The route Milo calls. Campus acceptance uses that same entry."""
+    return client.post("/milo/jobs", {"objective": objective, "title": title})
+
+
 def login(client: Client) -> None:
     if not KEY:
         return
@@ -323,7 +328,7 @@ def _proof_other_jobs(client: Client, rows: list, alba_findings: str, alba_view:
         "Prepare a UK business briefing for a coffee machine rental company. "
         "Cover the service, the customers, the competitors, and pricing."
     )
-    status, project = client.post("/projects", {"objective": coffee_objective, "title": "coffee"})
+    status, project = submit_job(client, coffee_objective, "coffee")
     if status != 200:
         record(rows, 24, "Coffee briefing is a separate job", "FAIL", f"create {status}")
         return
@@ -361,7 +366,7 @@ def _proof_other_jobs(client: Client, rows: list, alba_findings: str, alba_view:
         f"leaked={leaked or 'none'} pages={len(pages)} queries={queries[:4]}",
     )
     program = "Write a small Python program that adds 2 and 3 and prints the sum."
-    status, project = client.post("/projects", {"objective": program, "title": "program"})
+    status, project = submit_job(client, program, "program")
     if status != 200:
         record(rows, 25, "Python program is built and tested", "FAIL", f"create {status}")
         return
@@ -426,7 +431,7 @@ def main() -> int:
         opened, _ = client.get("/health")
         if opened != 200:
             record(rows, 22, "Auth health stays open", "FAIL", str(opened))
-        status, project = client.post("/projects", {"objective": "Research the public market for office supplies and name the gaps.", "title": "fixture approve"})
+        status, project = submit_job(client, "Research the public market for office supplies and name the gaps.", "fixture approve")
         if status != 200:
             record(rows, 15, "Fixture approval", "FAIL", f"create {status}")
         else:
@@ -443,7 +448,7 @@ def main() -> int:
                     view_code, view = client.get(f"/campus/view?package_id={package['id']}")
                     landed = view.get("stage") if view_code == 200 else ""
                     record(rows, 15, "Fixture approval is unresolved", "PASS" if code == 200 and view.get("unresolved") else "FAIL", f"http {code} stage {landed}")
-        status, project = client.post("/projects", {"objective": "Research the public market for office supplies and name the gaps.", "title": "fixture reject"})
+        status, project = submit_job(client, "Research the public market for office supplies and name the gaps.", "fixture reject")
         if status != 200:
             record(rows, 16, "Reject", "FAIL", f"create {status}")
         else:
@@ -467,7 +472,7 @@ def main() -> int:
             record(rows, 5, "Qwen answers", "FAIL", "live server did not start")
             return _finish(rows, 1)
         login(client)
-        status, project = client.post("/projects", {"objective": "Calculate 6 * 7", "title": "six seven"})
+        status, project = submit_job(client, "Calculate 6 * 7", "six seven")
         package = wait_job(client, project["project_id"]) if status == 200 else {}
         findings = package.get("findings") or ""
         calls = []
@@ -484,7 +489,7 @@ def main() -> int:
         record(rows, 6, "Answer is not a fixture", "PASS" if findings and not stub_text else "FAIL", "calculation text checked for stub wording")
         record(rows, 21, "No paid model, GPU, or escalation", "PASS" if not any(call.get("backend") == "frontier" for call in calls) else "FAIL", "escalation calls absent" if not any(call.get("backend") == "frontier" for call in calls) else "frontier call recorded")
 
-        status, project = client.post("/projects", {"objective": "Create a business launch plan.", "title": "alba"})
+        status, project = submit_job(client, "Create a business launch plan.", "alba")
         if status != 200:
             record(rows, 7, "Vague request", "FAIL", f"create {status}")
             return _finish(rows, 1)

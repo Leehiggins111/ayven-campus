@@ -2017,3 +2017,93 @@ def test_pricing_names_a_method_and_uses_a_unit_only_when_the_page_states_it():
         "worktop length, worktop material, and handle count."
     )
     assert "turn the measurements" in section_rejection("pricing", bare, blob, DOOR)
+
+
+def test_a_postcode_is_not_an_opened_pound_figure():
+    """M25 is a place. It is not the £25 on an opened page."""
+    from app.intelligence.deliverable import _pricing_omits_page_figure, section_rejection
+
+    body = (
+        "Assumption: The weekly rate is based on a minimum rental period of one week.\n"
+        "Assumption: The service includes delivery and collection within the M25 area at an additional cost."
+    )
+    blob = "https://coffeenerds.co.uk/pages/cost\nA managed contract is between £25 and £250 a week."
+    omitted = _pricing_omits_page_figure(body, blob)
+    assert "25" in omitted
+    assert "does not use it" in section_rejection("pricing", body, blob, "A coffee machine rental company.")
+
+
+def test_the_last_word_of_a_business_name_is_not_a_second_competitor():
+    from app.intelligence.deliverable import _competitor_names, section_rejection
+
+    body = (
+        "Full House Coffee provides commercial machines starting at £31 a week [F2] (fullhousecoffee.com). "
+        "Their service includes maintenance, differing from a short hire."
+    )
+    assert _competitor_names(body, "") == ["full house coffee"]
+    blob = "https://www.fullhousecoffee.com/\nStarting from £31 a week."
+    assert "fewer than two" in section_rejection(
+        "competitor and market research", body, blob, "A coffee machine rental company.",
+    )
+    camel = "BestBuilders provides kitchen door replacements at £10 per standard door [F2]."
+    assert "bestbuilders" in _competitor_names(camel, "")
+
+
+def test_homeowners_across_is_not_a_business_name():
+    from app.intelligence.deliverable import borrowed_service_name
+
+    objective = "The service replaces kitchen doors, worktops and handles."
+    blob = "Trusted by 30,000+ Homeowners Across the UK Replacement Kitchen Doors"
+    assert borrowed_service_name(
+        "30,000 homeowners across the UK replace doors in the first month.",
+        objective,
+        blob,
+    ) == ""
+    assert "Joe's Doors" in borrowed_service_name(
+        "At Joe's Doors the owner uses a showroom.",
+        objective,
+        "At Joe's Doors we replace doors and worktops.",
+    )
+
+
+def test_a_curly_apostrophe_still_matches_the_cited_business():
+    from app.intelligence.facts import enforce_citations
+
+    facts = [{
+        "id": "F5",
+        "entity": "Tom's Coffee",
+        "quote": "1 week (minimum) £495 plus vat",
+        "source": "https://tomscoffee.co.uk/short-term-coffee-machine-hire/",
+    }]
+    text = "Tom\u2019s Coffee charges £495 for 1 week (minimum) plus vat [F5]."
+    kept = enforce_citations(text, facts, "A coffee machine rental company.")
+    assert "495" in kept
+    assert "Tom" in kept
+
+
+def test_a_tariff_quote_keeps_plus_vat():
+    from app.intelligence.facts import _first_listed_price
+
+    quote = "1 week (minimum) £495 plus vat 1 month £995 plus vat Delivery £300 plus vat"
+    kept = _first_listed_price(quote)
+    assert "495" in kept
+    assert "plus vat" in kept.lower()
+    assert "995" not in kept
+
+
+def test_a_borrowed_name_is_deleted_and_the_model_sentence_stays():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import repair_before_gate
+
+    objective = "The service replaces kitchen doors, worktops and handles."
+    blob = "https://www.joesdoors.co.uk/\nAt Joe's Doors we replace doors and worktops.\n"
+    text = "At Joe's Doors, the owner uses a local showroom to show replacement doors in the first month."
+    repaired = repair_before_gate("channels", text, [], objective, blob)
+    assert "Joe" not in repaired
+    assert "showroom" in repaired
+    assert "first month" in repaired
+    assert section_rejection("channels", repaired, blob, objective) == ""
+    still = "At Joe's Doors, the owner replaces doors."
+    rejected = repair_before_gate("channels", still, [], objective, blob)
+    assert "Joe's Doors" in rejected
+    assert section_rejection("channels", rejected, blob, objective)

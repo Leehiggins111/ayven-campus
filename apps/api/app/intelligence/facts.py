@@ -180,17 +180,25 @@ def _first_listed_price(quote: str) -> str:
         kept = words[-2:] or words[-1:]
         if kept:
             return re.sub(r"\s+", " ", " ".join(kept) + ":" + right).strip()
+    money = re.search(r"£\s*\d[\d,]*(?:\.\d+)?\+?(?:/week)?", quote)
+    if not money:
+        return quote
+    end = money.end()
+    extra = re.match(
+        r"\s+(?:plus\s+vat|including\s+vat|excluding\s+vat|pay\s+on\s+completion)",
+        quote[end : end + 40],
+        re.I,
+    )
+    if extra:
+        end += extra.end()
     named = re.search(
         r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s+(£\s*\d[\d,]*(?:\.\d+)?\+?(?:/week)?)",
         quote,
     )
-    if named and named.group(1).lower() != "from":
-        return f"{named.group(1)} {named.group(2)}"
-    money = re.search(r"£\s*\d[\d,]*(?:\.\d+)?\+?(?:/week)?", quote)
-    if not money:
-        return quote
+    if named and named.group(1).lower() != "from" and named.start(2) == money.start():
+        return f"{named.group(1)} {quote[money.start():end]}".strip(" -:,")
     start = quote.rfind(" ", 0, max(0, money.start() - 24))
-    return quote[start + 1 if start >= 0 else 0 : money.end()].strip(" -:,")
+    return quote[start + 1 if start >= 0 else 0 : end].strip(" -:,")
 
 
 def _price_table(fact: dict) -> bool:
@@ -486,16 +494,27 @@ def _title_line(sentence: str) -> bool:
     return all(word[:1].isupper() for word in words)
 
 
+def _fold(text: str) -> str:
+    """Straight and curly apostrophes are the same name."""
+    return (text or "").replace("’", "'").replace("‘", "'").replace("`", "'").lower()
+
+
 def _foreign_names(sentence: str, objective: str, facts: list[dict]) -> list[str]:
     from .deliverable import _IDENTITY
 
     if _title_line(sentence):
         return []
-    allowed = " ".join([objective or ""] + [fact.get("entity") or "" for fact in facts] + [fact.get("quote") or "" for fact in facts]).lower()
+    allowed = _fold(
+        " ".join(
+            [objective or ""]
+            + [fact.get("entity") or "" for fact in facts]
+            + [fact.get("quote") or "" for fact in facts]
+        )
+    )
     names = []
     for match in _IDENTITY.finditer(sentence or ""):
         phrase = re.sub(r"\s+", " ", match.group(0)).strip()
-        if phrase.lower() in allowed:
+        if _fold(phrase) in allowed:
             continue
         names.append(phrase)
     return names
@@ -531,8 +550,11 @@ def _matches(sentence: str, cited: list[dict], objective: str) -> bool:
     for value in _numbers(sentence):
         if not _derived(value, cited_values):
             return False
+    named_in = _fold(
+        " ".join((fact.get("entity") or "") + " " + (fact.get("quote") or "") for fact in cited)
+    )
     for name in _foreign_names(sentence, objective, cited):
-        if name.lower() not in quotes.lower():
+        if _fold(name) not in named_in:
             return False
     return True
 
@@ -560,8 +582,10 @@ def enforce_citations(text: str, facts: list[dict] | None, objective: str) -> st
             if len(stripped.split()) >= 4:
                 kept.append(stripped)
             continue
-        quoted = " ".join((fact.get("entity") or "") + " " + (fact.get("quote") or "") for fact in cited).lower()
-        if _matches(sentence, cited, objective) and all(name.lower() in quoted for name in named):
+        quoted = _fold(
+            " ".join((fact.get("entity") or "") + " " + (fact.get("quote") or "") for fact in cited)
+        )
+        if _matches(sentence, cited, objective) and all(_fold(name) in quoted for name in named):
             kept.append(sentence)
     return "\n".join(kept).strip()
 
@@ -926,7 +950,7 @@ def _drop_pasted_lines(text: str, blob: str) -> str:
 
     kept = []
     for line in (text or "").splitlines():
-        if _SHOUTED_HEADING.search(line or ""):
+        if re.match(r"\s*" + _SHOUTED_HEADING.pattern, line or ""):
             continue
         if _pasted_quote(line, blob):
             continue
@@ -944,6 +968,53 @@ def _dropped_only(original: str, repaired: str) -> bool:
         if compact and compact not in original_lines:
             return False
     return True
+
+
+def _without_borrowed_phrases(key: str, body: str, objective: str, blob: str) -> str:
+    """Delete a business name taken from an opened page. Leave the model's sentence."""
+    if key not in {"service", "offer and positioning", "advert", "call to action", "channels", "next steps"}:
+        return body or ""
+    from .deliverable import borrowed_service_name
+
+    cleaned = body or ""
+    for _ in range(4):
+        reason = borrowed_service_name(cleaned, objective, blob)
+        match = re.search(r"The name '([^']+)'", reason or "")
+        if not match:
+            break
+        phrase = re.escape(match.group(1))
+        cleaned = re.sub(
+            rf"(?i)(?:\*\*)?\b(?:at|by|from|with)\s+{phrase}\b(?:\*\*)?[,:]?\s*",
+            "",
+            cleaned,
+        )
+        cleaned = re.sub(rf"(?i)(?:\*\*)?{phrase}(?:\*\*)?", "", cleaned)
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"(?m)^[\s,;:*\-]+", "", cleaned)
+        cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    return cleaned.strip()
+
+
+def _drop_failed_sentences(key: str, text: str, objective: str, blob: str) -> str:
+    """Delete a sentence the check rejects. Do not write a replacement."""
+    from .deliverable import _SHOUTED_HEADING, claim_mismatch, narration_reason, unsupported_promise
+
+    body = _without_borrowed_phrases(key, text, objective, blob)
+    kept = []
+    for sentence in _sentence_list(body):
+        stripped = sentence.strip()
+        if re.match(r"\s*" + _SHOUTED_HEADING.pattern, stripped):
+            continue
+        if claim_mismatch(stripped, blob):
+            continue
+        if unsupported_promise(stripped, objective, blob):
+            continue
+        if narration_reason(stripped):
+            continue
+        if len(stripped.split()) < 4:
+            continue
+        kept.append(stripped)
+    return "\n".join(kept).strip()
 
 
 def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective: str, blob: str) -> str:
@@ -967,6 +1038,12 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
         if stated and stated != named and not section_rejection(key, stated, blob, objective):
             named = stated
     reason = section_rejection(key, named, blob, objective)
+    if reason:
+        dropped = _drop_failed_sentences(key, named, objective, blob)
+        lines = [line for line in (dropped or "").splitlines() if line.strip()]
+        # Deleting one bad sentence must not leave a worksheet the check would hide.
+        if dropped and len(lines) <= 8 and len(dropped) <= 900 and not section_rejection(key, dropped, blob, objective):
+            return dropped
     if not reason:
         if key == "channels" and _thin_channel(named):
             better = _repair_channels(named, objective, blob)
