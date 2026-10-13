@@ -1,8 +1,8 @@
 """DBOS recovery with atomic, JSON-only application checkpoints.
 
-The SQLite application database and DBOS system database must both live on a
-persistent volume. Database mutations are replay-safe; external writes are not
-part of this runtime's contract. One API process owns this SQLite worker.
+Application rows live in local SQLite or in remote libsql over HTTP (Hrana).
+There is no embedded replica. DBOS system tables stay on local SQLite. Hosted
+mode refuses to start when AYVEN_DB_URL or AYVEN_DB_AUTH_TOKEN is missing.
 """
 from __future__ import annotations
 
@@ -123,7 +123,7 @@ def initialize() -> None:
     # Recover API admission crashes (project committed before DBOS enqueue).
     # DBOS.launch already resumes a workflow that exists. This loop only starts
     # a job that never got a workflow, and only after a claim.
-    from .intelligence.leases import claim
+    from .intelligence.leases import claim, expire_dead_owner
 
     conn = connect()
     rows = conn.execute("SELECT p.id FROM projects p WHERE p.status='running' AND (EXISTS(SELECT 1 FROM tasks t WHERE t.id='engine:'||p.id) OR NOT EXISTS(SELECT 1 FROM work_packages w WHERE w.project_id=p.id))").fetchall()
@@ -135,6 +135,7 @@ def initialize() -> None:
             continue
         except Exception:
             pass
+        expire_dead_owner(row['id'])
         owner = f"dbos:{os.getpid()}"
         fence = claim(row['id'], owner)
         if fence is None:
@@ -312,40 +313,57 @@ def release_lease(project_id: str, owner: str, fence: int, state: str) -> None:
     release(project_id, owner, int(fence), state)
 
 
+def rejection_reason(stage: str, cause: str) -> str:
+    """Stage, cause, and the next action. The exception class alone is not a reason."""
+    clean = " ".join((cause or "unknown").split())
+    if len(clean) > 300:
+        clean = clean[:300].rstrip() + "..."
+    where = (stage or "job").strip() or "job"
+    return (
+        f"Stopped during {where}. Cause: {clean}. "
+        "Next: read the server log for this job, then retry it. Nothing was sent."
+    )
+
+
 @DBOS.step()
-def fail_project(project_id: str, error_type: str, owner: str = "", fence: int = 0) -> None:
+def fail_project(project_id: str, stage: str, cause: str, owner: str = "", fence: int = 0) -> None:
     token = _hold(project_id, owner, fence)
     try:
-        return _fail_project(project_id, error_type)
+        return _fail_project(project_id, stage, cause)
     finally:
         _drop(token)
 
 
-def _fail_project(project_id: str, error_type: str) -> None:
+def _fail_project(project_id: str, stage: str, cause: str) -> None:
+    reason = rejection_reason(stage, cause)
+
     def action():
         conn = connect()
         conn.execute('UPDATE projects SET status=?, result=? WHERE id=?',
-                     ('rejected', f'Engine stopped: {error_type}. Review server logs before retrying.', project_id))
+                     ('rejected', reason, project_id))
         conn.execute('UPDATE tasks SET status=? WHERE id=?', ('rejected', f'engine:{project_id}'))
         from .intelligence.workflow import log_transition
         from .distribution import update_package
         for row in conn.execute('SELECT id FROM work_packages WHERE project_id=? AND parent_id IS NULL', (project_id,)).fetchall():
-            log_transition(row['id'], 'FAILED', f'Engine stopped: {error_type}')
-            update_package(row['id'], status='rejected', campus_stage='FAILED', stage='exception')
+            log_transition(row['id'], 'FAILED', reason)
+            update_package(row['id'], status='rejected', campus_stage='FAILED', stage='exception', error=reason)
         return None
     atomic_stage(project_id, 'failed', action)
 
 
 @DBOS.workflow()
 def project_workflow(project_id: str, owner: str = "", fence: int = 0) -> str:
+    stage = "prepare"
     try:
         state = prepare_project(project_id, owner, int(fence or 0))
         if not state['programme']['paused']:
             for role in ('EMPLOYEE', 'SUPERVISOR', 'MANAGER'):
+                stage = role
                 state = execute_role(project_id, role, state, owner, int(fence or 0))
+        stage = "finish"
         status = finish_project(project_id, owner, int(fence or 0))
     except Exception as exc:
-        fail_project(project_id, type(exc).__name__, owner, int(fence or 0))
+        fail_project(project_id, stage, f"{type(exc).__name__}: {exc}", owner, int(fence or 0))
         release_lease(project_id, owner, int(fence or 0), 'failed')
         raise
     release_lease(project_id, owner, int(fence or 0), 'done')

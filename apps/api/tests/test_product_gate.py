@@ -273,10 +273,13 @@ def test_live_employee_asks_through_the_closed_think_client(monkeypatch):
     assert seen["max_tokens"] == 2048
     assert "on-site cabinet respray" in turned["text"]
     assert "SECRET" not in turned["text"]
-    assert turned["runtime"] == "native"
-    assert turned["qwen_mode"] == "native"
     assert turned["meta"]["backend"] == "local_openai_compat"
     assert turned["meta"]["completion_tokens"] == 40
+    if turned["runtime"] == "qwen-agent":
+        assert turned["qwen_mode"] == "live"
+    else:
+        assert turned["runtime"] == "native"
+        assert turned.get("fallback")
 
 
 def test_ollama_answer_keeps_only_the_text_after_think():

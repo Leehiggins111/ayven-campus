@@ -1,5 +1,6 @@
 """Each hop from the model reply to the screen keeps the plan and the program."""
 
+import os
 import re
 import uuid
 
@@ -93,7 +94,15 @@ def test_generation_record_keeps_finish_reason_tokens_timing_and_verbatim_text(m
     assert meta["prompt_tokens"] == 18
     assert tokens == 22
     assert meta["raw_response"] == payload["response"]
-    assert calls and calls[0].endswith("/api/generate")
+    from app.models import role_model, uses_qwen_chatml
+
+    if os.environ.get("AYVEN_PROVIDER_FORMAT") == "ollama":
+        expected = "/api/chat"
+    elif uses_qwen_chatml(role_model("EMPLOYEE")):
+        expected = "/api/generate"
+    else:
+        expected = "/api/chat"
+    assert calls and calls[0].endswith(expected), calls
     assert payload["response"] in caplog.text
     assert "finish_reason=stop" in caplog.text
     package_id = "trace-" + uuid.uuid4().hex[:8]

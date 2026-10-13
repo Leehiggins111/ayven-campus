@@ -71,7 +71,7 @@ class DeliverableReview(BaseModel):
     unsupported_claims: list[str] = Field(default_factory=list, max_length=12)
 
 
-def review_delivery(objective: str, plan: dict, report: str, evidence: list[dict]) -> dict:
+def review_delivery(objective: str, plan: dict, report: str, evidence: list[dict], project_id: str = "", task_id: str = "") -> dict:
     import json
     from ..models import complete_role
     from .boundary import separate_channels
@@ -101,7 +101,10 @@ def review_delivery(objective: str, plan: dict, report: str, evidence: list[dict
             return {"ok": False, "error": "malformed_review"}
         return {"ok": True, "parsed": parsed, "meta": meta, "tokens": tokens}
 
-    outcome = run_retries(attempt, stage="delivery-review", project_id="")
+    outcome = run_retries(
+        attempt, stage="delivery-review", project_id=project_id or "", task_id=task_id or "",
+        needed_from="A valid delivery review",
+    )
     if not outcome["ok"]:
         return {"passed": False, "missing_items": requirements, "reason": "Invalid review", "calls": []}
     parsed = outcome["result"]["parsed"]

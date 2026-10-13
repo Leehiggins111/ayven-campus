@@ -111,3 +111,6 @@ def validate_public_configuration():
             raise RuntimeError('Live deployment requires a configured workforce endpoint')
         if not os.environ.get('AYVEN_DB') or os.environ['AYVEN_DB'].startswith('/tmp/'):
             raise RuntimeError('Public deployment requires an explicit persistent AYVEN_DB path')
+    from .db import require_hosted_database
+
+    require_hosted_database()

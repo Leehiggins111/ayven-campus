@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from app.db import connect
-from app.intelligence.leases import bind, claim, escalate_expired, perform_side_effect, reset
+from app.intelligence.leases import bind, claim, escalate_expired, expire_dead_owner, perform_side_effect, reset
 from app.intelligence.run_token import StaleWrite
 
 API = Path(__file__).resolve().parents[1]
@@ -339,5 +339,61 @@ def test_health_answers_while_recovery_is_blocked(monkeypatch):
     with TestClient(app) as client:
         assert started.wait(2)
         assert client.get("/health").status_code == 200
+        body = client.get("/health").json()
+        assert body["durable"] is False
+        assert body["persistence_state"] == "not_durable"
         release.set()
         assert app.state.recovery_done.wait(3)
+
+
+def test_a_dead_owner_can_be_claimed_again():
+    """A restart must not wait out a lease held by a pid that no longer exists."""
+    _project("dead-owner")
+    conn = connect()
+    dead = 4194303
+    while dead > 2:
+        try:
+            os.kill(dead, 0)
+        except ProcessLookupError:
+            break
+        dead -= 1
+    conn.execute(
+        """INSERT INTO job_leases(job_id, owner, lease_until, fence, attempts, max_attempts, state)
+           VALUES('dead-owner', ?, 4102444800, 2, 1, 3, 'running')""",
+        (f"dbos:{dead}",),
+    )
+    conn.commit()
+    conn.close()
+    assert expire_dead_owner("dead-owner") is True
+    fence = claim("dead-owner", "dbos-next")
+    assert fence == 3
+
+
+def test_record_review_is_stored_once_when_the_employee_stage_is_replayed():
+    from app.intelligence.toolkit import record_review_once
+
+    conn = connect()
+    conn.execute(
+        """INSERT INTO work_packages(
+            id, project_id, title, objective, origin, stage, status, created_at, updated_at
+        ) VALUES('pkg-review', 'job-review', 'Notes', 'Calculate 6 * 7.', 'test', 'draft', 'running', '2026-10-13', '2026-10-13')"""
+    )
+    conn.commit()
+    conn.close()
+    calls = {"n": 0}
+
+    def effect():
+        calls["n"] += 1
+        return "review noted"
+
+    first = record_review_once("pkg-review", "research-e1", "reviewed the ledger", "review noted", effect=effect)
+    second = record_review_once("pkg-review", "research-e1", "reviewed the ledger", "review noted", effect=effect)
+    conn = connect()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM tool_calls WHERE tool='record_review' AND package_id='pkg-review'"
+    ).fetchone()[0]
+    conn.close()
+    assert first == "review noted"
+    assert second == "review noted"
+    assert calls["n"] == 1
+    assert count == 1

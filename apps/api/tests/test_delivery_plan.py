@@ -61,6 +61,42 @@ def test_invalid_model_plan_fails_instead_of_inventing_a_deliverable():
         plan_delivery("Send mail", build_plan("request", "web_research", []))
 
 
+def test_a_review_that_never_parses_records_a_blocker_and_escalates():
+    from app.db import connect
+    from app.goals import list_blockers
+    from app.intelligence.delivery_plan import review_delivery
+
+    calls = {"n": 0}
+
+    def generator(*_args):
+        calls["n"] += 1
+        return "not json", 4, {"backend": "test"}
+
+    models.set_role_generator(generator)
+    conn = connect()
+    conn.execute(
+        "INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)",
+        ("review-job", "Review", "Write a post", "running", "2026-10-13T00:00:00+00:00"),
+    )
+    conn.commit()
+    plan = {"requirements": ["One complete post"]}
+    result = review_delivery("Write a post", plan, "A draft", [], project_id="review-job", task_id="review-job")
+    assert result["passed"] is False
+    assert calls["n"] == 3
+    blockers = list_blockers("review-job")
+    assert blockers
+    assert "delivery-review" in blockers[0]["reason"]
+    assert "escalat" in blockers[0]["reason"].lower()
+    approvals = conn.execute(
+        "SELECT summary, status FROM approvals WHERE project_id=?",
+        ("review-job",),
+    ).fetchall()
+    conn.close()
+    assert approvals
+    assert approvals[0]["status"] == "pending"
+    assert "escalat" in approvals[0]["summary"].lower()
+
+
 def test_review_rejects_missing_duplicate_and_invented_items():
     from app.intelligence.delivery_plan import review_delivery
     plan = {"requirements": ["First post", "Second post"]}

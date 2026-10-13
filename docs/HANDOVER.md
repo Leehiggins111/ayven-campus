@@ -1,90 +1,96 @@
 # Handover
 
-Branch: `cursor/ayven-workforce-fe56`. Base: `cursor/ayven-v2-workable-a9eb`. Draft PR #6. This branch supersedes the recovery design in open PRs #2 and #5. Those PRs are not closed and not merged.
+One place to resume. No deploy and no spend were done in this run. Measured spend: £0. Do not close or merge Campus PRs #2 or #5.
 
-Milo calls Campus at `CAMPUS_BASE_URL`. `AYVEN_ENGINE_TOKEN` equals `AYVEN_ACCESS_KEY`. Leave `AYVEN_MILO_WRITE_SECRET` unset. `MILO_ENGINE_ENABLED=1`. The access key must be at least 32 characters. No deploy, no pod, no spend.
+## Branches, commits, PRs
 
-## Recovery
+| Repo | Branch | PR | State |
+|---|---|---|---|
+| Leehiggins111/ayven-campus | `cursor/ayven-workforce-fe56` | Draft #6 against `cursor/ayven-v2-workable-a9eb` | Open. Recovery, Milo contract, remote libsql HTTP, hosted boot refusal |
+| Leehiggins111/ayven-campus | earlier recovery PRs | #2 and #5 | Open. Superseded by #6. Not closed, not merged |
+| Milo | acceptance repairs | #23 at `3956f43` | The Campus client this handover cites. Not re-tested in this run |
 
-One design. Durable mode is the only way a job runs. DBOS keeps the stage checkpoints from PRs #2 and #5. A local SQLite lease (`job_leases`) and an outbox (`side_effects`) cover two workers, a late write, and a repeated tool call. Claims use `BEGIN IMMEDIATE` on the local file, with WAL and `busy_timeout`. They do not use Turso concurrent writes. A refused claim does not start a workflow. Heartbeat runs during prepare and during each role. Finish sets the lease to `done`. Failure sets it to `failed`. Startup recovery is a background thread, so `/health` is not blocked.
+Campus history that this round builds on: `215efb5` (durable mode is the only job runner), `67c2cff` (Milo constraints and recovery).
 
-`AYVEN_THREAD_STUB=1` is a local test switch. It does not execute a job. Outside `AYVEN_ENV=local` it refuses to start. The old in-process resume runs only when that stub and `AYVEN_RESUME=1` are both set.
+## What is true now
 
-The outbox covers `web_search` and `fetch_page`. These side effects are not in the outbox: model HTTP calls (they are retried on purpose, so a replay can call the model again), crawl4ai and browser fetches after the first page open, preview server binds, and paid escalation HTTP (off unless armed). Email, purchase, and publish are not implemented. The permission gate blocks them.
+Durable mode is the only job runner. `AYVEN_THREAD_STUB=1` is a local test switch and does not execute a job. Outside `AYVEN_ENV=local` it refuses to start.
 
-DBOS system tables stay on local SQLite. A remote `AYVEN_DB_URL` does not move them. Remote libsql sync is unsupported. A `file:` URL is supported and pinned as `libsql==0.1.11`. Model calls run outside the stage write lock. The planning call, the delivery review, and search planning go through `run_retries`. A plan that still fails records a blocker.
+Application data uses SQLite, a `file:` libsql URL, or remote libsql over HTTP (Hrana `/v2/pipeline`). `libsql://` is opened as HTTPS. `?tls=0` stays HTTP for a local sqld. Embedded replica sync is not used. DBOS system tables stay on local SQLite beside the process. They are not moved to Turso.
 
-| Test | Proves | Does not prove |
-|---|---|---|
-| `test_two_processes_cannot_claim_the_same_job` | Two live processes cannot both hold one claim. | DBOS dedupe across two API processes. |
-| `test_a_restart_reads_the_durable_checkpoint_and_does_not_repeat_the_action` | A second process returns the stored stage receipt and does not run the action. | A live model call, or an external HTTP call. `test_durable.py` is the process-kill proof for the DBOS workflow. |
-| `test_model_retries_go_through_complete` | A timeout is retried inside `_complete`. A returned tool error is not retried again on top of the research retry. | A live model timeout, or jitter. |
-| `test_a_superseded_fence_cannot_commit` | The fencing token is checked at commit. A superseded update is rolled back. | An operating-system thread that was killed. |
-| `test_a_recorded_side_effect_is_not_sent_again` | The tool function runs once. A pending row is not sent again. | That a remote server saw only one request if the process died after sending and before the receipt. |
-| `test_durable_mode_does_not_also_thread_resume` | Thread resume stays idle when the stub is off. | That DBOS launched. |
-| `test_a_refused_claim_does_not_start_the_workflow` | A missed claim does not enqueue a new workflow. | Two live API processes. |
-| `test_a_barrier_kills_the_process_mid_stage_and_the_restart_finishes` | `AYVEN_CRASH_STAGE` exits before the employee receipt. The next process finishes once and releases the lease. | A live model call. |
-| `test_health_answers_while_recovery_is_blocked` | `/health` returns while recovery is blocked. | That a job was recovered. |
+Hosted mode is `RENDER` set, or `AYVEN_REQUIRE_DURABLE=1`. If `AYVEN_DB_URL` or `AYVEN_DB_AUTH_TOKEN` is missing, startup raises and does not open temporary SQLite. A `file:` URL is refused in hosted mode. `/health` reports `durable` true or false and `persistence_state` `durable` or `not_durable`. Local SQLite is `not_durable`. Remote HTTP with a token is `durable`.
 
-Earlier rows that cited the scripted `validation/wf1.py` harness as verified were wrong. That harness is `SIMULATED`. It does not prove model quality. R7 was not verified by the older resume tests: those did not exclude a second live worker.
+A dead `dbos:<pid>` lease can be claimed on the next start, so a new process can resume when the workflow database was wiped. Finished stages are skipped from `durable_checkpoints`. `record_review` goes through the outbox (`side_effects`). An employee-stage crash no longer doubles it.
 
-## Orchestration
+A delivery review that exhausts `AYVEN_MAX_ATTEMPTS` writes a blocker and a pending approval for Lee, same as planning. A rejected job result is the stage, the cause, and the next action. It is not `Engine stopped: ValueError`.
 
-The director's owned tasks are the coordination record. `start_task` refuses a step whose dependency is not done. The employee prompt contains that one step, its acceptance criteria, and its tool allowlist. Arguments go through `validate_tool_call`. A finished step writes the next handover. Timeouts and retries for a step use `run_bounded` and `run_retries`, the same runners as the model call. The model does not choose the next owner.
+Qwen-Agent is used when the package imports and `AYVEN_AGENT_RUNTIME` is `auto`. If that tool loop raises, the employee turn returns the native prose and records the error in `fallback`. The Ollama path uses `/api/generate` for a Qwen model and `/api/chat` otherwise (`uses_qwen_chatml`).
 
-## Milo contract
+## Tests
 
-`POST /milo/jobs` stores `constraints` and gives them to the director and to QA as hard constraints. `GET /milo/jobs/{id}` includes `mode` and `constraints`. Mode is `SIMULATED` while the stub is on. A missing mode is `UNVERIFIED`. The same idempotency key with a different title is the same job. A different objective with that key is 409. A new key is a new job.
+`apps/api/tests` except `test_campus_browser.py`: **350 passed, 12 failed**. The 12 are optional runtimes that are not installed here (Playwright, crawl4ai, browser-use, qwen-agent, MCP stdio, sandbox preflight). The browser test was not run.
 
-## Checklist
+Proved locally: hosted boot refusal; `/health` durable flag; sqld HTTP row surviving a second process; employee crash keeping `record_review` at 1; review cap writing a blocker; qwen tool-loop failure returning native text.
 
-| Row | Status | Evidence |
-|---|---|---|
-| R1 | Implemented and verified | Local cap tests in `test_spend_controls.py`. Not a live GPU charge. |
-| R2 | Implemented awaiting live verification | Scripted harness task count. Not a model run. |
-| R3 | Implemented awaiting live verification | Tool gate tests. No live per-step tool log. |
-| R4 | Implemented awaiting live verification | `test_files_and_traces_survive_a_process_restart`. No Turso database was created. |
-| R5 | Implemented awaiting live verification | Scripted handovers. Not a model run. |
-| R6 | Implemented awaiting live verification | Scripted reject-and-fix. Not a model run. |
-| R7 | Implemented awaiting live verification | Lease, fence, outbox, and durable receipt tests above. Not a live host restart. |
-| R8 | Implemented awaiting live verification | Scripted completion gate. Not a model run. |
-| R9 | Implemented and verified | `test_r9_reasoning.py` on CPU. No model was loaded, so `load_s` is unmeasured. |
-| R10 | Implemented awaiting live verification | `bash scripts/run_ayven_live.sh` prints the plan and exits 0. No pod. |
-| R11 | Implemented awaiting live verification | This branch is not deployed. Render is still the old build. |
-| R12 | Implemented awaiting live verification | `test_milo_contract.py` and `test_a_repeated_submission_returns_the_same_project`. The Node harness was not run. |
-| R13 | Implemented awaiting live verification | The reject control sends a reason. No browser pass on this turn. |
-| R14 | Implemented awaiting live verification | No GPU cost report. |
-| R15 | Implemented awaiting live verification | Session TTL test. This branch is not deployed. |
-| R16 | Not verified | `validation/wf1.py` is SIMULATED. It does not show model quality. The GPU run was not done. |
-| R17 | Implemented and verified | Escalation stays off. Startup refuses armed escalation with no prices. |
+## Cost
 
-Focused run: `test_leases.py`, `test_durable.py`, `test_delivery_plan.py`, and `test_qa_defects.py` passed, including the mid-stage barrier restart. A wider `apps/api/tests` run, excluding the browser test, was 344 passed and 12 failed. The 12 are missing optional runtimes (Playwright, crawl4ai, qwen-agent, browser-use) and the local sandbox preflight, not the lease or durable tests. The browser test was not run. Do not use the older "324 passed, 13 failed" figure.
+From `fullscope/cost-final.md`. Do not treat the estimate as measured spend.
 
-## Backup model
+| | Figure |
+|---|---|
+| Measured spend, this run | £0. No pod, no Turso database created, no paid API |
+| Expected setup | £63/month estimate (range £48 at 50 GPU-hours to £79 at 150) |
+| Live test cap | $1.10 Community / $2.75 Secure, maximum 3 hours |
+| Job cap | `AYVEN_JOB_BUDGET_USD` default 2 |
+| Month cap | `AYVEN_MONTHLY_BUDGET_USD` default 100 |
 
-UNVERIFIED. Off by default. No paid external model.
+`bash scripts/run_ayven_live.sh` without `AYVEN_CONFIRM_SPEND=YES` prints the plan and exits 0.
 
-1. Test `Qwen3-30B-A3B-Instruct-2507`, GGUF Q4_K_M, 16K, `--reasoning off`.
-2. If the director plan test fails, `Qwen3-8B` BF16 with thinking on (about 16 GB, a 24 GB 4090 at the 11:30 community price of $0.34/h). R9 must pass on that thinking output.
-3. Only then `Qwen3-32B` Q4_K_M (19.8 GB). On 24 GB that is about 8K context. Otherwise a 48 GB A6000 at $0.33/h community. The live script does not start step 3.
+## Remaining defects
 
-BFCL figures came from DashScope's API with native function calling. Using them for Q4_K_M on llama.cpp is an assumption. Community prices noted at 11:30: 3090 $0.22, 4090 $0.34.
+- This branch is not on Render. The live service is still ephemeral SQLite until Lee sets the two database variables and deploys.
+- DBOS workflow rows do not move to Turso. A redeploy drops them. Resume depends on the remote checkpoints, the outbox, and reclaiming a dead lease.
+- `validation/wf1.py` is SIMULATED. It does not prove model quality.
+- Stub results can still be titled "Final result". WhatsApp is not told when a job needs Lee. The Milo desktop needs Lee's computer.
+- Customer products, including the salon AI Receptionist, are not connected. Lee has not confirmed which copy is the real one.
+- The 12 optional-runtime failures above, and the browser test, were not turned into passes.
+- Backup models (Qwen3-30B-A3B, then 8B BF16, then 32B) stay UNVERIFIED and off.
 
-Steps 1 and 2 are one session under the community cap ($1.10, $0.34/h). `bash scripts/run_ayven_live.sh` without `AYVEN_CONFIRM_SPEND=YES` prints the plan and exits 0.
+## Environment
 
-## Deferred
+| Name | Role |
+|---|---|
+| `AYVEN_DB_URL` | Remote `libsql://` or `https://` database. Required in hosted mode |
+| `AYVEN_DB_AUTH_TOKEN` | Token for that database. Required in hosted mode. Never commit it |
+| `AYVEN_REQUIRE_DURABLE` | `1` forces hosted rules outside Render |
+| `RENDER` | Set by Render. Turns hosted rules on |
+| `AYVEN_ACCESS_KEY` | At least 32 characters on a non-local deploy. `AYVEN_ENGINE_TOKEN` must equal it |
+| `CAMPUS_BASE_URL` | Where Milo calls Campus |
+| `AYVEN_MILO_WRITE_SECRET` | Leave unset |
+| `MILO_ENGINE_ENABLED` | `1` on Milo |
+| `AYVEN_ENV` | `local` for the crash hook and the thread stub |
+| `AYVEN_CONFIRM_SPEND` | `YES` only for a GPU run Lee approved |
+| `AYVEN_JOB_BUDGET_USD`, `AYVEN_MONTHLY_BUDGET_USD` | Spend caps |
 
-Rate limit on `/session`, backoff jitter, a bounded attempt log, UI copy beyond the mode flag, trusted proxy headers for the Secure cookie, keeping the read token off `/admin/backup` by a further check, and rewriting the isolation test. `render.yaml` was not changed. Remote libsql sync stays unsupported.
+## Hosted acceptance on Render
 
-## Lee still has to do
+Do this after the two database variables are set and this branch is the running build. No GPU. Stub model is enough. `/health` must show `durable: true`, `persistence: libsql_http`, `persistence_state: durable`.
 
-- Deploy this branch. An access key does not deploy it.
-- Set `CAMPUS_BASE_URL`, `AYVEN_ACCESS_KEY` (32 characters or more), and `AYVEN_ENGINE_TOKEN` to that same key. Leave `AYVEN_MILO_WRITE_SECRET` unset.
-- Read `docs/LIVE_TEST.md` before any GPU run. The only remaining spend step is `AYVEN_CONFIRM_SPEND=YES` on a pod with a key. This run did not set it.
+1. **Jobs and results survive a restart and a redeploy.** Submit one job. Record the project id, status, result, and `record_review` count. Restart the Render service. Read the job back. Redeploy the same commit. Read it again. The id, result, and review count match. Removing either database variable must stop the process from booting, with an error that names the missing variable. It must not serve SQLite. Put the variables back before leaving it down.
+2. **Interrupted work resumes.** Submit a second job. Restart while it is `running`. After `/health` is durable again, that job is not left `running`. It is complete, waiting, or rejected. The rejected text names the stage, the cause, and the next action. There is one project, not two.
+3. **The review runs once.** Compare `record_review` rows and `side_effects` rows (`action=record_review`) with a control job that was not restarted. They match. A further restart adds none.
+
+Local stand-ins, not substitutes for the three steps above: `test_remote_hrana_rows_survive_a_new_process_and_health_is_durable` (sqld), `test_a_barrier_kills_the_process_mid_stage_and_the_restart_finishes`, `test_hosted_mode_refuses_to_start_without_a_remote_database`.
+
+## Lee's actions
+
+1. Point `AYVEN_DB_URL` and `AYVEN_DB_AUTH_TOKEN` at an existing Turso database before deploying this branch. Deploying without them makes Render fail to boot.
+2. Deploy #6. Set `AYVEN_ACCESS_KEY` (32 characters or more) and set `AYVEN_ENGINE_TOKEN` to the same value. Leave `AYVEN_MILO_WRITE_SECRET` unset. Point Milo's `CAMPUS_BASE_URL` at that service.
+3. Run the hosted acceptance above.
+4. Read `docs/LIVE_TEST.md` before any GPU run. The only spend switch is `AYVEN_CONFIRM_SPEND=YES`, inside the $1.10 / $2.75 cap.
+5. Leave PRs #2 and #5 open until #6 is the one you merge.
 
 ```bash
-python3 -m pytest apps/api/tests/test_milo_contract.py apps/api/tests/test_leases.py apps/api/tests/test_durable.py apps/api/tests/test_qa_defects.py -q
+python3 -m pytest apps/api/tests/test_hosting.py apps/api/tests/test_durable.py apps/api/tests/test_leases.py apps/api/tests/test_delivery_plan.py -q
 bash scripts/run_ayven_live.sh
 ```
-
-Measured spend this run: £0. No external model call was made.

@@ -125,17 +125,27 @@ def run_tool_loop(
             except Exception as exc:
                 invoked.append({"tool": tool_name, "status": "denied", "error": str(exc)})
                 return f"denied: {exc}"
-            if handler is not None:
-                output = handler(tool_name, payload)
-            else:
-                output = _default_handler(agent_id, package_id, tool_name, payload, approved=approved)
-            invoked.append({"tool": tool_name, "status": "ok", "payload": payload[:180]})
-            try:
-                from .toolkit import ToolResult, now, record_tool_call
+            if tool_name == "record_review":
+                from .toolkit import record_review_once
 
-                record_tool_call(package_id, agent_id, ToolResult(tool=tool_name, status="ok", query=payload[:200], extracted_content=str(output)[:500], timestamp=now(), metadata={"runtime": "qwen-agent"}))
-            except Exception:
-                pass
+                def _effect():
+                    if handler is not None:
+                        return handler(tool_name, payload)
+                    return _default_handler(agent_id, package_id, tool_name, payload, approved=approved)
+
+                output = record_review_once(package_id, agent_id, payload, "review noted", effect=_effect)
+            else:
+                if handler is not None:
+                    output = handler(tool_name, payload)
+                else:
+                    output = _default_handler(agent_id, package_id, tool_name, payload, approved=approved)
+                try:
+                    from .toolkit import ToolResult, now, record_tool_call
+
+                    record_tool_call(package_id, agent_id, ToolResult(tool=tool_name, status="ok", query=payload[:200], extracted_content=str(output)[:500], timestamp=now(), metadata={"runtime": "qwen-agent"}))
+                except Exception:
+                    pass
+            invoked.append({"tool": tool_name, "status": "ok", "payload": payload[:180]})
             return output
 
     calls = list(scripted_calls or [])

@@ -157,8 +157,60 @@ class _MappedConnection:
         return getattr(self._raw, name)
 
 
+def hosted_mode() -> bool:
+    """Render, or an explicit durable requirement. Local tests set neither."""
+    if os.environ.get("AYVEN_REQUIRE_DURABLE", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    return bool(os.environ.get("RENDER", "").strip())
+
+
+def _remote_url(url: str) -> bool:
+    scheme = url.split(":", 1)[0].lower()
+    return scheme in {"libsql", "https", "http", "wss", "ws"}
+
+
+def require_hosted_database() -> None:
+    """Hosted mode never opens temporary SQLite. Missing settings are a startup error."""
+    if not hosted_mode():
+        return
+    url = os.environ.get("AYVEN_DB_URL", "").strip()
+    token = os.environ.get("AYVEN_DB_AUTH_TOKEN", "").strip()
+    missing = []
+    if not url:
+        missing.append("AYVEN_DB_URL")
+    if not token:
+        missing.append("AYVEN_DB_AUTH_TOKEN")
+    if missing:
+        raise RuntimeError(
+            "Hosted mode refuses to start without "
+            + " and ".join(missing)
+            + ". Temporary SQLite is not used. Set AYVEN_DB_URL and AYVEN_DB_AUTH_TOKEN."
+        )
+    if url.startswith("file:"):
+        raise RuntimeError(
+            "Hosted mode refuses a file: database. "
+            "Set AYVEN_DB_URL to a remote libsql:// or https:// URL. Temporary SQLite is not used."
+        )
+    if not _remote_url(url):
+        raise RuntimeError(
+            "Hosted mode requires a remote libsql URL (libsql:// or https://). "
+            "Temporary SQLite is not used."
+        )
+
+
+def persistence_report() -> dict:
+    """What /health can say without claiming a local file is durable."""
+    url = os.environ.get("AYVEN_DB_URL", "").strip()
+    token = os.environ.get("AYVEN_DB_AUTH_TOKEN", "").strip()
+    if _remote_url(url) and token and not url.startswith("file:"):
+        return {"persistence": "libsql_http", "durable": True, "persistence_state": "durable"}
+    if url.startswith("file:"):
+        return {"persistence": "libsql_file", "durable": False, "persistence_state": "not_durable"}
+    return {"persistence": "local_sqlite", "durable": False, "persistence_state": "not_durable"}
+
+
 def _libsql_connect(url: str, auth_token: str):
-    """A local ``file:`` URL. Remote libsql sync is unsupported and is not contacted."""
+    """A local ``file:`` URL via the libsql driver. Remote URLs use Hrana HTTP instead."""
     try:
         import libsql
     except ImportError:
@@ -166,13 +218,12 @@ def _libsql_connect(url: str, auth_token: str):
             import libsql_experimental as libsql
         except ImportError as exc:
             raise RuntimeError("AYVEN_DB_URL is set but the libsql package is not installed") from exc
-    if url.startswith("file:"):
-        local = url[5:]
-        if local.startswith("//"):
-            local = local[2:]
-        conn = libsql.connect(local)
-    else:
-        raise RuntimeError("AYVEN_DB_URL remote libsql sync is unsupported. Use a file: URL.")
+    if not url.startswith("file:"):
+        raise RuntimeError("Remote libsql URLs use HTTP. They are not opened with embedded sync.")
+    local = url[5:]
+    if local.startswith("//"):
+        local = local[2:]
+    conn = libsql.connect(local)
     if hasattr(conn, "row_factory"):
         conn.row_factory = sqlite3.Row
         return conn
@@ -230,16 +281,21 @@ class _GuardedConnection:
 
 def open_raw():
     """A connection that is not the stage proxy. Claims use this so two processes can lock."""
+    require_hosted_database()
     url = os.environ.get("AYVEN_DB_URL", "").strip()
     auth_token = os.environ.get("AYVEN_DB_AUTH_TOKEN", "").strip()
     if url.startswith("file:"):
         conn = _libsql_connect(url, "")
         identity = f"libsql:{url}"
-    elif url or auth_token:
-        if not url or not auth_token:
+    elif _remote_url(url):
+        if not auth_token:
             raise RuntimeError("AYVEN_DB_URL and AYVEN_DB_AUTH_TOKEN must be set together")
-        conn = _libsql_connect(url, auth_token)
-        identity = f"libsql:{url}"
+        from .hrana_http import HranaConnection
+
+        conn = HranaConnection(url, auth_token)
+        identity = f"libsql-http:{url}"
+    elif url or auth_token:
+        raise RuntimeError("AYVEN_DB_URL and AYVEN_DB_AUTH_TOKEN must be set together")
     else:
         path = db_path()
         path.parent.mkdir(parents=True, exist_ok=True)

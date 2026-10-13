@@ -196,7 +196,13 @@ except RuntimeError:
 else:
     raise AssertionError('Unconfigured live model must fail')
 conn=connect()
-assert conn.execute('SELECT status FROM projects WHERE id="live-failure"').fetchone()['status']=='rejected'
+row = conn.execute('SELECT status, result FROM projects WHERE id="live-failure"').fetchone()
+assert row['status']=='rejected'
+reason = row['result'] or ''
+assert reason.startswith('Stopped during ')
+assert 'Cause:' in reason and 'Next:' in reason
+assert 'Engine stopped: ValueError' not in reason
+assert 'Nothing was sent.' in reason
 assert conn.execute('SELECT workflow_state FROM work_packages WHERE tier="MANAGER"').fetchone()['workflow_state']=='FAILED'
 assert conn.execute('SELECT state FROM job_leases WHERE job_id="live-failure"').fetchone()['state']=='failed'
 conn.close()
@@ -255,10 +261,12 @@ status = DBOS.retrieve_workflow("project:barrier-job").get_result()
 assert status == "complete", status
 conn = connect()
 calls = conn.execute("SELECT COUNT(*) FROM model_calls").fetchone()[0]
+reviews = conn.execute("SELECT COUNT(*) FROM tool_calls WHERE tool='record_review'").fetchone()[0]
 stages = [row[0] for row in conn.execute("SELECT stage FROM durable_checkpoints WHERE job_id='barrier-job'")]
 lease = conn.execute("SELECT state FROM job_leases WHERE job_id='barrier-job'").fetchone()[0]
 conn.close()
 assert calls == 3, calls
+assert reviews == 1, reviews
 assert set(stages) == {"prepare", "EMPLOYEE", "SUPERVISOR", "MANAGER", "finish"}
 assert lease == "done"
 durable.shutdown()

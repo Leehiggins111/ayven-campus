@@ -5,8 +5,9 @@ checkpoints. This module is the piece those PRs left open: two workers
 must not run the same job, a superseded attempt must not commit, and a
 recorded tool call must not be sent again.
 
-Claims use local SQLite ``BEGIN IMMEDIATE``. They do not use Turso
-concurrent writes. A remote ``AYVEN_DB_URL`` is not the claim database.
+Claims use ``BEGIN IMMEDIATE`` on the application database. That is the
+local file, or the remote Hrana stream when ``AYVEN_DB_URL`` is set.
+There is no embedded replica.
 """
 
 from __future__ import annotations
@@ -71,6 +72,51 @@ def assert_fence(connection) -> None:
     state = _field(row, "state", 2)
     if row is None or owner != held["owner"] or int(fence) != int(held["fence"]) or state != "running":
         raise StaleWrite("fence superseded at commit")
+
+
+def owner_pid_alive(owner: str) -> bool:
+    """``dbos:<pid>`` is alive when that process still exists. Other owners are left alone."""
+    if not owner.startswith("dbos:"):
+        return True
+    pid_text = owner.split(":", 1)[1]
+    if not pid_text.isdigit():
+        return True
+    pid = int(pid_text)
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def expire_dead_owner(job_id: str) -> bool:
+    """Let a restart claim a lease whose process is gone. A live owner is not touched."""
+    from ..db import open_raw
+
+    conn = open_raw()
+    try:
+        row = conn.execute(
+            "SELECT owner, state FROM job_leases WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        owner = str(_field(row, "owner", 0) or "")
+        state = _field(row, "state", 1)
+        if state != "running" or owner_pid_alive(owner):
+            return False
+        conn.execute(
+            "UPDATE job_leases SET lease_until=0 WHERE job_id=? AND state='running' AND owner=?",
+            (job_id, owner),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
 
 
 def claim(job_id: str, owner: str, *, now: int | None = None) -> int | None:

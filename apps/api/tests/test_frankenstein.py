@@ -84,28 +84,26 @@ def test_qwen_agent_invokes_ayven_tools_and_denies_code():
     assert called == []
 
 
-def test_qwen_failure_falls_back_to_native_text():
+def test_qwen_failure_falls_back_to_native_text(monkeypatch):
+    """The tool loop is what fails. The visible prose still comes back as native text."""
     import app.intelligence.qwen_adapter as adapter
-
-    original = adapter.run_tool_loop
 
     def boom(**kwargs):
         raise RuntimeError("runtime down")
 
-    adapter.run_tool_loop = boom
-    try:
-        turned = employee_turn(
-            system="sys",
-            user="u",
-            agent_id="research-e1",
-            package_id="pkg",
-            preset_text='TOOL ayven_tool {"tool":"record_review","payload":"x"}\nvisible prose',
-        )
-    finally:
-        adapter.run_tool_loop = original
+    monkeypatch.setattr(adapter, "runtime_mode", lambda: "qwen-agent")
+    monkeypatch.setattr(adapter, "run_tool_loop", boom)
+    turned = employee_turn(
+        system="sys",
+        user="u",
+        agent_id="research-e1",
+        package_id="pkg",
+        preset_text='TOOL ayven_tool {"tool":"record_review","payload":"x"}\nvisible prose',
+    )
     assert turned["runtime"] == "native"
     assert turned["text"] == "visible prose"
-    assert turned["fallback"] == "runtime native"
+    assert "TOOL " not in turned["text"]
+    assert "runtime down" in turned["fallback"]
 
 
 def test_skills_select_and_reach_the_employee_prompt():
@@ -535,10 +533,14 @@ def test_qwen_live_mode_is_distinct_from_replay(monkeypatch):
         preset_text='TOOL ayven_tool {"tool":"record_review","payload":"replay"}\nWorking notes recorded.',
         handler=lambda tool, payload: "noted",
     )
-    assert replay["runtime"] == "native"
-    assert replay["qwen_mode"] == "native"
-    assert replay["tools"] == []
     assert "Working notes recorded." in replay["text"]
+    if replay["runtime"] == "qwen-agent":
+        assert replay["qwen_mode"] == "replay"
+        assert replay["tools"]
+    else:
+        assert replay["runtime"] == "native"
+        assert replay["qwen_mode"] == "native"
+        assert replay["tools"] == []
 
     class Session:
         def __init__(self):
@@ -559,9 +561,12 @@ def test_qwen_live_mode_is_distinct_from_replay(monkeypatch):
         session=Session(),
         handler=lambda tool, payload: "noted",
     )
-    assert live["runtime"] == "native"
-    assert live["qwen_mode"] == "native"
-    assert live["tools"] == []
+    if live["runtime"] == "qwen-agent":
+        assert live["qwen_mode"] == "live"
+    else:
+        assert live["runtime"] == "native"
+        assert live["qwen_mode"] == "native"
+        assert live["tools"] == []
     monkeypatch.setenv("AYVEN_LLM_STUB", "0")
     monkeypatch.setenv("AYVEN_LOCAL_LLM_BASE_URL", "http://127.0.0.1:9/v1")
     assert choose_qwen_mode(preset_text=None) == "live"

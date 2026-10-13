@@ -167,6 +167,15 @@ def _complete_once(role: str, system: str, user: str, max_tokens: int = 400, pro
             "fallback": turned.get("fallback") or "",
         })
         text = turned.get("text") or ""
+    elif role == "EMPLOYEE" and package_id:
+        from .toolkit import note_record_reviews
+
+        agent_id = "research-e1"
+        if programme is not None:
+            child = next((item for item in programme.children if item["id"] == package_id), None)
+            if child:
+                agent_id = child["agent_id"]
+        note_record_reviews(package_id, agent_id, text)
     return text, tokens, meta
 
 
@@ -822,7 +831,10 @@ class Programme:
         if self.plan.get("planning_source") == "live_model":
             from .delivery_plan import review_delivery
             deliverable = "\n\n".join(child["report"] for child in self.children if child["focus"] == "deliverable")
-            delivery_review = review_delivery(self.objective, self.plan, deliverable, self.research.get("evidence") or [])
+            delivery_review = review_delivery(
+                self.objective, self.plan, deliverable, self.research.get("evidence") or [],
+                project_id=self.project_id, task_id=self.parent_id,
+            )
             if not delivery_review["passed"] and int(self.plan.get("budget", {}).get("max_attempts", 2)) > 1:
                 self.retries += 1
                 mark_stage(self.parent_id, "REPAIR", project_id=self.project_id, task_id=self.task_id or "")
@@ -834,7 +846,10 @@ class Programme:
                 )
                 if not repair_meta.get("error"):
                     self._bind_employee(child["id"], repair_text, repair_meta)
-                    revised = review_delivery(self.objective, self.plan, child["report"], self.research.get("evidence") or [])
+                    revised = review_delivery(
+                        self.objective, self.plan, child["report"], self.research.get("evidence") or [],
+                        project_id=self.project_id, task_id=self.parent_id,
+                    )
                     revised["calls"] = delivery_review.get("calls", []) + revised.get("calls", [])
                     delivery_review = revised
                 else:

@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
-from .db import connect, init_db
+from .db import connect, init_db, persistence_report
 from . import events
 from . import orchestrator
 from .version import VALIDATION_STATUS, __version__
@@ -107,7 +107,7 @@ def health():
         "runtime": "durable" if os.environ.get("AYVEN_DURABLE") == "1" else "ephemeral",
         "access_protected": protected(),
         "research_mode": os.environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
-        "persistence": "local_sqlite",
+        **persistence_report(),
         "model_mode": "fixture" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" and not local_configured() else "configured",
         "simulated": os.environ.get("AYVEN_LLM_STUB", "1") != "0",
         "label": "SIMULATED" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" else "LIVE",

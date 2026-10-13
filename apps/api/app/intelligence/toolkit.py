@@ -55,6 +55,45 @@ def valid_http_url(url: str) -> bool:
     return True
 
 
+def record_review_once(package_id: str, agent_id: str, payload: str, output: str, *, effect=None) -> str:
+    """Record one review note. A replay of the same package and payload does not insert again."""
+    from .leases import perform_side_effect
+
+    job = _project_of(package_id) or package_id or "unscoped"
+
+    def write() -> str:
+        produced = effect() if effect is not None else output
+        result = ToolResult(
+            tool="record_review",
+            status="ok",
+            query=(payload or "")[:200],
+            extracted_content=str(produced)[:500],
+            timestamp=now(),
+            metadata={"runtime": "record_review"},
+        )
+        record_tool_call(package_id, agent_id, result)
+        return str(produced)
+
+    stored = perform_side_effect(job, "EMPLOYEE", "record_review", f"{package_id}|{payload}", write)
+    if not isinstance(stored, str) or not stored:
+        return output or "review noted"
+    return stored
+
+
+def note_record_reviews(package_id: str, agent_id: str, text: str) -> int:
+    """The native employee path has no tool loop. The same outbox key still applies."""
+    from .boundary import extract_executable, validate_tool_call
+
+    noted = 0
+    for call in extract_executable(text or "")[0]:
+        gate = validate_tool_call(call)
+        if not gate.ok or gate.call.get("tool") != "record_review":
+            continue
+        record_review_once(package_id, agent_id, str(gate.call.get("payload") or ""), "review noted")
+        noted += 1
+    return noted
+
+
 def record_tool_call(package_id: str, agent_id: str, result: ToolResult) -> str:
     call_id = str(uuid.uuid4())
     payload = result.as_dict()
