@@ -988,7 +988,7 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
 _UNSUPPORTED_PROMISES = (
     "free consultation", "free quote", "free home visit", "free home",
     "in one day", "same day", "same-day", "guaranteed", "upfront cost",
-    "free trial", "free introductory", "free mini",
+    "free trial", "free introductory", "free mini", "discount",
 )
 
 
@@ -1010,6 +1010,8 @@ def unsupported_promise(body: str, objective: str, blob: str) -> str:
             if blob_l and phrase in blob_l and re.search(r"\[F\d+\]", sentence):
                 continue
             return f"The section promises '{phrase}'. The request does not."
+        if re.search(r"\bfree\b(?:\s+\w+){0,5}\s+trials?\b", lowered) and "free trial" not in objective_l:
+            return "The section promises 'free trial'. The request does not."
     return ""
 
 
@@ -2253,6 +2255,8 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
         if "responsible for the cost" in lowered or not any(_has_word(lowered, word) for word in _BUYERS):
             return "The section does not name a customer segment."
     elif key == "problem":
+        if re.search(r"\bthe owner needs to\b", lowered):
+            return "The problem describes the owner's task. Name what is costly or stressful for the customer."
         if not any(_has_word(lowered, cue) for cue in _PROBLEM_BURDEN):
             return "The section does not state a concrete problem."
         if re.search(r"%|\bpercent\b", body or "", re.I):

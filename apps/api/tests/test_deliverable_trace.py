@@ -1612,6 +1612,23 @@ def test_a_catalogue_code_is_not_the_offer():
     assert "£31.00" in line
     assert "BESTIR" not in line
     assert "304w" not in line
+    assert facts[0]["unit"] == "per week"
+    assert "per day" not in (facts[0]["quote"] or "").lower()
+
+
+def test_a_free_trial_and_a_discount_are_not_the_launch_plan():
+    from app.intelligence.deliverable import section_rejection
+
+    objective = "Prepare a UK business briefing for a coffee machine rental company."
+    trial = "The owner promotes the service through a website by offering a free first week trial of the rental coffee machine."
+    assert "free trial" in section_rejection("channels", trial, "", objective).lower()
+    discount = "Facebook to promote door and worktop replacements, offering a first month discount on handles."
+    assert "discount" in section_rejection("channels", discount, "", "The service replaces kitchen doors, worktops and handles.").lower()
+    problem = (
+        "The owner needs to establish a competitive pricing model that balances affordability with quality, "
+        "while ensuring a stress-free experience."
+    )
+    assert "owner's task" in section_rejection("problem", problem, "", "A home visit service.").lower()
 
 
 def test_a_call_to_action_drops_the_owner_channel_plan():

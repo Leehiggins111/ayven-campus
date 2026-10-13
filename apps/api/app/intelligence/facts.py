@@ -341,12 +341,11 @@ def extract_facts(evidence: list[dict] | None) -> list[dict]:
                 ):
                     sentence = sentence.rstrip() + " " + nxt
                 row = _fact_row(url, title, sentence, text)
-                row["quote"] = _first_listed_price(row["quote"])
+                row["quote"] = _without_capacity_spec(_first_listed_price(row["quote"]))
                 amount = _MONEY.search(row["quote"] or "")
                 if amount:
                     row["quantity"] = amount.group(0)
-                unit = _UNIT.search(row["quote"] or "")
-                row["unit"] = unit.group(0) if unit else ""
+                row["unit"] = _unit_for_price(row["quote"] or "")
                 if not row["unit"] and _bare_price(row["quote"]):
                     row["quote"] = (
                         row["quote"].rstrip(".")
@@ -680,6 +679,25 @@ def _without_model_code(quote: str) -> str:
         r"\1",
         quote or "",
     ).strip(" -:,")
+
+
+def _without_capacity_spec(quote: str) -> str:
+    """Cups per day and a size drawing are the machine, not the rental unit."""
+    text = quote or ""
+    text = re.sub(r"\s*-\s*\d+\s*cups?\s+per\s+day\b.*", "", text, flags=re.I)
+    text = re.sub(r"\s+\d+\s*cups?\s+per\s+day\b.*", "", text, flags=re.I)
+    text = re.sub(r"\s*\d+\s*w\s*x\s*\d+.*", "", text, flags=re.I)
+    return text.strip(" -")
+
+
+def _unit_for_price(quote: str) -> str:
+    """The unit written on the £ figure. A later cups-per-day size is not that unit."""
+    slash = re.search(r"£\s*\d[\d,]*(?:\.\d+)?\s*/\s*(week|day|month)", quote or "", re.I)
+    if slash:
+        return "per " + slash.group(1).lower()
+    head = re.split(r"\bcups?\s+per\s+day\b", quote or "", maxsplit=1, flags=re.I)[0]
+    unit = _UNIT.search(head)
+    return unit.group(0) if unit else ""
 
 
 def _without_spec(quote: str) -> str:
