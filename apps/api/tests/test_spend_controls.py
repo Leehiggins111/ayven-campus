@@ -162,3 +162,28 @@ def test_live_evidence_writes_criteria_before_a_result(tmp_path, monkeypatch):
     monkeypatch.delenv("RUNPOD_POD_ID", raising=False)
     assert run_confirmed_session(tmp_path / "refused") == 0
     assert not (tmp_path / "refused").exists()
+
+
+def test_a_pound_budget_is_kept_exactly_in_gbp(monkeypatch):
+    from app.goals import get_goal, open_goal
+
+    monkeypatch.setenv("AYVEN_JOB_BUDGET_USD", "10.00")
+    goal = open_goal("gbp-job", [], job_cap_gbp=6.25)
+    assert goal["job_cap_gbp"] == 6.25
+    assert goal["job_cap_currency"] == "GBP"
+    assert get_goal("gbp-job")["job_cap_gbp"] == 6.25
+
+
+def test_an_unsupported_budget_is_reported_not_clamped(monkeypatch):
+    import pytest
+
+    from app.goals import check_budget, get_goal, open_goal
+
+    monkeypatch.setenv("AYVEN_JOB_BUDGET_USD", "2.00")
+    with pytest.raises(ValueError, match="Unsupported budget: £6.25"):
+        check_budget(job_cap_gbp=6.25)
+    with pytest.raises(ValueError, match="not changed"):
+        open_goal("clamp-job", [], job_cap_gbp=6.25)
+    assert get_goal("clamp-job") is None
+    with pytest.raises(ValueError):
+        check_budget(job_cap_gbp=0)

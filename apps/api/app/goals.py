@@ -15,8 +15,8 @@ from .db import connect
 from .intelligence.budget import (
     bind_job,
     budget_view,
-    effective_job_cap_usd,
     gbp,
+    job_budget_usd,
     job_spent_usd,
     month_allows_new_job,
     record_intervention,
@@ -120,6 +120,7 @@ def ensure_schema(conn=None) -> None:
             created_at TEXT NOT NULL
         )"""
     )
+    _add(conn, "goal_contracts", "job_cap_gbp", "REAL")
     _add(conn, "approvals", "reason", "TEXT")
     _add(conn, "approvals", "consequences", "TEXT")
     _add(conn, "approvals", "irreversible_effects", "TEXT")
@@ -151,6 +152,36 @@ def _pragma(conn, table: str):
     return out
 
 
+def check_budget(job_cap_gbp: float | None = None, budget_usd: float | None = None) -> float:
+    """The job cap in USD for enforcement. A budget is kept as sent, or refused with the reason.
+
+    A pound budget is never converted and clamped: one the ceiling cannot support
+    raises ValueError naming the ceiling, and nothing is stored.
+    """
+    import math
+
+    if job_cap_gbp is not None:
+        if not math.isfinite(float(job_cap_gbp)) or job_cap_gbp <= 0:
+            raise ValueError("Set a budget above £0.")
+        requested = usd_from_gbp(job_cap_gbp)
+        label = f"£{float(job_cap_gbp):.2f}"
+    elif budget_usd is not None:
+        if not math.isfinite(float(budget_usd)) or budget_usd <= 0:
+            raise ValueError("Set a budget above $0.")
+        requested = float(budget_usd)
+        label = f"${float(budget_usd):.2f}"
+    else:
+        return job_budget_usd()
+    ceiling = job_budget_usd()
+    if requested > ceiling + 1e-9:
+        raise ValueError(
+            f"Unsupported budget: {label} is above this server's per-job ceiling of "
+            f"${ceiling:.2f} (about £{gbp(ceiling):.2f}, AYVEN_JOB_BUDGET_USD). "
+            "The budget was not changed. Send a budget within the ceiling or raise the ceiling."
+        )
+    return requested
+
+
 def open_goal(
     project_id: str,
     criteria: list[str],
@@ -162,12 +193,8 @@ def open_goal(
     allow_publish: bool = False,
 ) -> dict:
     ensure_schema()
-    if job_cap_gbp is not None and job_cap_gbp <= 0:
-        raise ValueError("Set a budget above £0.")
-    requested = budget_usd
-    if job_cap_gbp is not None:
-        requested = usd_from_gbp(job_cap_gbp)
-    cap = effective_job_cap_usd(requested)
+    cap = check_budget(job_cap_gbp, budget_usd)
+    cap_gbp = float(job_cap_gbp) if job_cap_gbp is not None else None
     allowed, why = month_allows_new_job(cap)
     if not allowed:
         raise ValueError(why)
@@ -176,16 +203,17 @@ def open_goal(
     conn = connect()
     conn.execute(
         """INSERT INTO goal_contracts(
-            project_id, acceptance_criteria, deadline, job_cap_usd, allow_paid_fallback, allow_publish, status, created_at, updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?)
+            project_id, acceptance_criteria, deadline, job_cap_usd, job_cap_gbp, allow_paid_fallback, allow_publish, status, created_at, updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(project_id) DO UPDATE SET
             acceptance_criteria=excluded.acceptance_criteria,
             deadline=excluded.deadline,
             job_cap_usd=excluded.job_cap_usd,
+            job_cap_gbp=excluded.job_cap_gbp,
             allow_paid_fallback=excluded.allow_paid_fallback,
             allow_publish=excluded.allow_publish,
             updated_at=excluded.updated_at""",
-        (project_id, json.dumps(clean), deadline, cap, int(allow_paid_fallback), int(allow_publish), "running", now, now),
+        (project_id, json.dumps(clean), deadline, cap, cap_gbp, int(allow_paid_fallback), int(allow_publish), "running", now, now),
     )
     conn.commit()
     conn.close()
@@ -202,7 +230,9 @@ def get_goal(project_id: str) -> dict | None:
         return None
     item = dict(row)
     item["acceptance_criteria"] = json.loads(item["acceptance_criteria"] or "[]")
-    item["job_cap_gbp"] = gbp(item["job_cap_usd"])
+    # The pound budget Lee sent is shown exactly. Only a USD-only cap is converted for display.
+    item["job_cap_gbp"] = item["job_cap_gbp"] if item.get("job_cap_gbp") is not None else gbp(item["job_cap_usd"])
+    item["job_cap_currency"] = "GBP"
     item["spent_usd"] = job_spent_usd(project_id)
     item["spent_gbp"] = gbp(item["spent_usd"])
     item["allow_paid_fallback"] = bool(item["allow_paid_fallback"])
@@ -566,17 +596,15 @@ def stop_job(project_id: str) -> dict:
 
 
 def raise_cap(project_id: str, job_cap_gbp: float) -> dict:
-    if job_cap_gbp <= 0:
-        raise ValueError("Set a budget above £0.")
+    cap = check_budget(job_cap_gbp)
     goal = get_goal(project_id)
     if not goal:
         raise KeyError(project_id)
-    cap = effective_job_cap_usd(usd_from_gbp(job_cap_gbp))
     allowed, why = month_allows_new_job(cap)
     if not allowed:
         raise ValueError(why)
     conn = connect()
-    conn.execute("UPDATE goal_contracts SET job_cap_usd=?, status='running', updated_at=? WHERE project_id=?", (cap, _now(), project_id))
+    conn.execute("UPDATE goal_contracts SET job_cap_usd=?, job_cap_gbp=?, status='running', updated_at=? WHERE project_id=?", (cap, float(job_cap_gbp), _now(), project_id))
     conn.execute("UPDATE blockers SET status='closed' WHERE project_id=? AND kind='cap' AND status='open'", (project_id,))
     conn.commit()
     conn.close()

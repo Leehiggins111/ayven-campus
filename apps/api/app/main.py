@@ -361,6 +361,10 @@ def create_project(body: ObjectiveIn, request: Request):
     from .milo_handoff import submit_job
     key = request.headers.get("Idempotency-Key", "").strip()
     try:
+        from .goals import check_budget
+
+        # Refuse an unsupported budget before the job exists. It is never clamped.
+        check_budget(body.job_cap_gbp, body.budget_usd)
         result = submit_job(body.objective, key, body.title, constraints=body.constraints)
         _attach_goal(result["project_id"], body, bool(result.get("duplicate")))
         if not result.get("duplicate"):
@@ -530,6 +534,10 @@ def milo_submit(body: ObjectiveIn, request: Request, idempotency_key: str = ""):
     if header_key and idempotency_key and header_key != idempotency_key:
         raise HTTPException(400, "Idempotency keys disagree")
     try:
+        from .goals import check_budget
+
+        # Refuse an unsupported budget before the job exists. It is never clamped.
+        check_budget(body.job_cap_gbp, body.budget_usd)
         result = submit_job(
             body.objective,
             header_key or idempotency_key,

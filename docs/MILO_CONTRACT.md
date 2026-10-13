@@ -2,7 +2,7 @@
 
 Campus does not call Milo. Milo calls Campus. In staging, `AYVEN_ENGINE_TOKEN` must equal `AYVEN_ACCESS_KEY`. Leave `AYVEN_MILO_WRITE_SECRET` unset. `MILO_ENGINE_ENABLED=1` and `CAMPUS_BASE_URL` point Milo at this API.
 
-Costs are stored in USD. Responses that Milo shows use GBP via `AYVEN_FX_GBP_PER_USD` (default `0.7571`). The effective job cap is the lower of the requested cap and `AYVEN_JOB_BUDGET_USD` (default `$2`). The monthly cap defaults to `$100` and uses the Europe/London calendar month.
+Costs are stored in USD. Responses that Milo shows use GBP via `AYVEN_FX_GBP_PER_USD` (default `0.7571`). A `job_cap_gbp` is stored and returned exactly as sent, in GBP. `AYVEN_JOB_BUDGET_USD` (default `$2`) is the per-job ceiling and the cap when none is sent. A budget above the ceiling, or not above zero, is refused with HTTP 400 and a reason; it is never clamped. The monthly cap defaults to `$100` and uses the Europe/London calendar month.
 
 ## Create a job
 
