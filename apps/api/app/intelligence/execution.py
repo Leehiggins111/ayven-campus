@@ -1655,6 +1655,8 @@ def _check_for_model(reason: str) -> str:
         return "Put each £ figure in its own sentence with that figure's own opened page and [F#]. One claim, one source."
     if "fewer than two" in lowered:
         return "Name two opened businesses and what each offers. Say how this service differs. Do not invent a name."
+    if "worksheet" in lowered or "too long to be a finished answer" in lowered:
+        return "Keep the section short. For pricing, one £ line with its [F#] and one Assumption line."
     if "does not cite a £" in lowered:
         return "Put [F#] in the same sentence as the £ figure. Keep the quantity and the unit."
     if "page heading" in lowered or "pastes the page" in lowered:

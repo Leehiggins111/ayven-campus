@@ -1044,6 +1044,46 @@ def _without_borrowed_phrases(key: str, body: str, objective: str, blob: str) ->
     return cleaned.strip()
 
 
+def _without_rejected_unit(sentence: str, blob: str) -> str:
+    """Delete the unit the page check rejected. Keep the model's £ and the rest of the sentence."""
+    from .deliverable import claim_mismatch
+
+    reason = claim_mismatch(sentence, blob)
+    match = re.search(r"gives the unit '([^']+)'", reason or "")
+    if not match:
+        return ""
+    pattern = r"\b" + r"\s+".join(re.escape(part) for part in match.group(1).split()) + r"\b"
+    nxt = re.sub(pattern, "", sentence or "", count=1, flags=re.I)
+    nxt = re.sub(r"\s{2,}", " ", nxt)
+    nxt = re.sub(r"\s+([,.;:!?])", r"\1", nxt).strip(" ,;:-")
+    if nxt and not re.search(r"[.!?]$", nxt):
+        nxt += "."
+    if not nxt or nxt == (sentence or "").strip() or "£" not in nxt:
+        return ""
+    if "gives the unit" in (claim_mismatch(nxt, blob) or "").lower():
+        return ""
+    if claim_mismatch(nxt, blob):
+        return ""
+    return nxt
+
+
+def _short_pricing(text: str, objective: str, blob: str) -> str:
+    """Keep the model's first £ line and first Assumption line when the list is too long."""
+    from .deliverable import section_rejection
+
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if len(lines) <= 8 and len(text or "") <= 900:
+        return ""
+    prices = [line for line in lines if "£" in line]
+    assumptions = [line for line in lines if re.search(r"\bassumption\b", line, re.I) and "£" not in line]
+    assumption = assumptions[0] if assumptions else ""
+    for price in prices[:6]:
+        candidate = "\n".join(part for part in (price, assumption) if part)
+        if candidate and not section_rejection("pricing", candidate, blob, objective):
+            return candidate
+    return ""
+
+
 def _without_rejected_claim_words(sentence: str, blob: str) -> str:
     """Delete the words the page check named. Keep the rest of the model's sentence."""
     from .deliverable import claim_mismatch
@@ -1113,7 +1153,7 @@ def _drop_failed_sentences(key: str, text: str, objective: str, blob: str) -> st
         if re.match(r"\s*" + _SHOUTED_HEADING.pattern, stripped):
             continue
         if claim_mismatch(stripped, blob):
-            trimmed = _without_rejected_claim_words(stripped, blob)
+            trimmed = _without_rejected_claim_words(stripped, blob) or _without_rejected_unit(stripped, blob)
             if trimmed:
                 kept.append(trimmed)
             continue
@@ -1170,6 +1210,10 @@ def repair_before_gate(key: str, text: str, facts: list[dict] | None, objective:
         # Deleting one bad sentence must not leave a worksheet the check would hide.
         if dropped and len(lines) <= 8 and len(dropped) <= 900 and not section_rejection(key, dropped, blob, objective):
             return dropped
+        if key == "pricing":
+            short = _short_pricing(named, objective, blob)
+            if short:
+                return short
     if not reason:
         if key == "channels" and _thin_channel(named):
             better = _repair_channels(named, objective, blob)

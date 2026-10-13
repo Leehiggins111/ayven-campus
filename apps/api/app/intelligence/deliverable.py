@@ -1053,6 +1053,8 @@ def section_rejection(key: str, raw: str, blob: str = "", objective: str = "") -
     if key == "pricing":
         if _ungrounded_amount(cleaned, blob):
             return "Pricing cites a £ figure that is not on an opened page and is not labelled as an assumption."
+        if not _body_filled(cleaned):
+            return _body_rejection(cleaned) or "Pricing has no assumption, and the £ amount is not on an opened page."
         if not _pricing_ok(cleaned, blob):
             return "Pricing has no assumption, and the £ amount is not on an opened page."
     elif _ungrounded_amount(cleaned, blob):
@@ -1126,7 +1128,7 @@ _PROBLEM_BURDEN = (
     "cost", "expensive", "longer", "disruption", "waste", "budget", "delay",
     "price", "time", "cheaper", "afford", "slow", "inconvenient", "difficult",
     "buying", "outright", "challenge", "anxious", "hassle", "barrier", "struggle",
-    "inconvenience",
+    "inconvenience", "stress",
 )
 _EXAMPLE_WORDS = ("bicycle", "bicycles", "rider", "riders", "cyclist", "cyclists", "chains", "alex")
 _EXAMPLE_PHRASES = (

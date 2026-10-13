@@ -2529,3 +2529,56 @@ def test_a_free_quote_clause_is_deleted_and_the_ask_stays():
     assert "Contact us today" in kept
     assert "doors" in kept
     assert section_rejection("call to action", kept, "", DOOR) == ""
+
+
+def test_stress_of_travel_is_a_concrete_problem():
+    from app.intelligence.deliverable import section_rejection
+
+    text = (
+        "The problem is the lack of a convenient visit, and the stress of travel to a salon. "
+        "The owner needs a service that comes to the customer."
+    )
+    assert section_rejection("problem", text, "", "A visit at the customer's home.") == ""
+
+
+def test_a_long_price_list_keeps_one_line_and_one_assumption():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import repair_before_gate
+
+    objective = "Prepare a UK business briefing for a coffee machine rental company."
+    blob = "https://www.fullhousecoffee.com/\nStarting From £31.00/week BESTIR BM50\n"
+    facts = [{"id": "F1", "source": "https://www.fullhousecoffee.com/", "quote": "Starting From £31.00/week"}]
+    lines = [
+        "Full House Coffee (https://www.fullhousecoffee.com/) states a machine starts from £31.00 a week [F1].",
+        "Assumption: The price follows the weekly figure on the opened page.",
+    ]
+    pad = " and the visit measures the site before a price is written for this service"
+    for index in range(6):
+        lines.append(
+            "Another opened page repeats the weekly machine price of £31.00 [F1] for batch "
+            f"{index}{pad * 4}."
+        )
+        lines.append("Assumption: The price follows the weekly figure" + pad + ".")
+    text = "\n".join(lines)
+    kept = repair_before_gate("pricing", text, facts, objective, blob)
+    assert len([line for line in kept.splitlines() if line.strip()]) <= 2
+    assert "£31.00" in kept
+    assert "Assumption" in kept
+    assert "batch" not in kept
+    assert section_rejection("pricing", kept, blob, objective) == ""
+
+
+def test_a_wrong_unit_is_deleted_and_the_figure_stays():
+    from app.intelligence.deliverable import claim_mismatch
+    from app.intelligence.facts import _without_rejected_unit
+
+    blob = (
+        "https://www.fullhousecoffee.com/\n"
+        "Starting From £31.00/week BESTIR BM50 - 100 Cups Per Day\n"
+    )
+    text = "Full House Coffee provides machines starting from £31.00 per day [F2] (fullhousecoffee.com)."
+    kept = _without_rejected_unit(text, blob)
+    assert "per day" not in kept.lower()
+    assert "31.00" in kept
+    assert "per week" not in kept.lower()
+    assert claim_mismatch(kept, blob) == ""
