@@ -2643,3 +2643,32 @@ def test_a_long_kitchen_price_keeps_the_measurement_line():
     assert "note 0" not in kept
     assert len([line for line in kept.splitlines() if line.strip()]) <= 4
     assert section_rejection("pricing", kept, blob, DOOR) == ""
+
+
+def test_a_pay_on_completion_banner_keeps_the_cited_price():
+    from app.intelligence.deliverable import section_rejection
+    from app.intelligence.facts import repair_before_gate
+
+    blob = (
+        "https://refreshkitchen.co.uk/\n"
+        "PAY ON COMPLETION Refresh Your Kitchen can transform your kitchen in one day for only £950.\n"
+    )
+    facts = [{
+        "id": "F1",
+        "entity": "Refresh Kitchen",
+        "source": "https://refreshkitchen.co.uk/",
+        "quote": "PAY ON COMPLETION Refresh Your Kitchen can transform your kitchen in one day for only £950.",
+    }]
+    text = "\n".join([
+        "PAY ON COMPLETION £950 for a full kitchen transformation in one day [F1].",
+        "Assumption: The price is based on a kitchen refresh including doors, worktops, and handles.",
+        "Assumption: Kitchen size, door count, door size, worktop length, worktop material, and handle count still need to be measured.",
+    ])
+    kept = repair_before_gate("pricing", text, facts, DOOR, blob)
+    price = kept.split("Assumption", 1)[0]
+    assert "950" in price
+    assert "PAY ON COMPLETION" in price
+    assert "full" not in price.lower()
+    assert "transformation" not in price.lower()
+    assert "kitchen size" in kept.lower()
+    assert section_rejection("pricing", kept, blob, DOOR) == ""

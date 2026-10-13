@@ -1199,7 +1199,8 @@ def _drop_failed_sentences(key: str, text: str, objective: str, blob: str) -> st
     kept = []
     for sentence in _sentence_list(body):
         stripped = sentence.strip()
-        if re.match(r"\s*" + _SHOUTED_HEADING.pattern, stripped):
+        # A banner such as PAY ON COMPLETION can open a real £ sentence. Drop only a heading line.
+        if "£" not in stripped and re.match(r"\s*" + _SHOUTED_HEADING.pattern, stripped):
             continue
         if claim_mismatch(stripped, blob):
             trimmed = _without_rejected_claim_words(stripped, blob) or _without_rejected_unit(stripped, blob)
