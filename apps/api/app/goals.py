@@ -508,18 +508,23 @@ _CRITERIA_STOP = {
 }
 
 
-def _criterion_terms(criterion: str) -> list[str]:
+def _tokens(text: str) -> list[str]:
+    """Whole tokens. '£25' and '£250' are different tokens; trailing punctuation is dropped."""
     import re
 
-    words = re.findall(r"[a-z0-9£$][a-z0-9£$.,'-]*", (criterion or "").lower())
-    return [w.strip(".,'-") for w in words if len(w.strip(".,'-")) >= 3 and w.strip(".,'-") not in _CRITERIA_STOP]
+    words = re.findall(r"[a-z0-9£$][a-z0-9£$.,'-]*", (text or "").lower())
+    return [w.strip(".,'-") for w in words if w.strip(".,'-")]
+
+
+def _criterion_terms(criterion: str) -> list[str]:
+    return [w for w in _tokens(criterion) if len(w) >= 3 and w not in _CRITERIA_STOP]
 
 
 def evaluate_criteria(project_id: str, report: str) -> list[dict]:
     """Check each acceptance criterion against the delivered report and store the result.
 
-    Deterministic term coverage, not a model judgement: ``met`` when at least
-    70% of the criterion's terms appear in the report, ``not_met`` otherwise,
+    Deterministic whole-token coverage, not a model judgement: ``met`` when at least
+    70% of the criterion's terms appear as whole tokens in the report and every figure in it appears exactly, ``not_met`` otherwise,
     ``unverified`` when the criterion has no checkable term.
     """
     goal = get_goal(project_id)
@@ -527,14 +532,17 @@ def evaluate_criteria(project_id: str, report: str) -> list[dict]:
     if not criteria:
         return []
     text = (report or "").lower()
+    present = set(_tokens(report))
     results = []
     for criterion in criteria:
         terms = _criterion_terms(criterion)
         if not terms:
             status = "unverified"
         else:
-            found = sum(1 for term in terms if term in text)
-            status = "met" if text.strip() and found / len(terms) >= 0.7 else "not_met"
+            found = sum(1 for term in terms if term in present)
+            # A figure such as £25 or 3 must appear exactly; near-miss figures are not a match.
+            figures = all(term in present for term in terms if any(ch.isdigit() for ch in term))
+            status = "met" if text.strip() and figures and found / len(terms) >= 0.7 else "not_met"
         results.append({"criterion": criterion, "status": status})
     save_criteria(project_id, results)
     return results

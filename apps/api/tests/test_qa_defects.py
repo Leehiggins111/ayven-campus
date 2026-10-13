@@ -255,3 +255,21 @@ def test_acceptance_criteria_are_evaluated_and_shown():
     results = {row["criterion"]: row["status"] for row in criteria_for(project)}
     assert results == {"Lists three named prospects": "met", "Explains the refund policy": "not_met"}
     assert job_status(project)["criteria_results"] == criteria_for(project)
+
+
+def test_criteria_match_whole_tokens_only():
+    from app.goals import criteria_for, open_goal
+    from app.orchestrator import finalize_project
+
+    project = _project("Quote a price.")
+    open_goal(project, ["Quotes £25 per visit"])
+    parent = insert_package(
+        project_id=project, task_id="tokens", title="Research programme", objective="Quote a price.",
+        origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="complete",
+    )
+    update_package(parent, findings="Quotes £250 per visit.", workflow_state="COMPLETED")
+    finalize_project(project)
+    assert criteria_for(project) == [{"criterion": "Quotes £25 per visit", "status": "not_met"}]
+    update_package(parent, findings="Quotes £25. per visit.", workflow_state="COMPLETED")
+    finalize_project(project)
+    assert criteria_for(project) == [{"criterion": "Quotes £25 per visit", "status": "met"}]
