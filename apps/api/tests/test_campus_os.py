@@ -135,7 +135,7 @@ def test_a_later_submission_of_the_same_objective_can_be_rejected():
     ).fetchone()
     conn.close()
     assert approval2
-    client.post(f"/approvals/{approval2['id']}/resolve", json={"decision": "rejected"})
+    client.post(f"/approvals/{approval2['id']}/resolve", json={"decision": "rejected", "reason": "The draft is not ready."})
     after = _parent(package["id"])
     assert after["workflow_state"] == "FAILED"
     view = client.get("/campus/view", params={"package_id": package["id"]}).json()
@@ -151,7 +151,7 @@ def test_http_reject_lands_in_the_rejected_state():
     approval = conn.execute("SELECT id FROM approvals WHERE task_id=?", ("task-campus-reject",)).fetchone()
     conn.close()
     client = TestClient(app)
-    resolved = client.post(f"/approvals/{approval['id']}/resolve", json={"decision": "rejected"})
+    resolved = client.post(f"/approvals/{approval['id']}/resolve", json={"decision": "rejected", "reason": "The draft is not ready."})
     assert resolved.status_code == 200
     after = _parent(parent)
     assert after["workflow_state"] == "FAILED"

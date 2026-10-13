@@ -123,7 +123,13 @@ def test_backup_copies_the_database_and_leaves_the_source():
     assert Path(body["path"]) != source
     assert body["sha256"]
     assert body["durable"] is False
-    assert Path(body["path"]).read_bytes() == before
+    import sqlite3
+    with sqlite3.connect(source) as original, sqlite3.connect(body["path"]) as copied:
+        assert copied.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        tables = original.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        for (name,) in tables:
+            quoted = name.replace('"', '""')
+            assert original.execute(f'SELECT * FROM "{quoted}"').fetchall() == copied.execute(f'SELECT * FROM "{quoted}"').fetchall()
 
 
 def test_ollama_requests_are_plain_chat():

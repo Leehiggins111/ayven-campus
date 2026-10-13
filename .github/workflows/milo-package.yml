@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - cursor/ayven-v2-workable-a9eb
+      - codex/milo-ayven-release-hardening
 
 permissions:
   contents: read
@@ -15,12 +16,12 @@ concurrency:
 
 jobs:
   package:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/codex/milo-ayven-release-hardening'
     runs-on: windows-latest
     timeout-minutes: 180
     environment: milo-package
     env:
-      MILO_SHA: 1d04499b8d05819f2743bf54b7d1a9f791b157ca
+      MILO_SHA: d83c82b0f7d7cd4260fe61f3541b824ffe8316ca
       CAMPUS_SHA: ${{ github.sha }}
       MILO_DIR: ${{ github.workspace }}/milo
       CAMPUS_DIR: ${{ github.workspace }}/campus
@@ -49,7 +50,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Leehiggins111/Milo
-          ref: 1d04499b8d05819f2743bf54b7d1a9f791b157ca
+          ref: d83c82b0f7d7cd4260fe61f3541b824ffe8316ca
           token: ${{ secrets.MILO_BUILD_TOKEN }}
           persist-credentials: false
           path: milo

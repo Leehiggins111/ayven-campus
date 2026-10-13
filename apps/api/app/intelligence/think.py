@@ -23,3 +23,17 @@ def contains_think(text: str | None) -> bool:
         return False
     lowered = text.lower()
     return "<think" in lowered or "<redacted_thinking" in lowered or "<reasoning" in lowered
+
+
+_REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking", "reasoning_details")
+
+
+def visible_message(message: dict | None) -> str:
+    """Use only the visible content. A reasoning field is never copied into the answer."""
+    message = message or {}
+    content = message.get("content")
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        content = str(content)
+    return strip_think(content)

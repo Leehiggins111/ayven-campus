@@ -225,7 +225,7 @@ def run(rate=None):
     api = ROOT / "apps" / "api"
     if str(api) not in sys.path:
         sys.path.insert(0, str(api))
-    hourly = float(rate if rate is not None else os.environ.get("AYVEN_GPU_USD_PER_HOUR", "2.00"))
+    hourly = float(rate if rate is not None else os.environ.get("AYVEN_GPU_USD_PER_HOUR", "0.34" if os.environ.get("AYVEN_GPU_TIER", "secure").lower() == "community" else "0.89"))
     run_dir = RUNS / _now()
     for sub in ("employee", "supervisor", "manager", "benchmarks"):
         (run_dir / sub).mkdir(parents=True, exist_ok=True)

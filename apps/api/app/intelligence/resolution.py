@@ -61,7 +61,7 @@ def resolve_manager(
         method = "unresolved"
         decision = "ESCALATE"
         reason = "Insufficient evidence after the research budget. Nothing was invented to fill it."
-    elif task_class == "software_build":
+    elif task_class in {"software_build", "website_build", "application_build"}:
         if research.get("tests_passed"):
             method = "deterministic_tool"
             decision = "SYNTHESISE"

@@ -199,7 +199,6 @@ def test_migration_keeps_v04_rows(tmp_path, monkeypatch):
         assert {"claims", "plans", "tool_calls", "verification_results", "quality_results"} <= tables
         live.close()
     finally:
-        monkeypatch.setenv("AYVEN_DB", "/tmp/ayven-pytest-intel.db")
         reset_connection_state()
 
 

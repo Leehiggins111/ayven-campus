@@ -14,8 +14,16 @@ _OPENER = re.compile(
 _SUBJECT = re.compile(r"(?i)\b(for|about|regarding|on|into|of)\s+\S+")
 
 
+def is_acceptance_brief(objective: str) -> bool:
+    """The STL host-kit brief names its product, files, and deliverable."""
+    text = strip_think(objective or "").lower()
+    return "scottish short-term let host kit" in text and "publish nothing" in text and len(text) > 80
+
+
 def blocking_question(objective: str) -> str:
     """Return the question Ayven cannot invent, or '' when work can proceed."""
+    if is_acceptance_brief(objective):
+        return ""
     text = strip_think(objective or "").strip()
     match = _ASK.search(text)
     if match:

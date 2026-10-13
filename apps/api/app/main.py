@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from .db import connect, init_db
@@ -18,9 +20,14 @@ from .version import VALIDATION_STATUS, __version__
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
 app = FastAPI(title="Ayven Campus API", version=__version__)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-from .access import access_middleware, access_key, protected
-app.middleware("http")(access_middleware)
+from .access import boundary, login, create_session, validate_public_configuration, protected, access_key, session_value, TTL
+app.middleware("http")(boundary)
+app.add_api_route("/login", login, methods=["GET"])
+app.add_api_route("/session", create_session, methods=["POST"])
+origins = [x.strip() for x in os.environ.get("AYVEN_CORS_ORIGINS", "").split(",") if x.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
+from .milo_bridge import router as milo_router
+app.include_router(milo_router)
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
 
 def _campus_index() -> Path:
@@ -40,17 +47,48 @@ def campus_legacy():
     return FileResponse(STATIC / "campus.html")
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
+    validate_public_configuration()
     conn = connect()
     init_db(conn)
     conn.close()
+    from .durable import enabled, initialize
+    if enabled():
+        await run_in_threadpool(initialize)
+    from .goals import resume_incomplete
+    await run_in_threadpool(resume_incomplete)
+    from .intelligence.recovery import resume_unfinished
+    await run_in_threadpool(resume_unfinished)
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    from .durable import shutdown as stop_worker
+    await run_in_threadpool(stop_worker)
+    from .intelligence.web_preview import close_previews
+    await run_in_threadpool(close_previews)
 
 class ObjectiveIn(BaseModel):
     objective: str
     title: str | None = None
+    acceptance_criteria: list[str] = []
+    deadline: str | None = None
+    job_cap_gbp: float | None = None
+    budget_usd: float | None = None
+    allow_paid_fallback: bool = False
+    allow_publish: bool = False
 
 class ApprovalIn(BaseModel):
     decision: str
+    reason: str = ""
+
+class BudgetIn(BaseModel):
+    monthly_cap_gbp: float
+
+class CapIn(BaseModel):
+    job_cap_gbp: float
+
+class ReworkIn(BaseModel):
+    reason: str
 
 def _rows(sql: str, args=()):
     conn = connect()
@@ -67,9 +105,13 @@ def health():
         "version": __version__,
         "validation_status": VALIDATION_STATUS,
         "gpu_validated": False,
+        "runtime": "durable" if os.environ.get("AYVEN_DURABLE") == "1" else "ephemeral",
         "access_protected": protected(),
-        "research_mode": __import__("os").environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
-        "persistence": "local_sqlite_not_verified_durable",
+        "research_mode": os.environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
+        "persistence": "local_sqlite",
+        "model_mode": "fixture" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" and not local_configured() else "configured",
+        "simulated": os.environ.get("AYVEN_LLM_STUB", "1") != "0",
+        "label": "SIMULATED" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" else "LIVE",
         "workforce": {"roles": DEFAULT_MODELS, "local_endpoint": local_configured(), "escalation_enabled": escalation_configured()},
     }
 
@@ -131,9 +173,26 @@ def _campus_brief() -> dict:
 
 
 def _campus_view(package_id: str = "") -> dict:
+    from .blobs import list_files
+    from .goals import criteria_for, get_goal, list_blockers
     from .intelligence.campus_view import campus_view
 
-    return campus_view(package_id)
+    view = campus_view(package_id)
+    pid = view.get("package_id") or package_id
+    project_id = ""
+    if pid:
+        rows = _rows("SELECT project_id FROM work_packages WHERE id=?", (pid,))
+        project_id = rows[0]["project_id"] if rows else ""
+    goal = get_goal(project_id) if project_id else None
+    view["blockers"] = list_blockers(package_id=pid) if pid else []
+    view["files"] = list_files(pid) if pid else []
+    view["criteria_results"] = criteria_for(project_id) if project_id else []
+    if goal:
+        view["cost_gbp"] = goal["spent_gbp"]
+        view["job_cap_gbp"] = goal["job_cap_gbp"]
+        view["allow_paid_fallback"] = goal["allow_paid_fallback"]
+        view["allow_publish"] = goal["allow_publish"]
+    return view
 
 
 def _intelligence_state() -> dict:
@@ -175,7 +234,8 @@ def download_program_file(package_id: str, name: str):
     """A program file whose tests passed. A rejected reply has no file to download."""
     from .intelligence.software import stored_files
 
-    if name not in {"main.py", "test_main.py"}:
+    import re
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", name):
         raise HTTPException(404)
     packages = _rows("SELECT id, findings FROM work_packages WHERE id=?", (package_id,))
     if not packages:
@@ -188,6 +248,55 @@ def download_program_file(package_id: str, name: str):
         media_type="text/x-python; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{name}"'},
     )
+
+
+def _verified_web_package(package_id: str):
+    from .intelligence.web_artifact import artifact_files, verified_web
+    rows = _rows("SELECT findings,observability_json FROM work_packages WHERE id=?", (package_id,))
+    if not rows:
+        raise HTTPException(404, "Package not found")
+    row = rows[0]
+    try:
+        research = json.loads(row.get("research_json") or "{}")
+        obs = json.loads(row.get("observability_json") or "{}")
+        research["web_execution"] = research.get("web_execution") or obs.get("web_execution") or {}
+        research["web_plan"] = research.get("web_plan") or research["web_execution"].get("plan") or {}
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(409, "Browser verification evidence is unavailable")
+    if not verified_web(row.get("findings") or "", research):
+        raise HTTPException(409, "This browser artifact has not passed verification")
+    return artifact_files(row["findings"]), research
+
+
+@app.get("/work-packages/{package_id}/artifact.zip")
+def download_web_artifact(package_id: str):
+    import base64
+    import io
+    import zipfile
+    files, research = _verified_web_package(package_id)
+    evidence = research["web_execution"]
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+        archive.writestr("README.txt", "Offline browser application. No dependencies or external services.\nOpen the preview from Milo to use stable browser storage, or serve this folder on a local HTTP server.\nData belongs to this browser profile and origin. Clearing browser storage deletes it.\nNothing was sent.\n")
+        archive.writestr("acceptance-plan.json", json.dumps(research.get("web_plan") or {}, indent=2))
+        archive.writestr("execution.json", json.dumps({k: v for k, v in evidence.items() if k != "screenshots"}, indent=2))
+        for shot in evidence.get("screenshots") or []:
+            archive.writestr(f"browser-{shot['width']}px.png", base64.b64decode(shot.get("png_base64") or "", validate=True))
+    return Response(buffer.getvalue(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{package_id[:8]}-source.zip"'})
+
+
+@app.get("/work-packages/{package_id}/preview")
+def preview_web_artifact(package_id: str, request: Request):
+    if request.client and request.client.host not in {"127.0.0.1", "::1", "testclient"}:
+        raise HTTPException(403, "Previews are available only on this computer")
+    from .intelligence.web_preview import preview
+    files, _research = _verified_web_package(package_id)
+    try:
+        return {"url": preview(package_id, files), "storage": "browser profile on this computer", "package_id": package_id}
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, "Preview could not start. Its local port may be occupied: " + str(exc))
 
 
 @app.get("/work-packages/{package_id}/intelligence")
@@ -224,22 +333,33 @@ def _traces(package_id: str) -> list[dict]:
 
     return traces_for(package_id)
 
-@app.post("/projects")
-def create_project(body: ObjectiveIn):
-    from .milo_handoff import find_duplicate
+def _attach_goal(project_id: str, body: ObjectiveIn, duplicate: bool) -> None:
+    if duplicate:
+        return
+    from .goals import open_goal, split_goal
 
-    existing = find_duplicate(body.objective)
-    if existing:
-        return existing
-    pid = str(uuid.uuid4())
-    title = body.title or body.objective[:80]
-    conn = connect()
-    conn.execute("INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)", (pid, title, body.objective, "running", datetime.now(timezone.utc).isoformat()))
-    conn.commit()
-    conn.close()
-    events.emit("project.created", project_id=pid, agent_id="milo", department_id="command", status="running", summary=f"Project opened: {title}")
-    orchestrator.run_project(pid)
-    return {"project_id": pid}
+    open_goal(
+        project_id,
+        list(body.acceptance_criteria or []),
+        deadline=body.deadline,
+        job_cap_gbp=body.job_cap_gbp,
+        budget_usd=body.budget_usd,
+        allow_paid_fallback=body.allow_paid_fallback,
+        allow_publish=body.allow_publish,
+    )
+    split_goal(project_id, body.objective, list(body.acceptance_criteria or []))
+
+
+@app.post("/projects")
+def create_project(body: ObjectiveIn, request: Request):
+    from .milo_handoff import submit_job
+    key = request.headers.get("Idempotency-Key", "").strip()
+    try:
+        result = submit_job(body.objective, key, body.title)
+        _attach_goal(result["project_id"], body, bool(result.get("duplicate")))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {**result, "replayed": result.get("duplicate", False)}
 
 @app.get("/projects/{pid}")
 def get_project(pid: str):
@@ -286,29 +406,80 @@ class ClarificationIn(BaseModel):
 
 @app.post("/work-packages/{package_id}/clarification")
 def answer_clarification(package_id: str, body: ClarificationIn):
-    from .intelligence.execution import begin_clarification, start_clarification_worker
-
+    from .durable import enabled
     try:
-        begin_clarification(package_id, body.answer)
+        if enabled():
+            from .durable import answer_clarification as resume_clarification
+            resume_clarification(package_id, body.answer)
+        else:
+            from .intelligence.execution import begin_clarification, start_clarification_worker
+            begin_clarification(package_id, body.answer)
+            start_clarification_worker(package_id)
     except KeyError:
         raise HTTPException(404)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    start_clarification_worker(package_id)
     return {"ok": True, "package_id": package_id}
 
 @app.get("/approvals")
 def list_approvals():
     return {"approvals": _rows("SELECT * FROM approvals ORDER BY created_at DESC LIMIT 50")}
 
+@app.get("/budget")
+def get_budget():
+    from .intelligence.budget import budget_view
+
+    return budget_view()
+
+
+@app.put("/budget")
+def put_budget(body: BudgetIn):
+    from .intelligence.budget import gbp, set_monthly_cap_usd, usd_from_gbp
+
+    try:
+        view = set_monthly_cap_usd(usd_from_gbp(body.monthly_cap_gbp))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    view["monthly_cap_gbp"] = gbp(view["monthly_cap_usd"])
+    return view
+
+
 @app.post("/approvals/{aid}/resolve")
 def resolve(aid: str, body: ApprovalIn):
     if body.decision not in ("approved", "rejected"):
         raise HTTPException(400, "decision must be approved|rejected")
+    if body.decision == "rejected" and not body.reason.strip():
+        raise HTTPException(400, "Add a reason so Ayven knows what to change.")
+    from .goals import ensure_schema, record_intervention
+
+    ensure_schema()
+    conn = connect()
+    row = conn.execute("SELECT project_id FROM approvals WHERE id=?", (aid,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404)
+    conn.execute(
+        "UPDATE approvals SET reason=? WHERE id=?",
+        (body.reason.strip(), aid),
+    )
+    conn.commit()
+    conn.close()
+    if body.decision == "rejected" and row["project_id"]:
+        record_intervention(row["project_id"], body.reason.strip())
+    from .durable import enabled, resolve_approval as durable_resolve
+    if enabled():
+        try:
+            return {"ok": True, "resumed": durable_resolve(aid, body.decision)}
+        except KeyError:
+            raise HTTPException(404)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
     try:
         orchestrator.resolve_approval(aid, body.decision)
     except KeyError:
         raise HTTPException(404)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
     resumed = []
     if body.decision == "approved":
         from .intelligence.execution import resume_packages_for_approval
@@ -331,7 +502,7 @@ class LoginIn(BaseModel):
 
 
 @app.post("/login")
-def login(body: LoginIn):
+def json_login(body: LoginIn, request: Request):
     import hashlib
     from fastapi.responses import JSONResponse
     if not protected():
@@ -339,14 +510,23 @@ def login(body: LoginIn):
     if body.key != access_key():
         raise HTTPException(401, "login required")
     response = JSONResponse({"ok": True, "protected": True})
-    response.set_cookie("ayven_session", hashlib.sha256(access_key().encode()).hexdigest(), httponly=True, samesite="lax")
+    import time
+    response.set_cookie("ayven_session", session_value(int(time.time())), max_age=TTL, httponly=True, samesite="strict", secure=request.url.scheme == "https")
     return response
 
 
 @app.post("/milo/jobs")
-def milo_submit(body: ObjectiveIn, idempotency_key: str = ""):
+def milo_submit(body: ObjectiveIn, request: Request, idempotency_key: str = ""):
     from .milo_handoff import submit_job
-    return submit_job(body.objective, idempotency_key)
+    header_key = request.headers.get("Idempotency-Key", "").strip()
+    if header_key and idempotency_key and header_key != idempotency_key:
+        raise HTTPException(400, "Idempotency keys disagree")
+    try:
+        result = submit_job(body.objective, header_key or idempotency_key, body.title)
+        _attach_goal(result["project_id"], body, bool(result.get("duplicate")))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return result
 
 
 @app.get("/milo/jobs/{project_id}")
@@ -358,13 +538,102 @@ def milo_status(project_id: str):
         raise HTTPException(404)
 
 
+@app.get("/work-packages/{package_id}/bundle.zip")
+def download_bundle(package_id: str):
+    import io
+    import zipfile
+    from .blobs import list_files, load_bytes
+
+    files = list_files(package_id)
+    if not files:
+        raise HTTPException(404, "This job didn't produce any files.")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for item in files:
+            content = load_bytes(package_id, item["name"])
+            if content is None:
+                raise HTTPException(404, "This file isn't available any more.")
+            archive.writestr(item["name"], content)
+    return Response(content=buffer.getvalue(), media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="bundle.zip"'})
+
+
+@app.post("/work-packages/{package_id}/stop")
+def stop_package(package_id: str):
+    rows = _rows("SELECT project_id FROM work_packages WHERE id=?", (package_id,))
+    if not rows:
+        raise HTTPException(404)
+    from .goals import stop_job
+
+    return stop_job(rows[0]["project_id"])
+
+
+@app.patch("/work-packages/{package_id}")
+def patch_package(package_id: str, body: CapIn):
+    rows = _rows("SELECT project_id FROM work_packages WHERE id=?", (package_id,))
+    if not rows:
+        raise HTTPException(404)
+    from .goals import raise_cap
+
+    try:
+        return raise_cap(rows[0]["project_id"], body.job_cap_gbp)
+    except KeyError:
+        raise HTTPException(404)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/work-packages/{package_id}/accept")
+def accept_package(package_id: str):
+    rows = _rows("SELECT project_id FROM work_packages WHERE id=?", (package_id,))
+    if not rows:
+        raise HTTPException(404)
+    from .blobs import list_files
+    from .goals import mark_complete
+    from .intelligence.budget import record_intervention
+
+    names = [item["name"] for item in list_files(package_id)]
+    try:
+        result = mark_complete(rows[0]["project_id"], names, True)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    record_intervention(rows[0]["project_id"], "Lee accepted the result")
+    return result
+
+
+@app.post("/work-packages/{package_id}/rework")
+def rework_package(package_id: str, body: ReworkIn):
+    if not body.reason.strip():
+        raise HTTPException(400, "Say what needs changing.")
+    rows = _rows("SELECT project_id FROM work_packages WHERE id=?", (package_id,))
+    if not rows:
+        raise HTTPException(404)
+    from .goals import add_blocker
+    from .intelligence.budget import record_intervention
+
+    record_intervention(rows[0]["project_id"], body.reason.strip())
+    return add_blocker(rows[0]["project_id"], "rework", body.reason.strip(), "Ayven will rework it using your reason.", package_id)
+
+
 @app.get("/admin/backup")
-def backup():
+def backup(request: Request):
     import hashlib
-    import shutil
+    import hmac
+    import sqlite3
+    import tempfile
+    from .access import local_mode
     from .db import db_path
-    target = Path("/tmp/ayven-backup.db")
-    shutil.copy(db_path(), target)
+    supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if not local_mode() and not protected():
+        raise HTTPException(401, "Admin bearer token required")
+    if protected() and not hmac.compare_digest(supplied.encode(), access_key().encode()):
+        raise HTTPException(403, "Admin bearer token required")
+    backup_dir = db_path().resolve().parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="ayven-", suffix=".db", dir=backup_dir)
+    os.close(fd)
+    target = Path(name)
+    with sqlite3.connect(db_path()) as source, sqlite3.connect(target) as destination:
+        source.backup(destination)
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
     return {"ok": True, "path": str(target), "sha256": digest, "durable": False, "note": "Local copy only. No free remote store is connected."}
 

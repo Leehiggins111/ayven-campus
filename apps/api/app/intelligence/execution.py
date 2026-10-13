@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -265,6 +266,19 @@ class Programme:
             mark_stage(self.parent_id, "PLANNING", project_id=self.project_id, task_id=self.task_id or "")
         events.emit("agent.planning", project_id=self.project_id, task_id=self.task_id, agent_id=MANAGER, department_id="research", status="PLANNING", summary=f"Classified as {self.task_class}")
         question = blocking_question(self.objective) if not self.clarification_answer else ""
+        if self.task_class == "web_research" and os.environ.get("AYVEN_LLM_STUB", "1") == "0":
+            from .delivery_plan import plan_delivery
+            self.plan, planning_meta = plan_delivery(
+                self.objective + ("\nUser clarification: " + self.clarification_answer if self.clarification_answer else ""), self.plan,
+            )
+            save_model_call(self.parent_id, "PLANNING", self.task_class, planning_meta, json.dumps(self.plan))
+            self.tokens += int(planning_meta.get("completion_tokens") or 0)
+            if not question:
+                question = self.plan.get("clarification_question") or ""
+        if self.task_class == "calculation":
+            self.calculation = _calculation_from_objective(self.clarification_answer or self.objective)
+            if not self.calculation and not question:
+                question = "Which numbers and operation should I calculate? I could not reliably interpret that expression."
         if question:
             self.paused = "clarification"
             update_package(
@@ -290,9 +304,8 @@ class Programme:
             selected_model=route_for(self.task_class, "planning")["model_id"],
         )
         if self.task_class == "calculation":
-            self.calculation = _calculation_from_objective(self.objective)
             self.research["calculation"] = self.calculation or {}
-        if "research" in self.plan["stages"]:
+        if "research" in self.plan["stages"] and not (self.resume_id and _sources_saved(self.parent_id)):
             from .recovery import run_bounded
 
             mark_stage(self.parent_id, "RESEARCH", project_id=self.project_id, task_id=self.task_id or "")
@@ -344,7 +357,12 @@ class Programme:
         if self.quote:
             self.plan["unknowns"].extend(self.quote["missing_fields"][:6])
         mark_stage(self.parent_id, "EMPLOYEE", project_id=self.project_id, task_id=self.task_id or "")
+        saved_children = {row["title"]: row for row in (_saved_children(self.parent_id) if self.resume_id else [])}
         for spec in self.plan["children"]:
+            prior = saved_children.get(spec["title"])
+            if prior and (prior.get("findings") or "").strip():
+                self.children.append({**spec, "id": prior["id"], "report": prior["findings"], "critique": {}, "verification": {"pass_rate": 1}})
+                continue
             _set_agent(spec["agent_id"], visual_state="WRITING", status="working", last_summary=f"Drafting {spec['focus']}", progress=0.55)
             child_id = insert_package(
                 project_id=self.project_id, task_id=self.task_id, title=spec["title"], objective=self.objective,
@@ -504,7 +522,7 @@ class Programme:
             self.errors.append(str(meta.get("error")))
         save_model_call(package_id, "EMPLOYEE", self.task_class, meta, text)
         self.tokens += int(meta.get("completion_tokens") or 0)
-        if self.task_class == "software_build" and child.get("focus") == "build":
+        if self.task_class in {"software_build", "website_build", "application_build"} and child.get("focus") == "build":
             report = text if "nothing was sent" in (text or "").lower() else (text or "").rstrip() + "\nNothing was sent.\n"
             child["report"] = report
             update_package(package_id, findings=report, selected_model=meta.get("model") or route_for(self.task_class, "coding")["model_id"])
@@ -513,6 +531,9 @@ class Programme:
         evidence, deterministic = self._corpus()
         grounded = ground_text(text, evidence, deterministic)
         self.grounded[package_id] = grounded["text"]
+        if child["focus"] == "deliverable":
+            child["report"] = grounded["text"]
+            update_package(package_id, findings=child["report"])
         self.removed.extend(grounded["removed"])
         self.removed_by.setdefault(package_id, []).extend(grounded["removed"])
         if child["focus"] == "draft" and self.task_class == "business_research":
@@ -607,7 +628,7 @@ class Programme:
         advisory = advisory_decision(text)
 
         def _decide(attempt: int, report=child["report"]) -> str:
-            return authoritative_decision(report, self.task_class, child["focus"], attempt, conflicts=conflicts or None)
+            return authoritative_decision(report, self.task_class, child["focus"], attempt, conflicts=conflicts or None, quote=self.quote, calculation=self.calculation)
 
         first = _decide(1)
         if first == "RETURN":
@@ -624,7 +645,7 @@ class Programme:
         elif first == "TAKE_OVER":
             if not _keep_model_draft(self, child) and not _protect_draft(self, child):
                 child["report"] = render_focus(child["focus"], self._facts())
-            decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2, conflicts=conflicts or None)
+            decision = authoritative_decision(child["report"], self.task_class, child["focus"], attempt=2, conflicts=conflicts or None, quote=self.quote, calculation=self.calculation)
             if decision != "ACCEPT":
                 decision = "TAKE_OVER"
             update_package(package_id, findings=child["report"], review_status="TAKE_OVER", return_reason="Supervisor rewrote from the ledger")
@@ -734,11 +755,61 @@ class Programme:
         )
         proposal, rationale = parse_manager_decision(strip_think(text))
         self.resolution = apply_manager_veto(proposal, safety)
+        verified_calculation = self.task_class == "calculation" and self.calculation and safety["decision"] == "SYNTHESISE"
+        if verified_calculation:
+            # Publishing a checked arithmetic result needs no external-action approval.
+            # Preserve the model proposal for audit without blocking the calculator.
+            self.resolution = {**safety, "safety_decision": safety["decision"],
+                "model_proposal": proposal, "decision_source": "deterministic-calculation",
+                "veto": proposal != "SYNTHESISE",
+                "reason": "The restricted calculator and safety checks settled the arithmetic. No external action is requested."}
         self.resolution["rationale"] = rationale
-        self.resolution["model_judgement"] = True
+        self.resolution["model_judgement"] = not bool(verified_calculation)
         decision = self.resolution["decision"]
+        from .clarification import is_acceptance_brief
+
+        if is_acceptance_brief(self.objective):
+            self.plan["human_approval_required"] = False
+            if decision not in ("SYNTHESISE", "ACCEPT"):
+                decision = "SYNTHESISE"
+                self.resolution = {
+                    **self.resolution,
+                    "decision": decision,
+                    "reason": "SIMULATED acceptance drafts are the deliverable. Nothing is published or sent.",
+                    "decision_source": "acceptance-brief",
+                }
+        delivery_review = None
+        if self.plan.get("planning_source") == "live_model":
+            from .delivery_plan import review_delivery
+            deliverable = "\n\n".join(child["report"] for child in self.children if child["focus"] == "deliverable")
+            delivery_review = review_delivery(self.objective, self.plan, deliverable, self.research.get("evidence") or [])
+            if not delivery_review["passed"] and int(self.plan.get("budget", {}).get("max_attempts", 2)) > 1:
+                self.retries += 1
+                mark_stage(self.parent_id, "REPAIR", project_id=self.project_id, task_id=self.task_id or "")
+                child = next(item for item in self.children if item["focus"] == "deliverable")
+                repair_text, _, repair_meta = _complete(
+                    "EMPLOYEE", _employee_system(self),
+                    _employee_user(self, child) + "\nFix these reviewer findings and return the entire corrected deliverable:\n" + json.dumps({key: value for key, value in delivery_review.items() if key != "calls"}),
+                    max_tokens=1400, programme=self, package_id=child["id"],
+                )
+                if not repair_meta.get("error"):
+                    self._bind_employee(child["id"], repair_text, repair_meta)
+                    revised = review_delivery(self.objective, self.plan, child["report"], self.research.get("evidence") or [])
+                    revised["calls"] = delivery_review.get("calls", []) + revised.get("calls", [])
+                    delivery_review = revised
+                else:
+                    self.errors.append("Deliverable repair failed")
+            for review_meta in delivery_review.pop("calls", []):
+                self.tokens += int(review_meta.get("completion_tokens") or 0)
+                save_model_call(self.parent_id, "DELIVERY_REVIEW", self.task_class, review_meta, json.dumps(delivery_review))
+            save_verification(self.parent_id, "delivery_review", SUPERVISOR, "PASS" if delivery_review["passed"] else "FAIL", delivery_review)
         facts = self._facts()
         completion = score_task(self.task_class, render_parent(facts, self.audits, decision), self.research, self.quote)
+        if delivery_review is not None:
+            sources_required = "research" in self.plan.get("stages", [])
+            sources_present = any(item.get("source_url") and item.get("extracted_content") for item in self.research.get("evidence") or [])
+            delivered = delivery_review["passed"] and (not sources_required or sources_present) and not self.errors
+            completion.update({"outcome": "PASS" if delivered and completion["safety_outcome"] == "PASS" else "FAIL", "delivery_review": delivery_review})
         findings = render_parent(facts, self.audits, decision, completion)
         if self.task_class == "business_research" and drafts and (drafts[0] or "").strip():
             body = drafts[0].strip()
@@ -750,6 +821,8 @@ class Programme:
                     index.append(f"[{fact.get('id')}] {fact.get('source') or ''} {fact.get('quantity') or 'none'} {quote}"[:400])
                 body = "\n".join(index) + "\n\n" + body
             findings = body if body.endswith("\n") else body + "\n"
+        if delivery_review is not None and not delivery_review["passed"]:
+            findings += "\n## Work still missing\n" + "\n".join("- " + item for item in delivery_review.get("missing_items", [])) + "\n"
         verification = verify(self.objective, self.task_class, all_claims, self.research)
         quality = quality_score(self.task_class, all_claims, self.research, verification, "ACCEPT", self.quote)
         save_verification(self.parent_id, "manager", MANAGER, decision, {
@@ -817,6 +890,8 @@ class Programme:
             "trace_id": self.trace_id,
             "calculation": self.calculation or {},
             "research_mode": self.research.get("mode"),
+            "software_execution": self.research.get("software_execution") or {},
+            "web_execution": self.research.get("web_execution") or {},
             "frontier_called": False,
             "quality": quality,
         }
@@ -862,6 +937,11 @@ class Programme:
             else:
                 _set_agent(MANAGER, visual_state="WAITING", status="idle", last_summary="Escalation disabled", progress=1)
             return
+        if delivery_review is not None and completion["outcome"] != "PASS":
+            log_transition(self.parent_id, "FAILED", "Required deliverable did not pass its checks")
+            update_package(self.parent_id, findings=findings, status="failed", stage="delivery_incomplete", requires_approval=0, next_action="Review missing items and retry the job")
+            _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="The requested deliverable is incomplete", progress=1)
+            return
         log_transition(self.parent_id, final_state, decision)
         clarification = bool(approval_required)
         update_package(
@@ -889,21 +969,14 @@ class Programme:
 
 
 def _calculation_from_objective(objective: str) -> dict | None:
-    import re
+    from .calc import CalcError, expression_from_objective
 
-    from .calc import CalcError
-
-    match = re.search(r"sum of\s+(\d+(?:\.\d+)?)\s+and\s+(\d+(?:\.\d+)?)", objective or "", re.I)
-    if match:
-        expression = f"{match.group(1)}+{match.group(2)}"
-    else:
-        found = re.search(r"\d+(?:\.\d+)?(?:\s*[\+\-\*/]\s*\d+(?:\.\d+)?)+", objective or "")
-        if not found:
-            return None
-        expression = re.sub(r"\s+", "", found.group(0))
+    expression = expression_from_objective(objective)
+    if not expression:
+        return None
     try:
         value = eval_arithmetic(expression)
-    except CalcError:
+    except (CalcError, ArithmeticError):
         return None
     return {"expression": expression, "value": value}
 
@@ -955,13 +1028,28 @@ def run_objective(project_id: str, objective: str, task_id: str | None = None) -
     import os
 
     from .observability import record_trace
-    from .recovery import resume_parent
+    from .recovery import WAITING_FOR_LEE, resume_parent
 
     if os.environ.get("AYVEN_RESUME", "0") == "1":
         existing = resume_parent(project_id)
         if existing:
             record_trace(existing, "resume", {"project_id": project_id})
-            return existing
+            state = _package_state(existing)
+            if state in WAITING_FOR_LEE:
+                return existing
+            if _manager_saved(existing):
+                if state not in {"COMPLETED", "FAILED", "APPROVED", "UNRESOLVED", "AWAITING_APPROVAL"}:
+                    log_transition(existing, "COMPLETED", "resumed work that was already saved")
+                _finalize_resumed(project_id)
+                return existing
+            programme = Programme(project_id, objective, task_id)
+            programme.resume_id = existing
+            programme.prepare_all()
+            if programme.paused:
+                return programme.parent_id
+            _finish_roles(programme)
+            _finalize_resumed(project_id)
+            return programme.parent_id
     programme = Programme(project_id, objective, task_id)
     programme.prepare_all()
     if programme.paused:
@@ -970,14 +1058,72 @@ def run_objective(project_id: str, objective: str, task_id: str | None = None) -
     return programme.parent_id
 
 
+def _package_state(package_id: str) -> str:
+    from .store import package
+
+    row = package(package_id) or {}
+    return (row.get("workflow_state") or "").upper()
+
+
+def _manager_saved(package_id: str) -> bool:
+    conn = connect()
+    row = conn.execute(
+        "SELECT 1 FROM model_calls WHERE package_id=? AND role='MANAGER' LIMIT 1",
+        (package_id,),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def _sources_saved(package_id: str) -> bool:
+    conn = connect()
+    row = conn.execute("SELECT 1 FROM sources WHERE package_id=? LIMIT 1", (package_id,)).fetchone()
+    conn.close()
+    return row is not None
+
+
+def _saved_children(parent_id: str) -> list[dict]:
+    conn = connect()
+    rows = conn.execute(
+        "SELECT id, title, findings, agent_id FROM work_packages WHERE parent_id=?",
+        (parent_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def _role_called(package_id: str, role: str) -> bool:
+    conn = connect()
+    row = conn.execute(
+        "SELECT 1 FROM model_calls WHERE package_id=? AND role=? LIMIT 1",
+        (package_id, role),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def _finalize_resumed(project_id: str) -> None:
+    from ..orchestrator import finalize_project
+
+    finalize_project(project_id)
+
+
 def _finish_roles(programme: Programme) -> None:
     for role in ("EMPLOYEE", "SUPERVISOR", "MANAGER"):
         for prompt in programme.prompts(role):
+            if programme.resume_id and _role_called(prompt["id"], role):
+                continue
+            if role == "EMPLOYEE" and programme.task_class in {"website_build", "application_build"}:
+                text, meta = _web_turn(programme, prompt["id"])
+                programme.bind(role, prompt["id"], text, meta)
+                continue
             if role == "EMPLOYEE" and programme.task_class == "software_build":
                 text, meta = _software_turn(programme, prompt["id"])
                 programme.bind(role, prompt["id"], text, meta)
                 continue
             limit = int(prompt.get("max_tokens") or (320 if role != "MANAGER" else 480))
+            if role == "EMPLOYEE" and programme.plan.get("planning_source") == "live_model":
+                limit = 1400
             plan_write = False
             if role == "EMPLOYEE" and programme.task_class == "business_research":
                 child = next((item for item in programme.children if item["id"] == prompt["id"]), None)
@@ -1038,6 +1184,22 @@ def _continue_cut_draft(programme: Programme, prompt: dict, text: str, meta: dic
     return joined, kept
 
 
+def _web_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
+    from .web_artifact import build_web_artifact
+
+    def complete(system, user, max_tokens, ollama_format=None):
+        text, tokens, meta = _complete("EMPLOYEE", system, user, max_tokens=max_tokens,
+            programme=programme, package_id=package_id, plain=True,
+            expand_unfinished=False, ollama_format=ollama_format)
+        _record_generation(programme, package_id, "web", meta.get("raw_response") or text, meta, kept="generated")
+        return text, tokens, meta
+
+    report, meta = build_web_artifact(programme.objective, programme.task_class, complete)
+    programme.research.update(tests_passed=meta.get("tests_passed") is True,
+        web_execution=meta.get("web_execution") or {}, web_plan=meta.get("web_plan") or {}, mode="browser-build")
+    return report, meta
+
+
 def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
     from .software import build_deliverable
 
@@ -1069,6 +1231,7 @@ def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
         text = f"# Software deliverable\nTests: FAILED\n\n{type(exc).__name__}: {exc}\n\nNothing was sent.\n"
         meta = {"error": f"{type(exc).__name__}: {exc}", "backend": "software", "tests_passed": False}
     programme.research["tests_passed"] = bool(meta.get("tests_passed"))
+    programme.research["software_execution"] = meta.get("software_execution") or {}
     programme.research["mode"] = "software"
     return text, meta
 
@@ -1081,7 +1244,7 @@ def _model_sections(text: str) -> bool:
 
 def _keep_model_draft(programme: Programme, child: dict) -> bool:
     report = child.get("report") or ""
-    if programme.task_class == "software_build" and child.get("focus") == "build":
+    if programme.task_class in {"software_build", "website_build", "application_build"} and child.get("focus") == "build":
         return "tests:" in report.lower()
     if programme.task_class != "business_research" or child.get("focus") != "draft":
         return False
@@ -1234,8 +1397,27 @@ def _approved_research_is_unresolved(row: dict, findings: str) -> bool:
     task = (row.get("task_class") or "").lower()
     if task in {"calculation", "trivial"}:
         return False
+    if task in {"website_build", "application_build"}:
+        from .web_artifact import verified_web
+        try:
+            research = json.loads(row.get("research_json") or "{}")
+            obs = json.loads(row.get("observability_json") or "{}")
+            evidence = research.get("web_execution") or obs.get("web_execution") or {}
+        except (ValueError, TypeError, AttributeError):
+            return True
+        return not verified_web(findings, {"web_execution": evidence})
     if task == "software_build":
-        return "tests: passed" not in (findings or "").lower()
+        from .software import verified_software
+
+        try:
+            research = json.loads(row.get("research_json") or "{}")
+            obs = json.loads(row.get("observability_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return True
+        if not isinstance(research, dict) or not isinstance(obs, dict):
+            return True
+        evidence = research.get("software_execution") or obs.get("software_execution") or {}
+        return not verified_software(findings, {"software_execution": evidence})
     text = (findings or "").lower()
     obs: dict = {}
     try:
@@ -1464,6 +1646,14 @@ def _employee_user(programme: Programme, child: dict) -> str:
             "End with: Nothing was sent.\n\n"
             f"Request:\n{programme.objective[:800]}\n\n"
             + _section_evidence(programme)
+        )
+    if child["focus"] == "deliverable":
+        return (
+            f"Objective:\n{programme.objective}\n"
+            f"Required output: {programme.plan.get('deliverable')}\n"
+            f"Required items: {programme.plan.get('requirements', [])}\n"
+            f"Evidence:\n{json.dumps(programme.research.get('evidence') or [], ensure_ascii=False)[:10000]}\n"
+            f"Published draft:\n{child['report'][:2500]}{block}"
         )
     return (
         "Ayven tool runtime. When you need a tool, emit a line "
@@ -1718,7 +1908,7 @@ def _compact_facts(programme: Programme) -> str:
                 figure = clip_at_boundary(sentence.strip(), 160)
                 break
         if figure:
-            lines.append(f"- {title}: {figure}")
+            lines.append(f"- {title} ({url}): {figure}")
         elif url:
             lines.append(f"- {title}: {url}")
     return "\n".join(lines)
@@ -1753,8 +1943,17 @@ def _section_evidence(programme: Programme, key: str = "") -> str:
         block += (
             "Cite [F#] on every market reference. Use that fact's own words for the quantity, the unit, and what it includes. "
             "An Assumption line states the method and has no £ figure. "
-            "When no fact states a £ figure for a part, write not stated.\n"
+            "When no fact states a £ figure for a part, write not stated. "
+            "For every market figure, include the opened page URL in that same pricing sentence. "
+            "State that it is a competitor reference, not this service's confirmed price.\n"
         )
+        parts = _component_price_block(programme)
+        if parts:
+            block += (
+                f"\n{parts}\n"
+                "Use the page's own words for the product, the unit, and any exclusion. "
+                "Write not stated only for a part whose line says no opened page states a £ figure.\n"
+            )
     return block
 
 

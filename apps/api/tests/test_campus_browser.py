@@ -57,10 +57,10 @@ def test_campus_ui_approve_reject_clarify_repair_and_evidence():
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
 
+    import tempfile
+
     previous = os.environ.get("AYVEN_DB", "")
-    path = Path("/tmp/ayven-campus-ui.db")
-    if path.exists():
-        path.unlink()
+    path = Path(tempfile.mkdtemp(prefix="ayven-campus-ui-")) / "ui.db"
     os.environ["AYVEN_DB"] = str(path)
     reset_connection_state()
     research = "Research the public market for office supplies and name the gaps."

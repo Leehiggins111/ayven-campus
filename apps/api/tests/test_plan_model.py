@@ -110,6 +110,9 @@ def test_prompts_do_not_tell_the_model_which_figure_to_copy(monkeypatch):
     compact = _section_evidence(programme)
     assert full == compact
     assert "£10" in compact
+    assert "https://doors.example/prices" in compact
+    assert "same pricing sentence" in _section_evidence(programme, "pricing")
+    assert "Prices stated on opened pages" not in compact
     assert "Name the service." in seen[0] or any("Do not invent a £ figure" in user for user in seen)
 
 

@@ -2,6 +2,55 @@ import sqlite3
 from pathlib import Path
 
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
+import threading
+
+_stage_connection = ContextVar("stage_connection", default=None)
+
+
+class StageConnection:
+    """One owner transaction; legacy commit/close calls cannot split its checkpoint."""
+    def __init__(self, connection):
+        self.connection = connection
+        self.active = True
+        self.lock = threading.RLock()
+
+    def execute(self, *args, **kwargs):
+        with self.lock:
+            if not self.active:
+                raise RuntimeError("stage transaction has ended")
+            return self.connection.execute(*args, **kwargs)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@contextmanager
+def stage_transaction():
+    if _stage_connection.get() is not None:
+        raise RuntimeError("nested stage transaction")
+    connection = connect()
+    connection.execute("BEGIN IMMEDIATE")
+    proxy = StageConnection(connection)
+    token = _stage_connection.set(proxy)
+    try:
+        yield proxy
+        with proxy.lock:
+            connection.commit()
+    except BaseException:
+        with proxy.lock:
+            connection.rollback()
+        raise
+    finally:
+        with proxy.lock:
+            proxy.active = False
+        _stage_connection.reset(token)
+        connection.close()
+
 
 _state = {"path": None}
 
@@ -15,15 +64,81 @@ def reset_connection_state() -> None:
     _state["path"] = None
 
 
-def connect() -> sqlite3.Connection:
+def _libsql_connect(url: str, auth_token: str):
+    """Embedded replica. The local file is a cache; Turso is the durable copy."""
+    try:
+        import libsql
+    except ImportError:
+        try:
+            import libsql_experimental as libsql
+        except ImportError as exc:
+            raise RuntimeError("AYVEN_DB_URL is set but the libsql package is not installed") from exc
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    if _state["path"] != str(path):
-        init_db(conn)
-        _state["path"] = str(path)
+    conn = libsql.connect(str(path), sync_url=url, auth_token=auth_token)
+    if hasattr(conn, "sync"):
+        conn.sync()
+    if hasattr(conn, "row_factory"):
+        conn.row_factory = sqlite3.Row
     return conn
+
+
+_MUTATIONS = {"INSERT", "UPDATE", "DELETE", "REPLACE", "BEGIN"}
+
+
+class _GuardedConnection:
+    """Refuse mutations from a worker whose stage has already timed out."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, *args, **kwargs):
+        self._reject_if_stale(sql)
+        return self._connection.execute(sql, *args, **kwargs)
+
+    def executemany(self, sql, *args, **kwargs):
+        self._reject_if_stale(sql)
+        return self._connection.executemany(sql, *args, **kwargs)
+
+    def executescript(self, sql):
+        self._reject_if_stale(sql)
+        return self._connection.executescript(sql)
+
+    def _reject_if_stale(self, sql) -> None:
+        if not isinstance(sql, str) or not sql.strip():
+            return
+        head = sql.lstrip().split(None, 1)[0].upper()
+        if head not in _MUTATIONS:
+            return
+        from .intelligence.run_token import reject_if_stale
+
+        reject_if_stale()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
+def connect() -> sqlite3.Connection:
+    owned = _stage_connection.get()
+    if owned is not None:
+        return owned
+    url = os.environ.get("AYVEN_DB_URL", "").strip()
+    auth_token = os.environ.get("AYVEN_DB_AUTH_TOKEN", "").strip()
+    if url or auth_token:
+        if not url or not auth_token:
+            raise RuntimeError("AYVEN_DB_URL and AYVEN_DB_AUTH_TOKEN must be set together")
+        conn = _libsql_connect(url, auth_token)
+        identity = f"libsql:{url}"
+    else:
+        path = db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, check_same_thread=False, timeout=180)
+        conn.row_factory = sqlite3.Row
+        identity = str(path)
+    if _state["path"] != identity:
+        init_db(conn)
+        _state["path"] = identity
+    return _GuardedConnection(conn)
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -49,6 +164,13 @@ def init_db(conn: sqlite3.Connection) -> None:
     migrate_v22(conn)
     migrate_v23(conn)
     migrate_v24(conn)
+    from .blobs import ensure_schema as blob_schema
+    from .goals import ensure_schema as goal_schema
+    from .intelligence.budget import ensure_schema as budget_schema
+
+    blob_schema(conn)
+    goal_schema(conn)
+    budget_schema(conn)
 
 
 SEED_AGENTS = [

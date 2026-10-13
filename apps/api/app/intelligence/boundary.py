@@ -97,6 +97,25 @@ def separate_channels(text: str | None, reasoning_field: str | None = None) -> C
     return Channels(executable=executable, discarded="".join(discarded), reasoning_field=reasoning_field or "")
 
 
+def _reasoning_in_value(value) -> str:
+    """Every non-empty string that would be sent to a tool, including strings inside JSON."""
+    if isinstance(value, str):
+        if not value.strip():
+            return ""
+        return reject_reasoning_query(value)
+    if isinstance(value, dict):
+        for item in value.values():
+            reason = _reasoning_in_value(item)
+            if reason:
+                return reason
+    if isinstance(value, list):
+        for item in value:
+            reason = _reasoning_in_value(item)
+            if reason:
+                return reason
+    return ""
+
+
 def reject_reasoning_query(query: str | None) -> str:
     """Return a reason when a string must not become a search, URL, or memory write."""
     raw = query or ""
@@ -276,6 +295,12 @@ def parse_model(model: type[BaseModel], text: str, *, attempts: int = 2) -> tupl
     candidate = _json_blob(channels.executable)
     last_error = ""
     for attempt in range(attempts + 1):
+        if attempt:
+            import time
+
+            from .recovery import backoff_seconds
+
+            time.sleep(backoff_seconds(attempt))
         if not candidate:
             last_error = "no_json_object"
             break
@@ -329,6 +354,9 @@ def validate_tool_call(call: dict) -> ToolGate:
         parsed = {"payload": payload_text}
     if not isinstance(parsed, dict):
         return ToolGate(False, error="arguments_not_object", schema_name=name)
+    leaked = _reasoning_in_value(parsed)
+    if leaked:
+        return ToolGate(False, error=leaked, schema_name=name)
     tool = str(parsed.get("tool") or (name if name != "ayven_tool" else ""))
     payload = parsed.get("payload", parsed)
     if isinstance(payload, str):

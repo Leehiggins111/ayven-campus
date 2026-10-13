@@ -173,7 +173,15 @@ def _tests_are_meaningful(source: str) -> bool:
     text = source or ""
     asserts = re.findall(r"^\s*assert\s+(.+)$", text, re.M)
     if not asserts:
-        return False
+        import ast
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return False
+        return any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr in {"assertEqual", "assertNotEqual", "assertRaises", "assertIn", "assertNotIn"}
+                   and any(isinstance(child, ast.Call) for arg in node.args for child in ast.walk(arg))
+                   for node in ast.walk(tree))
     if all(re.fullmatch(r"True|1|''|\"\"", item.strip()) for item in asserts):
         return False
     if all("__file__" in item or "__dict__" in item for item in asserts):
@@ -181,7 +189,7 @@ def _tests_are_meaningful(source: str) -> bool:
     return True
 
 
-def run_files(files: dict[str, str], test_name: str = "test_main.py", timeout: int = 20) -> dict:
+def run_files(files: dict[str, str], test_name: str = "test_main.py", timeout: int = 20, main_name: str = "main.py") -> dict:
     """Run a generated test file.
 
     Namespace isolation is used when this host has it. A host without unshare
@@ -204,7 +212,7 @@ def run_files(files: dict[str, str], test_name: str = "test_main.py", timeout: i
         if not cleaned or not source or len(source) > _MAX_BYTES:
             continue
         safe[cleaned] = source if source.endswith("\n") else source + "\n"
-    if test_name not in safe or "main.py" not in safe:
+    if test_name not in safe or main_name not in safe:
         return {
             "status": "error",
             "passed": False,
@@ -303,6 +311,11 @@ def _execute_files(files: dict[str, str], test_name: str, timeout: int, level: s
         "from pathlib import Path\n"
         "sys.path.insert(0, str(Path(__file__).resolve().parent))\n"
         f"import {module}\n"
+        "import unittest\n"
+        f"suite = unittest.defaultTestLoader.loadTestsFromModule({module})\n"
+        "if suite.countTestCases():\n"
+        "    result = unittest.TextTestRunner().run(suite)\n"
+        "    if not result.wasSuccessful(): sys.exit(1)\n"
     )
     with tempfile.TemporaryDirectory(prefix="ayven-sandbox-") as folder:
         for name, source in files.items():
