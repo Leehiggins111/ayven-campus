@@ -788,7 +788,19 @@ def owner_section(kind: str, text: str) -> str:
         ]
         return "\n".join((picked or sentences)[:6])
     # The required fact is often in the second sentence. One sentence is not the section.
-    body = "\n".join(_prefer_request(kind, sentences)[:3]).strip()
+    # A later sentence that says what the visit measures is part of the offer.
+    picked = _prefer_request(kind, sentences)
+    if kind == "offer and positioning":
+        kept = picked[:3]
+        if not any(re.search(r"\bmeasur", sentence, re.I) for sentence in kept):
+            for sentence in picked[3:]:
+                if re.search(r"\bmeasur", sentence, re.I):
+                    kept.append(sentence)
+                    break
+        picked = kept
+    else:
+        picked = picked[:3]
+    body = "\n".join(picked).strip()
     if body and not re.search(r"[.!?]$", body):
         body += "."
     return body
@@ -932,7 +944,6 @@ _NOT_A_BORROWED_NAME = {
 def borrowed_service_name(body: str, objective: str, blob: str) -> str:
     """A business name taken from an opened page is not this request's service."""
     words = set(re.findall(r"[a-z0-9]+", (objective or "").lower()))
-    body_l = (body or "").lower()
     found = []
     for match in _IDENTITY.finditer(blob or ""):
         phrase = re.sub(r"\s+", " ", match.group(0)).strip()
@@ -958,7 +969,11 @@ def borrowed_service_name(body: str, objective: str, blob: str) -> str:
                 continue
             if all(part in _NOT_A_BORROWED_NAME for part in parts):
                 continue
-            if candidate.lower() not in body_l:
+            # The page's capitalised name. "refresh your kitchen" is ordinary wording.
+            if not re.search(
+                rf"(?<![A-Za-z0-9]){re.escape(candidate)}(?![A-Za-z0-9])",
+                body or "",
+            ):
                 continue
             matched = candidate
             break
@@ -2231,6 +2246,11 @@ def _section_shape(key: str, body: str, objective: str, blob: str = "") -> str:
     elif key == "problem":
         if not any(_has_word(lowered, cue) for cue in _PROBLEM_BURDEN):
             return "The section does not state a concrete problem."
+        if re.search(r"%|\bpercent\b", body or "", re.I):
+            return (
+                "The problem quotes a percentage. Name what is costly or disruptive "
+                "for the customer, without a percentage."
+            )
     elif key == "offer and positioning":
         if _sells_avoided(body, objective):
             return "The section describes the alternative as the service."

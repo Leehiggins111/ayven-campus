@@ -1686,6 +1686,8 @@ def _check_for_model(reason: str) -> str:
         return "Keep the cited fact on its own line. An Assumption line has no [F#] and no £ figure."
     if "prioritised" in lowered or "first month" in lowered:
         return "Name the action for the first week and the action for the first month."
+    if "quotes a percentage" in lowered:
+        return "Name what is costly or disruptive for the customer. Do not quote a percentage."
     if "does not name the package" in lowered or "generic sentence" in lowered or "visit measures" in lowered:
         return "Name what the package includes, what the visit measures, and how it differs."
     if "turn the measurements" in lowered:

@@ -2063,6 +2063,56 @@ def test_homeowners_across_is_not_a_business_name():
         objective,
         "At Joe's Doors we replace doors and worktops.",
     )
+    assert borrowed_service_name(
+        "This is a smart way to refresh your kitchen without a full renovation.",
+        objective,
+        "Refresh Your Kitchen are a Scottish based company.",
+    ) == ""
+    assert "Refresh Your Kitchen" in borrowed_service_name(
+        "Refresh Your Kitchen offers new doors, worktops, and handles.",
+        objective,
+        "Refresh Your Kitchen are a Scottish based company.",
+    )
+
+
+def test_an_offer_keeps_the_sentence_that_says_what_the_visit_measures():
+    from app.intelligence.deliverable import owner_section, section_rejection
+
+    objective = "The service replaces kitchen doors, worktops and handles, and it avoids a full kitchen replacement."
+    blob = "Refresh Your Kitchen are a Scottish based company who can transform your kitchen."
+    text = (
+        "Offer: A kitchen update by replacing doors, worktops, and handles.\n"
+        "Package includes: Existing cabinets, new doors, worktops, and handles.\n"
+        "Leaves out: Full kitchen fittings and appliances.\n"
+        "Visit measures: The visit measures the door count, the door size, and the worktop length.\n"
+        "This approach differs by replacing those parts rather than a full kitchen replacement.\n"
+        "For the owner: This is a smart way to refresh your kitchen."
+    )
+    kept = owner_section("offer and positioning", text)
+    assert "visit measures" in kept.lower()
+    assert "refresh your kitchen" not in kept.lower()
+    assert section_rejection("offer and positioning", text, blob, objective) == ""
+
+
+def test_a_problem_that_quotes_a_percentage_is_rejected():
+    from app.intelligence.deliverable import section_rejection
+
+    quoted = "The problem is 50% less expensive than a new fitted kitchen [F9]."
+    blob = "Up to 50% less than a new fitted kitchen."
+    reason = section_rejection(
+        "problem",
+        quoted,
+        blob,
+        "The service replaces kitchen doors, worktops and handles.",
+    )
+    assert "percentage" in reason.lower()
+    plain = "The problem is that a full kitchen replacement costs more and causes disruption."
+    assert section_rejection(
+        "problem",
+        plain,
+        blob,
+        "The service replaces kitchen doors, worktops and handles.",
+    ) == ""
 
 
 def test_a_curly_apostrophe_still_matches_the_cited_business():
