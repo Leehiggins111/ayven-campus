@@ -94,3 +94,19 @@ Local stand-ins, not substitutes for the three steps above: `test_remote_hrana_r
 python3 -m pytest apps/api/tests/test_hosting.py apps/api/tests/test_durable.py apps/api/tests/test_leases.py apps/api/tests/test_delivery_plan.py -q
 bash scripts/run_ayven_live.sh
 ```
+
+## Milo end-to-end defect fixes (2026-10-13)
+
+Five defects from a simulated Milo run. Tests for every fix are **UNRUN pending QA**: they were written and syntax-checked (`py_compile`) but not executed. CI on this branch is the first run.
+
+| Defect | Change | Commit |
+| --- | --- | --- |
+| `bundle.zip` 404, `save_bytes` never called | `finalize_project` calls `blobs.store_package_files` for any non-FAILED package: `report.md`, program files whose tests passed, verified web files | `9a780c8` |
+| Failed step (`database is locked`) reached approval | Delivery review and repair model calls run before the MANAGER stage write (`Programme.delivery_calls`); `run_retries` records the exact error as a blocker and creates no approval; a failed deliverable is checked before the escalation branch; `fail_project` records the exact cause as a blocker | `6f0296d`, `da58a43` |
+| `criteria_results` empty | `goals.evaluate_criteria` (deterministic term coverage: met / not_met / unverified) runs in `finalize_project`; `/milo/jobs/{id}` returns `criteria_results` | `0f849cd` |
+| £6.25 clamped to $2 | `job_cap_gbp` stored and returned exactly; `goals.check_budget` refuses a budget above `AYVEN_JOB_BUDGET_USD` with HTTP 400 and a reason instead of clamping | `1a6309d` |
+| `/health` durability inconsistent | `runtime` comes from `durable.enabled()`; `durable` is true only when runtime and storage are both durable; adds `durable_runtime`, `durable_storage` | `72c0861` |
+
+Behaviour change to note: with the default `$2` ceiling, a £6.25 job is now refused with a reason, not silently capped. Raise `AYVEN_JOB_BUDGET_USD` (for example `9`) to accept it. Criteria checks are keyword coverage, not a model judgement.
+
+Tests to run: `python3 -m pytest apps/api/tests/test_qa_defects.py apps/api/tests/test_durable.py apps/api/tests/test_hosting.py apps/api/tests/test_spend_controls.py -q`, then the full suite.
