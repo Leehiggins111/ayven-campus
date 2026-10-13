@@ -1,6 +1,6 @@
 # Requirements map
 
-Branch `cursor/ayven-workforce-fe56`. Prior recovery commit `215efb5`. Statuses: Implemented and verified, Implemented awaiting live verification, Blocked: exact dependency, Unresolved defect. A simulated run is not a real-model result. Measured spend of this implementation run: £0. Expected operating cost is an estimate, £63/month (range £48–£79), from `fullscope/cost-final.md`, not a bill.
+Branch `cursor/ayven-workforce-fe56`. Implementation commit `72979fe`. Prior recovery commit `215efb5`. Statuses: Implemented and verified, Implemented awaiting live verification, Blocked: exact dependency, Unresolved defect. A simulated run is not a real-model result. Measured spend of this implementation run: £0. Expected operating cost is an estimate, £63/month (range £48–£79), from `fullscope/cost-final.md`, not a bill.
 
 | Requirement | Evidence | Verified how | Gap | Owner | Acceptance test | Status |
 |---|---|---|---|---|---|---|

@@ -10,7 +10,7 @@ One place to resume. No deploy and no spend were done in this run. Measured spen
 | Leehiggins111/ayven-campus | earlier recovery PRs | #2 and #5 | Open. Superseded by #6. Not closed, not merged |
 | Milo | acceptance repairs | #23 at `3956f43` | The Campus client this handover cites. Not re-tested in this run |
 
-Campus history that this round builds on: `215efb5` (durable mode is the only job runner), `67c2cff` (Milo constraints and recovery).
+This round is `72979fe`. It builds on `215efb5` (durable mode is the only job runner) and `67c2cff` (Milo constraints and recovery).
 
 ## What is true now
 
