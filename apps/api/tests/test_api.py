@@ -27,6 +27,33 @@ def test_state_seeded():
     assert any(a["id"] == "milo" for a in s["agents"])
 
 
+def test_a_repeated_submission_returns_the_same_project():
+    import uuid
+
+    from app.db import connect
+
+    c = TestClient(app)
+    objective = "Prepare a UK business briefing for a coffee machine rental company. Cover the service. duplicate-check."
+    project_id = str(uuid.uuid4())
+    conn = connect()
+    conn.execute(
+        "INSERT INTO projects(id,title,objective,status,created_at) VALUES(?,?,?,?,?)",
+        (project_id, "duplicate-check", objective, "running", "2026-10-11T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+    second = c.post("/projects", json={"objective": "  " + objective + "  "}).json()
+    assert second["project_id"] == project_id
+    assert second["duplicate"] is True
+    conn = connect()
+    conn.execute("UPDATE projects SET status=? WHERE id=?", ("unresolved", project_id))
+    conn.commit()
+    conn.close()
+    third = c.post("/projects", json={"objective": objective}).json()
+    assert third["project_id"] != project_id
+    assert third.get("duplicate") is not True
+
+
 def test_create_project_and_tasks():
     c = TestClient(app)
     r = c.post(

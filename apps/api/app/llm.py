@@ -25,6 +25,25 @@ def complete(system: str, user: str, max_tokens: int = 600) -> tuple[str, int]:
     """Return (text, estimated_tokens). Paid calls require AYVEN_ALLOW_ESCALATION=1."""
     from .intelligence.think import strip_think
 
+    local = os.environ.get("AYVEN_LOCAL_LLM_BASE_URL", "")
+    if not _stub_enabled() and local:
+        from .models import _openai_compat
+
+        model = os.environ.get("AYVEN_EMPLOYEE_MODEL", "qwen3:4b")
+        try:
+            text, tokens, _info = _openai_compat(
+                local,
+                os.environ.get("AYVEN_LOCAL_LLM_API_KEY", "ollama"),
+                model,
+                system,
+                user,
+                max_tokens,
+            )
+        except Exception as exc:
+            return strip_think(f"The local model is unavailable ({type(exc).__name__}). No fixture answer was substituted."), 0
+        if not (text or "").strip():
+            return "The local model returned an empty answer. No fixture answer was substituted.", 0
+        return strip_think(text), tokens
     if _stub_enabled() or not _api_key() or not _escalation_allowed():
         text = stub_complete(user)
         return strip_think(text), max(32, len(text) // 4)

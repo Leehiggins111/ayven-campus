@@ -50,6 +50,9 @@ def status() -> dict:
         "servers_configured": len(servers),
         "posture": posture,
         "note": "Connections are opened per call from AYVEN_MCP_SERVERS. Action tools stay approval-gated.",
+        "transports": ["stdio", "streamable-http"],
+        "sdk_generation": "v2 client surface; this install is the version pinned beside browser-use",
+        "exposure": "A tool enters the registry only after discovery. It is not given to every employee.",
     }
 
 

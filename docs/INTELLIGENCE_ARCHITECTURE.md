@@ -1,8 +1,8 @@
 # Intelligence architecture
 
-Version 1.1.1. Status: **FRANKENSTEIN RUNTIMES. LOCAL INTEGRATION TESTS PASS. NOT YET VERIFIED ON GPU.**
+Version 2.0.0. Status: **LOCAL CONTROL PLANE TESTED. MODEL INTELLIGENCE UNVERIFIED. NOT YET VERIFIED ON GPU.**
 
-Ayven is the product. Qwen-Agent, MCP, Browser Use, and the other projects in `INTELLIGENCE_COMPONENTS.md` are optional components behind Ayven interfaces. The campus, work packages, approvals, and SQLite state are unchanged in role.
+Ayven is the product. Models propose. Deterministic code owns schemas, permissions, tool invocation, URLs, arithmetic, provenance, approvals, and persistence. Qwen-Agent, MCP, Browser Use, and the other projects in `INTELLIGENCE_COMPONENTS.md` are equipment behind Ayven interfaces. The campus, work packages, approvals, and SQLite state keep their roles.
 
 ## What is real in this build
 
@@ -19,6 +19,9 @@ Ayven is the product. Qwen-Agent, MCP, Browser Use, and the other projects in `I
 | MCP client | REAL stdio session when `AYVEN_MCP_SERVERS` is set. |
 | Code sandbox | REAL `unshare` user/net/pid namespace. Off unless `AYVEN_ALLOW_CODE=1` and approved. Not Docker. |
 | Firecrawl | NOT INSTALLED. AGPL, not vendored. |
+| Typed tool boundary and llguidance grammar | REAL. Reasoning text cannot become a tool argument. A bad schema string is refused before the handler runs. |
+| Entity research filter, authority class, rerank | REAL on the production research path. Noise hits are not opened. |
+| Repair loop, self-check, completion contract, workflow state | REAL. A disproved material claim is demoted and counted. An approval row is written when escalation still needs a person. |
 | Qwen quality on the three exams | NOT YET VERIFIED ON GPU |
 
 ## Lifecycle
@@ -31,7 +34,7 @@ A parent work package is the job. Children are focused pieces of that job, not t
 4. **Skill selection.** Only the matching skills are loaded. A door job does not receive the vending skill.
 5. **Model selection.** Calculation goes to the calculator. Draft commentary uses the employee role. Audit uses the supervisor role. Orchestration uses the manager role. Escalation is a disabled route.
 6. **Tool selection.** The tool list comes from the plan and from the agent's capabilities.
-7. **Research or action.** One shared research pass for the programme. Queries are decomposed. Pages are opened. Failures are stored. There is no second and third identical search.
+7. **Research or action.** One shared research pass for the programme. Queries are decomposed, then noise and (for model-originated queries) low-relevance hits are dropped before fetch. Failures are stored. A real reviewer that reports coverage stops further searches. The stub reviewer does not.
 8. **Evidence collection.** Snippets are leads. Opened text is evidence. Source rank and freshness are stored.
 9. **Claim ledger.** Extractive claims and calculator claims are inserted. Confidence comes from rank, freshness, and whether the page was opened.
 10. **Draft.** The published text is rendered from the ledger. Model prose is commentary and is not allowed to add prices, URLs, or companies.
@@ -39,15 +42,16 @@ A parent work package is the job. Children are focused pieces of that job, not t
 12. **Verifier.** Recomputes door totals in integer pence and checks that material claims have evidence.
 13. **Revision.** A failed calculation package is rendered again from the same inputs. The budget is `AYVEN_MAX_ATTEMPTS` (default 2). No infinite loop.
 14. **Supervisor audit.** The supervisor sees the objective, plan, draft, claims, and gaps. The decision is ACCEPT, RETURN, TAKE_OVER, or ESCALATE. A model suggestion is recorded and does not outvote the checks. TAKE_OVER rewrites from the ledger. RETURN is used when a retry could still help.
-15. **Manager.** Sees every audit. Decides SYNTHESISE, CLARIFY, or ESCALATE. CLARIFY creates an approval. ESCALATE records `escalation_required` and does not call a frontier model.
+15. **Manager.** Sees every audit. Decides SYNTHESISE, RESEARCH_MORE, RETURN, CLARIFY, or ESCALATE. A more cautious safety result outranks a permissive model proposal. CLARIFY creates an approval. ESCALATE records `escalation_required`, does not call a frontier model, and still creates an approval when the package requires a person.
 16. **Approval and results.** Distribution still routes the parent. Contact, purchase, and customer quotes wait for Lee.
 
 Trivial tasks skip research, browsing, and calculation.
 
 ## Budgets
 
-- `AYVEN_MAX_RESEARCH_ROUNDS` default 2. Every planned query still runs; extra rounds are only for gaps.
+- `AYVEN_MAX_RESEARCH_ROUNDS` default 2. Extra rounds are only for gaps. A model reviewer that says the evidence is sufficient stops further searches.
 - `AYVEN_MAX_ATTEMPTS` default 2.
+- `AYVEN_MAX_REPAIRS` default 3. Repair is local to the rejected claim.
 - `AYVEN_MAX_MANAGER_LOOPS` default 1.
 
 ## Where it lives
@@ -62,8 +66,8 @@ Capabilities: READ_WEB, BROWSE_WEB, RUN_CALC, RUN_CODE, READ_FILES, WRITE_FILES,
 
 The quality row is an operational signal: coverage, source quality, claim support, freshness, contradictions, unknowns, calculation checks, supervisor outcome, verification pass rate. It is not a model self-score and not an objective truth score. Fixture freshness is scored lower than a live fetch.
 
-Observability on the parent package stores the plan, selected models, skills, queries, pages, failures, supervisor decisions, manager decision, token totals, and errors. Think tags are stripped before storage. Chain-of-thought is not kept.
+Observability on the parent package stores the plan, selected models, skills, queries, pages, failures, repairs, self-checks, the completion contract, supervisor decisions, manager decision, token totals, and errors. The reasoning channel is separated before storage and is not a tool argument, claim, memory row, or customer sentence. Chain-of-thought is not kept.
 
 ## API
 
-`GET /state` includes `intelligence` (plans, skills, tool calls, claims, verification, quality, model calls). `GET /work-packages/{id}/intelligence` is the full record for one package. `GET /health` reports version `1.1.1`, `validation_status`, and `gpu_validated: false`.
+`GET /state` includes `intelligence` (plans, skills, tool calls, claims, verification, quality, model calls) and `campus_brief` (what the latest parent package is doing, whether it is stuck, and whether it needs a person). `GET /work-packages/{id}/intelligence` is the full record for one package. `GET /health` reports version `2.0.0`, `validation_status` `V2_LOCAL_CONTROL_PLANE_GPU_PENDING`, and `gpu_validated: false`.

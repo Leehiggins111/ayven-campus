@@ -1,0 +1,89 @@
+{
+  "run": "ayven-validation-20260928T102746Z",
+  "planner_outputs": [
+    {
+      "tool": "web_search",
+      "status": "ok",
+      "query": "<think>"
+    },
+    {
+      "tool": "web_search",
+      "status": "ok",
+      "query": "Okay, let's tackle this query step by step. The user wants to check if a final quote of £1,533 is accurate for 7 internal doors in Livingston. The provisional costs are given, so I"
+    },
+    {
+      "tool": "web_search",
+      "status": "ok",
+      "query": "First, I'll break down the costs. The door price is £82 each, so 7 doors would be 7 * 82 = £574. Handles are £18 each, totaling 7 * 18 = £126. Hinges are £7 each, but the count isn"
+    },
+    {
+      "tool": "web_search",
+      "status": "ok",
+      "query": "Okay, let's tackle this query. The user wants legitimate ticket routes for specific football clubs without speculative inventory. They need facts, not assumptions, and to distingui"
+    },
+    {
+      "tool": "web_search",
+      "status": "empty",
+      "query": "First, the objective mentions four clubs: Borussia Dortmund, Ajax, Sparta Prague, and Rosenborg. For each, I need to search their official sites in their local languages. The user "
+    },
+    {
+      "tool": "web_search",
+      "status": "empty",
+      "query": "Borussia Dortmund's official site is in German. I'll search for \"Borussia Dortmund offizielle Website\" to get the correct URL. Then, check if the domain is indeed the club's or an "
+    },
+    {
+      "tool": "web_search",
+      "status": "empty",
+      "query": "Next, Ajax. Their official site is in Dutch. The search query should be \"Ajax Amsterdam officiële website\" to ensure it's the correct site. Again, verify the domain and check for a"
+    },
+    {
+      "tool": "web_search",
+      "status": "empty",
+      "query": "Sparta Prague is a Czech club, so the site should be in Czech. The query would be \"Sparta Praha oficiální web\" to find their official page. Need to confirm the domain and any partn"
+    },
+    {
+      "tool": "web_search",
+      "status": "empty",
+      "query": "Rosenborg is a Norwegian club, so the site is in Norwegian. The search term would be \"Rosenborg Ballklub offisiell nettside\". Check the domain and official partnerships."
+    },
+    {
+      "tool": "web_search",
+      "status": "ok",
+      "query": "Once the official sites are found, the next step is to look for ticket information. The user wants to know about legitimate routes, so I need to check if the official sites have se"
+    },
+    {
+      "tool": "web_search",
+      "status": "ok",
+      "query": "Okay, let's tackle this query. The user wants to find UK vending-machine placement prospects. They need public evidence, info on decision-makers, suitability, missing info, and an "
+    },
+    {
+      "tool": "web_search",
+      "status": "ok",
+      "query": "First, I need to follow the skill guidance. The tools are web_search, fetch_page, browser. Required evidence is a real organisation and a facility. Deterministic checks mean I have"
+    }
+  ],
+  "noise_urls": [
+    "https://www.merriam-webster.com/dictionary/think",
+    "https://dictionary.cambridge.org/dictionary/english/think",
+    "https://trade.thinkorswim.com/",
+    "https://www.merriam-webster.com/thesaurus/think",
+    "https://www.thinkproducts.com/",
+    "https://www.thinkbank.com/",
+    "https://www.vocabulary.com/dictionary/think",
+    "https://en.wikipedia.org/wiki/Think_(slogan)",
+    "https://englishverbs.net/verb/think/"
+  ],
+  "route_claim": {
+    "text": "<link href=\"https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;800;900&display=swap\" rel=\"stylesheet\" > think!® Official Site & Online Store | Protein Bars & Healthy Snacks – Think Products <body class=\"template-index template-index page-\" data-center-text=\"true\" data-button_style=\"square\" data-type_header_capitalize=\"true\" data-type_headers_align_text=\"true\" data-type_product_capitalize=\"true\" data-swatch_style=\"round\" > Shop Home Account Search terms Search Skip to content FREE",
+    "url": "https://www.thinkproducts.com/"
+  },
+  "unsupported_removed": [
+    "Door: £82",
+    "Borussia Dortmund's official site is **https://www.borussiadortmund.com/** (PRIMARY_OFFICIAL).",
+    "Ajax's official site is **https://www.ajax.nl/** (PRIMARY_OFFICIAL).",
+    "Sparta Prague's official site is **https://www.spartapraha.cz/** (PRIMARY_OFFICIAL).",
+    "Rosenborg's official site is **https://www.rosenborg.no/** (PRIMARY_OFFICIAL).",
+    "Fetch pages from organisations with listed facilities (e.g., [example.org/estates](http://example.org/estates))."
+  ],
+  "objective_for_route_claim": "Legitimate ticket/package routes for Borussia Dortmund, Ajax, Sparta Prague, Rosenborg without speculative inventory."
+}

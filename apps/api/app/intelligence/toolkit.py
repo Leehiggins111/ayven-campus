@@ -18,6 +18,12 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _trace_id() -> str:
+    from .observability import current_trace
+
+    return current_trace()
+
+
 @dataclass
 class ToolResult:
     tool: str
@@ -56,8 +62,8 @@ def record_tool_call(package_id: str, agent_id: str, result: ToolResult) -> str:
     conn.execute(
         """INSERT INTO tool_calls(
             id,package_id,agent_id,tool,status,query,source_url,source_title,
-            retrieved_at,extracted_content,error,metadata,created_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            retrieved_at,extracted_content,error,metadata,created_at,trace_id
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             call_id,
             package_id,
@@ -72,6 +78,7 @@ def record_tool_call(package_id: str, agent_id: str, result: ToolResult) -> str:
             payload["error"][:1000],
             json.dumps(result.metadata),
             now(),
+            (result.metadata or {}).get("trace_id") or _trace_id(),
         ),
     )
     conn.commit()

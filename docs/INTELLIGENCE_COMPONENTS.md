@@ -1,56 +1,81 @@
-# Open-source component audit
+# Intelligence components and licence audit
 
-Updated 2026-09-25 for v1.1.1. Nothing was vendored. AGPL and source-available trees were not copied.
+Updated 2026-09-28 for v2.0.0. Nothing in this tree was vendored from the projects below. AGPL code is not copied. `AYVEN_ALLOW_ESCALATION` stays 0.
 
-Core install: `apps/api/requirements.txt` (FastAPI, Uvicorn, HTTPX, Pydantic, pytest).
-Frankenstein install: `apps/api/requirements-frankenstein.txt`. The GPU script installs both.
+“Maintained?” is a point-in-time judgement from public activity, not a support contract. Versions are what this repo pins or, when the package is not installed, “not pinned”.
 
-## Installed dependencies
+## What actually executes
 
-| Project | Version | Licence | Why | What Ayven uses | Required? | Where | Replacement boundary |
+| Component | Decision | Executes in this build |
+| --- | --- | --- |
+| Ayven work packages, approvals, SQLite, Campus | product | Yes |
+| Pydantic schemas + llguidance grammar | INTEGRATED | Yes, on every structured tool check |
+| Qwen-Agent `FnCallAgent` | INTEGRATED behind `AgentRuntime` | Yes when the package imports and `AYVEN_AGENT_RUNTIME` is auto or qwen |
+| Native / Pydantic runtime | INTEGRATED | Yes when Qwen-Agent is off or the call falls back |
+| HTTP search and fetch | INTEGRATED | Yes |
+| Entity targets, authority class, local rerank | INTEGRATED | Yes |
+| Crawl4AI | INTEGRATED | Yes. `DefaultMarkdownGenerator` extracts HTML, including a local page. It is an optional extra, and this environment has it installed |
+| Browser Use | INTEGRATED when installed | Read-only, after HTTP or a JavaScript wall |
+| Calculator | INTEGRATED | Yes |
+| Code sandbox (`unshare` / bubblewrap) | INTEGRATED when the kernel allows it | Yes only with `AYVEN_ALLOW_CODE=1`, approval, and real isolation. rlimit does not run code |
+| MCP Python SDK | INTEGRATED when installed | Yes for configured servers. Tools are not given to every employee |
+| SQLite memory | INTEGRATED | Yes |
+| Mem0 | REJECTED | No |
+| LiteLLM | REJECTED | No. `gateway.py` is the router |
+| DSPy | OPTIONAL | Offline helper only. Not imported on the request path |
+| Langfuse | OPTIONAL | No. Local JSON traces are the sink |
+| Garak | OPTIONAL | `scripts/run_security_eval.sh` only |
+| llm-guard | OPTIONAL | No |
+| Rebuff | REJECTED | Archived. Not used |
+| OpenHands, Aider, SWE-agent, mini-SWE-agent | REJECTED as hosts | No. The coding specialist is the Ayven sandbox |
+| Daytona | REJECTED | Paid cloud. Not used |
+| PyMuPDF | REJECTED | AGPL. Not imported |
+| Firecrawl | REJECTED | AGPL. Adapter stays disabled |
+
+## Licence table
+
+| Project | Repo | Licence | Version / commit | Maintained? | Capability | Decision | Reason |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| FastAPI | 0.115.6 | MIT | Campus API | Routes, health, work packages | Required | local | The HTTP app |
-| Uvicorn | 0.34.0 | BSD | ASGI server | `uvicorn app.main:app` | Required | local | Any ASGI server |
-| HTTPX | 0.28.1 | BSD | HTTP client | Search, fetch, local model calls | Required | remote HTTP | Another client behind `tools.py` |
-| Pydantic | 2.13.5 | MIT | Models | Request bodies. Raised from 2.10.4 because MCP requires >=2.12 | Required | local | — |
-| pytest | 8.3.4 | MIT | Tests | Local suite | Required for tests | local | — |
-| Starlette | 0.41.3 | BSD | FastAPI base | Kept below 0.42 so FastAPI 0.115.6 still constructs | Required | local | Do not let MCP's newer SSE extra upgrade it |
-| sse-starlette | 3.0.2 | BSD | MCP extra | Pinned so it does not demand Starlette >=0.49 | Required by MCP | local | Stdio does not use SSE |
-| QwenLM/Qwen-Agent | 0.0.34 | Apache-2.0 (upstream; PyPI licence field empty) | Function-calling loop | `FnCallAgent` inside the employee boundary. Live when a session or local base URL is set; otherwise replay, labelled in metadata | Optional extra, on for validation | local | `AYVEN_AGENT_RUNTIME=native` |
-| modelcontextprotocol/python-sdk | 2.1.1 | MIT | MCP client | stdio connect, list, call. browser-use 0.13.10 requires this exact MCP version | Optional extra | local | Empty `AYVEN_MCP_SERVERS` |
-| browser-use/browser-use | 0.13.10 | MIT (upstream; PyPI licence field empty) | JS and navigation | Read-only `BrowserSession` | Optional extra | local Chrome | HTTP fetch when the page is static |
-| python-soundfile | 0.14.0 | BSD-3-Clause | Import side effect | qwen-agent imports it at startup. Ayven does not transcribe audio | Optional extra | local | Remove if a future qwen-agent stops importing it |
-| openai | 2.26.0 (transitive) | Apache-2.0 | Qwen-Agent's OpenAI-compatible client | Used only when `AYVEN_LOCAL_LLM_BASE_URL` is set. No paid call is made by installing it | Transitive | local process, remote only if that URL is set | The scripted model in tests |
+| Qwen-Agent | QwenLM/Qwen-Agent | Apache-2.0 | 0.0.34 | Yes | Function-calling loop | INTEGRATED | Kept behind `QwenAgentRuntime`. Ayven still authorises every call |
+| llguidance | guidance-ai/llguidance | MIT | 1.3.0 | Yes | Constrained decoding | INTEGRATED | Grammar mask. First legal byte of a tool request is `{`, not `<` |
+| Pydantic | pydantic/pydantic | MIT | 2.13.5 | Yes | Typed models | INTEGRATED | Already required. Schemas are the tool boundary |
+| Pydantic AI | pydantic/pydantic-ai | MIT | pydantic-ai-slim 2.51.0 | Yes | Agent framework | INTEGRATED as an optional runtime | `FunctionModel` and `TestModel` run, then `validate_tool_call`. Ayven still owns packages and approvals |
+| Crawl4AI | unclecode/crawl4ai | Apache-2.0 | 0.7.4 | Yes | Markdown extraction | INTEGRATED | Rung 4 after HTTP. LiteLLM is only a transitive dependency and is not the gateway |
+| Browser Use | browser-use/browser-use | MIT | 0.13.10 | Yes | Interactive browser | INTEGRATED | Escalation when the page needs interaction or JavaScript |
+| MCP Python SDK | modelcontextprotocol/python-sdk | MIT | 2.1.1 | Yes | stdio and Streamable HTTP client | INTEGRATED | Pinned beside browser-use. Tools enter the registry after discovery |
+| Mem0 | mem0ai/mem0 | Apache-2.0 | not pinned | Yes | Vector memory | REJECTED | Default embedder is a hosted model call and Mem0 is a second store. Ayven uses local fastembed (`BAAI/bge-small-en-v1.5`) with a lexical fallback on the existing SQLite rows |
+| LiteLLM | BerriAI/litellm | MIT for non-enterprise; `enterprise/` is separate | not pinned | Yes | Provider router | REJECTED | Split licence and a large install. `gateway.py` records route, cooldown, and cost |
+| DSPy | stanfordnlp/dspy | MIT | not pinned | Yes | Prompt optimisation | OPTIONAL | Offline candidate prompts only. Production does not rewrite prompts |
+| Langfuse | langfuse/langfuse | MIT | not pinned | Yes | Hosted traces | OPTIONAL | Local traces are mandatory. Langfuse is a sink if a host is configured later |
+| Garak | NVIDIA/garak | Apache-2.0 | not pinned | Yes | Security probes | OPTIONAL | Dev script. Not a unit test and not a paid call |
+| llm-guard | protectai/llm-guard | MIT | not pinned | Yes, heavy | Scanners | OPTIONAL | Maintained, but it pulls models. Ayven fences untrusted web text instead |
+| Rebuff | protectai/rebuff | — | — | No (archived) | Prompt injection firewall | REJECTED | Archived. Not used |
+| Daytona | daytonaio/daytona | Apache-2.0 | not pinned | Yes | Cloud sandbox | REJECTED | A paid cloud sandbox is out of scope. Isolation here is local or it does not run |
+| gVisor, nsjail, Firecracker | various | Apache-2.0 / BSD | not pinned | Yes | Harder sandboxes | OPTIONAL | Not present on this deployment. Documented, not faked |
+| bubblewrap | containers/bubblewrap | LGPL-2.1 | system | Yes | User namespace sandbox | ADAPTED | Used when `unshare` is missing and `bwrap` works. Not vendored |
+| OpenHands | All-Hands-AI/OpenHands | MIT | not pinned | Yes | Software agent | REJECTED | Host agent. Would skip permissions and the ledger |
+| Aider | Aider-AI/aider | Apache-2.0 | not pinned | Yes | Repo editor | REJECTED | Owns the edit loop |
+| SWE-agent | SWE-agent/SWE-agent | MIT | not pinned | Yes | Issue-to-patch agent | REJECTED | Docker-centric host |
+| mini-SWE-agent | SWE-agent/mini-SWE-agent | MIT | not pinned | Yes | Small coding agent | REJECTED | Still its own shell loop |
+| smolagents | huggingface/smolagents | Apache-2.0 | not pinned | Yes | Code agent | REJECTED | Duplicates the tool loop |
+| Letta | letta-ai/letta | Apache-2.0 | not pinned | Yes | Memory server | REJECTED | Own server and model-written memory |
+| Graphiti | getzep/graphiti | Apache-2.0 | not pinned | Yes | Temporal graph memory | DEFERRED | Another store. SQLite scopes are enough until a graph is actually queried |
+| LangGraph | langchain-ai/langgraph | MIT | not pinned | Yes | Graph runtime | REJECTED | Would replace work packages |
+| Firecrawl | firecrawl/firecrawl | AGPL-3.0 | not pinned | Yes | Crawl API | REJECTED | Network copyleft. Not vendored |
+| Docling | docling-project/docling | MIT | not pinned | Yes | Document conversion | DEFERRED | Heavy. Stdlib CSV/HTML/text is the current backend |
+| Unstructured | Unstructured-IO/unstructured | Apache-2.0 | not pinned | Yes | Document parsing | DEFERRED | Large install for formats the stdlib path does not need yet |
+| MarkItDown | microsoft/markitdown | MIT | not pinned | Yes | Document to markdown | OPTIONAL | Acceptable licence. Not installed. PDF stays unavailable until it is |
+| PyMuPDF | pymupdf/PyMuPDF | AGPL-3.0 / commercial | not pinned | Yes | PDF | REJECTED | AGPL. Not imported |
+| FastAPI, HTTPX, Uvicorn, pytest | various | MIT / BSD | see requirements.txt | Yes | API and tests | INTEGRATED | Unchanged role |
 
-Qwen weights are not installed in this checkout. The harness downloads them on a GPU pod. Their licence is Apache-2.0.
+## Install groups
 
-## Studied and not installed
+`pyproject.toml` extras: `core`, `browser`, `gpu`, `memory`, `eval`, `sandbox`, `observability`, `frankenstein`.
 
-| Project | Licence | Decision | Why not |
-| --- | --- | --- | --- |
-| huggingface/smolagents | Apache-2.0 | STUDIED | A second code-agent loop. The sandbox is `unshare`, and Qwen-Agent already runs tools. |
-| lukeswade/deep-research | MIT | STUDIED | The plan/read/review/gap pattern is in `research.py`. The project had no maintenance to justify a dependency. |
-| BerriAI/litellm | MIT for non-enterprise code; `enterprise/` is separate | REJECTED | Ayven already calls an OpenAI-compatible local server. The package is large and the licence is split. |
-| letta-ai/letta | Apache-2.0 | REJECTED | Needs its own server and a model to write memory. No local embedder without a GPU or a paid API. |
-| mem0ai/mem0 | Apache-2.0 | REJECTED | The gain is vector recall. Same missing embedder. SQLite overlap ranking is enough for the include/exclude test. |
-| langchain-ai/langgraph | MIT | REJECTED | Would replace the work-package graph. |
-| microsoft/agent-framework | MIT | REJECTED | Would replace the employee, supervisor, and manager loop. |
-| All-Hands-AI/OpenHands | MIT | REJECTED | Host agent with its own shell and browser. It would skip permissions and the ledger, and it implies a software department. |
-| Aider-AI/aider | Apache-2.0 | REJECTED | Owns the edit loop. The frozen exams do not edit a repository. |
-| SWE-agent/SWE-agent | MIT | REJECTED | Host agent, Docker-centric. Docker is not on this VM. |
-| SWE-agent/mini-SWE-agent | MIT | REJECTED | Smaller, but still its own shell loop. The sandbox keeps that control in Ayven. |
-| firecrawl/firecrawl | AGPL-3.0 | REJECTED | Not vendored. Adapter stays disabled. No request is sent. |
-| anthropics/skills | Mixed; document skills are source-available | REJECTED | No skill text copied. The local loader follows the Apache-2.0 agentskills folder layout. |
+The GPU extra must be installed **after** the constraints file so `typing-extensions` and `starlette` are not dragged apart by `llama-cpp-python` or `browser-use`:
 
-## Replacement boundaries
+```bash
+pip install -r apps/api/requirements.txt -r apps/api/requirements-frankenstein.txt -c apps/api/constraints.txt
+```
 
-- Skills: another directory of `SKILL.md` files via `AYVEN_SKILLS_DIR`.
-- Agent loop: `AYVEN_AGENT_RUNTIME=native` skips Qwen-Agent.
-- Browser: `browser_adapter.py`. HTTP fetch does not import it when the page opens.
-- MCP: `AYVEN_MCP_SERVERS` JSON. The client does not hard-code a server.
-- Sandbox: `code_sandbox.py`. Arithmetic stays on the calculator. Unshare, then bubblewrap, then a reported-only weak level that does not run code. The weak level is not a GPU-run gate.
-- Research queries: planned from the objective and skill guidance. The fixture index can match a generic token such as the word in the brief. Exam names are not stored in the engine.
-- Supervisor verification: `supervisor_check.py`. The query is derived from the claim.
-- Preflight: `validation/preflight.py` and `scripts/run_ayven_validation.sh --preflight-only`.
-- Memory: `memory.py`. A future local embedder would sit behind `retrieve()`.
-- Models: `AYVEN_EMPLOYEE_MODEL`, `AYVEN_SUPERVISOR_MODEL`, `AYVEN_MANAGER_MODEL`, `AYVEN_CODING_MODEL`.
+`validation/Dockerfile.gpu` uses a prebuilt CUDA wheel index for llama-cpp-python. This repo does not build or push that image.

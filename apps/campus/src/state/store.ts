@@ -43,6 +43,7 @@ type Store = {
   tasks: any[];
   approvals: any[];
   projects: any[];
+  campusBrief: any;
   selectedId: string | null;
   focus: Focus;
   brief: string;
@@ -76,6 +77,7 @@ export const useCampus = create<Store>((set, get) => ({
   tasks: [],
   approvals: [],
   projects: [],
+  campusBrief: null,
   selectedId: "milo",
   focus: { kind: "campus" },
   brief:
@@ -98,6 +100,7 @@ export const useCampus = create<Store>((set, get) => ({
       tasks: s.tasks,
       approvals: s.approvals,
       projects: s.projects,
+      campusBrief: s.campus_brief || null,
     });
   },
   submitObjective: async (text) => {

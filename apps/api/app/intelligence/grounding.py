@@ -12,12 +12,13 @@ from .think import strip_think
 
 _PREFIX = re.compile(
     r"^(FACT|INFERENCE|RECOMMENDATION|UNKNOWN|EVIDENCE-BACKED FACT|DETERMINISTIC RESULT|"
-    r"EXPLICIT INFERENCE|UNSUPPORTED FACT)\s*:\s*",
+    r"EXPLICIT INFERENCE|UNSUPPORTED FACT|ASSUMPTION)\s*:\s*",
     re.I,
 )
 _URL = re.compile(r"https?://[^\s)>\]]+")
 _EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 _MONEY = re.compile(r"£\s*([\d,]+(?:\.\d+)?)")
+_PERCENT = re.compile(r"\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?\s*%")
 _HEDGE = re.compile(r"\b(typically|usually|may|might|could|possible|plausible|likely|suggests?|worth|consider)\b", re.I)
 _REC = re.compile(r"\b(should|recommend|next|verify|confirm|do not|don't|approval|investigate)\b", re.I)
 
@@ -43,6 +44,11 @@ def _specifics_unsupported(body: str, corpus: str) -> bool:
     for amount in _MONEY.findall(body):
         if _norm_money(amount) not in corpus.replace(",", "") and amount not in corpus:
             return True
+    compact = re.sub(r"\s+", "", corpus)
+    for percent in _PERCENT.findall(body):
+        token = re.sub(r"\s+", "", percent)
+        if token not in compact and percent not in corpus:
+            return True
     return False
 
 
@@ -63,6 +69,8 @@ def classify_sentence(sentence: str, evidence: str, deterministic: str) -> str:
     body = _PREFIX.sub("", sentence.strip()).strip() or sentence.strip()
     if _specifics_unsupported(body, corpus):
         return "UNSUPPORTED FACT"
+    if label == "ASSUMPTION" or (re.search(r"\bassumption\b", body, re.I) and label not in ("FACT", "EVIDENCE-BACKED FACT")):
+        return "EXPLICIT INFERENCE"
     if label in ("INFERENCE", "EXPLICIT INFERENCE"):
         return "EXPLICIT INFERENCE"
     if label == "RECOMMENDATION":

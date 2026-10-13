@@ -1,0 +1,101 @@
+name: milo-package
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/ayven-v2-workable-a9eb
+
+permissions:
+  contents: read
+
+concurrency:
+  group: milo-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 180
+    environment: milo-package
+    env:
+      MILO_SHA: 1d04499b8d05819f2743bf54b7d1a9f791b157ca
+      CAMPUS_SHA: ${{ github.sha }}
+      MILO_DIR: ${{ github.workspace }}/milo
+      CAMPUS_DIR: ${{ github.workspace }}/campus
+      WORK_DIR: ${{ github.workspace }}/work
+      MILO_BUILD_TOKEN: ${{ secrets.MILO_BUILD_TOKEN }}
+      AYVEN_EMPLOYEE_MODEL: qwen3:4b
+      AYVEN_SUPERVISOR_MODEL: qwen3:4b
+      AYVEN_MANAGER_MODEL: qwen3:4b
+      AYVEN_PLAN_MODEL: qwen3:8b
+      AYVEN_ALLOW_CODE: "1"
+      AYVEN_RESEARCH_MODE: live
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    steps:
+      - name: Mask build token
+        shell: pwsh
+        env:
+          MILO_BUILD_TOKEN: ${{ secrets.MILO_BUILD_TOKEN }}
+        run: |
+          Write-Output "::add-mask::$env:MILO_BUILD_TOKEN"
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: campus
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Leehiggins111/Milo
+          ref: 1d04499b8d05819f2743bf54b7d1a9f791b157ca
+          token: ${{ secrets.MILO_BUILD_TOKEN }}
+          persist-credentials: false
+          path: milo
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Restore Ollama model cache
+        id: ollama-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen3-4b-8b-${{ runner.os }}-v1
+          restore-keys: |
+            ollama-qwen3-4b-${{ runner.os }}-v1
+
+      - name: Restore Ollama app cache
+        id: ollama-app
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ollama-app
+          key: ollama-windows-app-v0.40.2
+
+      - name: Serve qwen3:4b and qwen3:8b
+        id: serve-model
+        timeout-minutes: 80
+        shell: pwsh
+        run: pwsh -NoProfile -File "$env:CAMPUS_DIR\scripts\ci\serve-qwen.ps1"
+
+      - name: Save Ollama model cache
+        if: always() && steps.ollama-cache.outputs.cache-hit != 'true' && steps.serve-model.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-qwen3-4b-8b-${{ runner.os }}-v1
+
+      - name: Save Ollama app cache
+        if: always() && steps.ollama-app.outputs.cache-hit != 'true' && steps.serve-model.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ollama-app
+          key: ollama-windows-app-v0.40.2
+
+      - name: Assemble and accept the Windows package
+        shell: pwsh
+        run: node "$env:CAMPUS_DIR\scripts\ci\milo-package-runner.js"
