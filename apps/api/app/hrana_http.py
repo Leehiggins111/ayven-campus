@@ -122,12 +122,12 @@ class _MappedRow(dict):
 class HranaConnection:
     """sqlite-shaped connection. One HTTP stream, held open only during a transaction."""
 
-    def __init__(self, url: str, auth_token: str):
+    def __init__(self, url: str, auth_token: str, timeout: float = 60):
         self._base = http_base(url)
         self._token = auth_token
         self._baton = None
         self._tx = False
-        self._client = httpx.Client(timeout=60)
+        self._client = httpx.Client(timeout=timeout)
 
     def _pipeline(self, requests: list, *, close: bool) -> list:
         body_requests = list(requests)

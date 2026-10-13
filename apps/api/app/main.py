@@ -114,6 +114,14 @@ def health():
     }
     if not durability["durable"]:
         durability["persistence_state"] = "not_durable"
+    if storage["durable"]:
+        # Config alone is not proof: a durable database that does not answer is degraded.
+        from . import db as _db
+
+        live, error = _db.live_check(timeout=2.0)
+        durability["persistence_live"] = live
+        if not live:
+            durability.update({"durable": False, "durable_storage": False, "persistence_state": "degraded", "persistence_error": error})
     return {
         "ok": True,
         "service": "ayven-api",

@@ -109,6 +109,39 @@ def test_health_runtime_and_durable_flag_agree(monkeypatch):
     assert stub["durable"] is False
     assert stub["persistence_state"] == "not_durable"
 
+
+def test_health_reports_degraded_when_the_durable_database_does_not_answer(monkeypatch):
+    import app.db as db_module
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "persistence_report", lambda: {"persistence": "libsql_http", "durable": True, "persistence_state": "durable"})
+    monkeypatch.setattr(db_module, "live_check", lambda timeout=2.0: (False, "OperationalError: connection refused"))
+    body = TestClient(app).get("/health").json()
+    assert body["durable"] is False
+    assert body["persistence_state"] == "degraded"
+    assert body["persistence_live"] is False
+    assert "connection refused" in body["persistence_error"]
+    monkeypatch.setattr(db_module, "live_check", lambda timeout=2.0: (True, ""))
+    healthy = TestClient(app).get("/health").json()
+    assert healthy["durable"] is True
+    assert healthy["persistence_state"] == "durable"
+    assert healthy["persistence_live"] is True
+
+
+def test_live_check_fails_fast_on_a_dead_database(monkeypatch):
+    from app.db import live_check
+
+    monkeypatch.setenv("AYVEN_DB_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("AYVEN_DB_AUTH_TOKEN", "test-token")
+    started = time.monotonic()
+    ok, error = live_check(timeout=0.5)
+    assert ok is False
+    assert error
+    assert time.monotonic() - started < 5
+    monkeypatch.delenv("AYVEN_DB_URL")
+    monkeypatch.delenv("AYVEN_DB_AUTH_TOKEN")
+    assert live_check(timeout=0.5) == (True, "")
+
 def _sqld_binary() -> str:
     candidates = [
         os.environ.get("AYVEN_SQLD", ""),

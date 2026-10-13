@@ -209,6 +209,36 @@ def persistence_report() -> dict:
     return {"persistence": "local_sqlite", "durable": False, "persistence_state": "not_durable"}
 
 
+
+def live_check(timeout: float = 2.0) -> tuple[bool, str]:
+    """A cheap SELECT 1 against the configured database. Returns (ok, error).
+
+    It opens its own short-timeout connection and never runs init_db, so a
+    database that is down makes /health say so quickly instead of hanging.
+    """
+    url = os.environ.get("AYVEN_DB_URL", "").strip()
+    token = os.environ.get("AYVEN_DB_AUTH_TOKEN", "").strip()
+    conn = None
+    try:
+        if _remote_url(url) and token and not url.startswith("file:"):
+            from .hrana_http import HranaConnection
+
+            conn = HranaConnection(url, token, timeout=timeout)
+        elif url.startswith("file:"):
+            conn = _libsql_connect(url, "")
+        else:
+            conn = sqlite3.connect(db_path(), timeout=timeout, check_same_thread=False)
+        conn.execute("SELECT 1").fetchone()
+        return True, ""
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 def _libsql_connect(url: str, auth_token: str):
     """A local ``file:`` URL via the libsql driver. Remote URLs use Hrana HTTP instead."""
     try:
