@@ -2393,3 +2393,50 @@ def test_a_ten_word_headline_is_retried_as_a_headline(monkeypatch):
     assert len(seen) == 2
     assert "under 10 words" in seen[1]
     assert "needs a headline, one body" not in seen[1]
+
+
+def test_a_second_business_is_not_part_of_the_first_price():
+    from app.intelligence.deliverable import claim_mismatch, section_rejection
+    from app.intelligence.facts import name_the_page, repair_before_gate
+
+    blob = (
+        "https://refreshkitchen.co.uk/\n"
+        "Refresh Your Kitchen can transform your kitchen in one day for only £950. PAY ON COMPLETION\n"
+        "https://www.joesdoors.co.uk/replacement-kitchen-doors/\n"
+        "We replace your existing doors, drawer fronts, and worktops.\n"
+        "https://www.kitchenfaces.co.uk/pricing\n"
+        "Kitchen Door Replacement Pricing | From £1,300 | Kitchen Faces\n"
+    )
+    facts = [
+        {"id": "F1", "source": "https://refreshkitchen.co.uk/", "quote": "£950 PAY ON COMPLETION"},
+        {"id": "F4", "source": "https://www.joesdoors.co.uk/replacement-kitchen-doors/", "quote": "doors, drawer fronts, and worktops"},
+        {"id": "F2", "source": "https://www.kitchenfaces.co.uk/pricing", "quote": "From £1,300"},
+    ]
+    paired = (
+        "Refresh Kitchen offers a full kitchen transformation for £950 PAY ON COMPLETION [F1], "
+        "while Joe's Doors provides replacement doors, drawer fronts, and worktops without the need for a full refit [F4]. "
+        "Unlike these options, this service replaces doors, worktops and handles rather than a full kitchen replacement."
+    )
+    named = name_the_page(paired, facts)
+    assert claim_mismatch(named, blob) == ""
+    assert section_rejection("competitor and market research", named, blob, DOOR) == ""
+    mixed = (
+        "Refresh Kitchen offers a full kitchen transformation for £950 PAY ON COMPLETION [F1], "
+        "while Kitchen Faces charges £1,300 for their kitchen door and worktop solutions [F2]. "
+        "Unlike these options, replacing just doors and worktops with Joe's Doors provides a cost-effective way to refresh the kitchen without a full rebuild [F4]."
+    )
+    repaired = repair_before_gate("competitor and market research", mixed, facts, DOOR, blob)
+    assert "worktop solutions" not in repaired.lower()
+    assert "£1,300" in repaired
+    assert "£950" in repaired
+    assert section_rejection("competitor and market research", repaired, blob, DOOR) == ""
+    advert = (
+        "Headline: Transform Your Kitchen with Doors, Worktops, and Handles\n"
+        "Body: Replace your kitchen without a full refit, saving time and cost.\n"
+        "Call to action: Contact us today to get started on your kitchen upgrade."
+    )
+    kept = repair_before_gate("advert", advert, facts, DOOR, blob)
+    assert "saving" not in kept.lower()
+    assert "Headline:" in kept
+    assert "Call to action:" in kept
+    assert section_rejection("advert", kept, blob, DOOR) == ""

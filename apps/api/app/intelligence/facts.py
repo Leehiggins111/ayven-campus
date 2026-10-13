@@ -1007,9 +1007,50 @@ def _without_borrowed_phrases(key: str, body: str, objective: str, blob: str) ->
     return cleaned.strip()
 
 
+def _without_rejected_claim_words(sentence: str, blob: str) -> str:
+    """Delete the words the page check named. Keep the rest of the model's sentence."""
+    from .deliverable import claim_mismatch
+
+    cleaned = sentence
+    for _ in range(4):
+        reason = claim_mismatch(cleaned, blob)
+        if not reason or "uses" not in reason.lower():
+            break
+        words = re.findall(r"'([^']+)'", reason)
+        if not words:
+            break
+        nxt = cleaned
+        for word in words:
+            nxt = re.sub(rf"\b{re.escape(word)}s?\b", "", nxt, flags=re.I)
+        nxt = re.sub(r"\s{2,}", " ", nxt)
+        nxt = re.sub(r"\s+([,.;:!?])", r"\1", nxt)
+        nxt = re.sub(r"\s+\b(?:and|or)\b(?=\s*[\[.,;]|$)", "", nxt, flags=re.I)
+        nxt = re.sub(r"\s{2,}", " ", nxt).strip(" ,;:-")
+        if "£" not in nxt or nxt == cleaned.strip(" ,;:-"):
+            return ""
+        cleaned = nxt if re.search(r"[.!?]$", nxt) else nxt + "."
+    if claim_mismatch(cleaned, blob) or cleaned == sentence:
+        return ""
+    return cleaned
+
+
+def _without_saving_clause(sentence: str) -> str:
+    """Delete an unsupported saving clause. Keep the model's other words."""
+    nxt = re.sub(r",?\s+\b(?:saving|savings|saves|saved)\b[^.,;]*", "", sentence or "", flags=re.I)
+    nxt = re.sub(r"\s{2,}", " ", nxt)
+    nxt = re.sub(r"\s+([.!?])", r"\1", nxt).strip()
+    return nxt
+
+
 def _drop_failed_sentences(key: str, text: str, objective: str, blob: str) -> str:
     """Delete a sentence the check rejects. Do not write a replacement."""
-    from .deliverable import _SHOUTED_HEADING, claim_mismatch, narration_reason, unsupported_promise
+    from .deliverable import (
+        _SHOUTED_HEADING,
+        _invented_saving,
+        claim_mismatch,
+        narration_reason,
+        unsupported_promise,
+    )
 
     body = _without_borrowed_phrases(key, text, objective, blob)
     kept = []
@@ -1018,8 +1059,16 @@ def _drop_failed_sentences(key: str, text: str, objective: str, blob: str) -> st
         if re.match(r"\s*" + _SHOUTED_HEADING.pattern, stripped):
             continue
         if claim_mismatch(stripped, blob):
+            trimmed = _without_rejected_claim_words(stripped, blob)
+            if trimmed:
+                kept.append(trimmed)
             continue
         if unsupported_promise(stripped, objective, blob):
+            continue
+        if _invented_saving(stripped, blob):
+            trimmed = _without_saving_clause(stripped)
+            if trimmed and not _invented_saving(trimmed, blob) and len(trimmed.split()) >= 4:
+                kept.append(trimmed)
             continue
         if narration_reason(stripped):
             continue

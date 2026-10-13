@@ -1781,7 +1781,26 @@ def _match_one_claim(sentence: str, blob: str, *, require_named: bool) -> str:
         clauses: list[str] = []
         for piece in pieces:
             # A host tag after the price stays with that price. "doors and worktops" stays one title.
+            # A later business, with its own opened page and no £, is not part of this price.
             if clauses and not _pound_amounts(piece):
+                piece_hosts = {
+                    re.sub(r"^https?://", "", url, flags=re.I).split("/")[0].lower()
+                    for url in named
+                    if _names_opened_page(piece, url)
+                }
+                price_hosts = {
+                    re.sub(r"^https?://", "", url, flags=re.I).split("/")[0].lower()
+                    for url in named
+                    if _names_opened_page(clauses[-1], url)
+                }
+                if (
+                    piece_hosts
+                    and price_hosts
+                    and piece_hosts.isdisjoint(price_hosts)
+                    and _IDENTITY.search(piece)
+                ):
+                    clauses.append(piece)
+                    continue
                 clauses[-1] = clauses[-1] + " and " + piece
                 continue
             if clauses and _pound_amounts(piece) and not any(_names_opened_page(piece, url) for url in named):
