@@ -33,6 +33,28 @@ Community rate `$0.34/h`, hard cap `$1.10`. Secure rate `$0.89/h`, hard cap `$2.
 - Which `runpodctl` verb is installed in the pod image. The command tries delete, then remove, then REST.
 - Whether `nvidia-smi` utilisation is a RunPod guarantee. The idle rule uses it as a local signal only.
 
+## Checklist rows that this document covers
+
+| Row | Status | Evidence |
+|---|---|---|
+| R1 | Implemented and verified | Caps in `budget.py`. Tests: `test_a_job_over_its_cap_halts`, `test_the_monthly_cap_refuses_a_new_job`. |
+| R2 | Implemented and verified | `test_wf1_harness` task count. |
+| R3 | Implemented awaiting live verification | Tool gate tests pass. A live per-step tool log does not exist yet. |
+| R4 | Implemented awaiting live verification | `test_files_and_traces_survive_a_process_restart`. No Turso database was created. |
+| R5 | Implemented and verified | `test_wf1_harness` handovers. |
+| R6 | Implemented and verified | `test_wf1_harness` reject and fix. |
+| R7 | Implemented and verified | Resume tests in `test_qa_defects.py` and `test_a_running_job_resumes_after_the_worker_sleeps`. |
+| R8 | Implemented and verified | `completion_allowed` in `test_wf1_harness`. |
+| R9 | Implemented and verified | `test_r9_reasoning.py`. The six leak cases are CPU tests. No model was loaded, so `load_s` is unmeasured. |
+| R10 | Implemented awaiting live verification | `bash scripts/run_ayven_live.sh` prints the plan and refuses a pod. `record_load` stores `load_s` when the pod supplies clocks. |
+| R11 | Implemented awaiting live verification | Not deployed from this branch. |
+| R12 | Implemented awaiting live verification | Idempotent `POST /projects` in `test_a_repeated_submission_returns_the_same_project`. |
+| R13 | Implemented awaiting live verification | Campus view fields exist. No browser pass. |
+| R14 | Implemented awaiting live verification | Simulated metrics exist. The GPU `cost-report.json` does not. |
+| R15 | Implemented awaiting live verification | Session TTL test. Live health not re-checked. |
+| R16 | Implemented awaiting live verification | Simulated harness passes. GPU run not done. |
+| R17 | Implemented and verified | Escalation stays off, and startup refuses armed escalation with no prices. |
+
 ## What a pass would not prove
 
 A simulated pass (`validation/wf1.py`, `run_type=SIMULATED`) proves the harness, the gates, and the stub engine. It does not prove model quality. The package files in that run are synthetic text with the brief's page counts, not the trial PDFs.

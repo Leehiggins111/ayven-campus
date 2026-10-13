@@ -52,6 +52,7 @@ class PodClock:
     consecutive_failures: int = 0
     results_confirmed: bool = False
     manual_stop: bool = False
+    unhealthy_since: float | None = None
     notes: list[str] = field(default_factory=list)
 
     def mark_active(self, now: float) -> None:
@@ -95,12 +96,15 @@ def decide(clock: PodClock, now: float) -> dict:
         reason = "idle"
     elif clock.consecutive_failures >= 2:
         reason = "failure"
-    elif not clock.healthy and elapsed >= bounds["health_fail_s"] and clock.healthy_at is None and elapsed >= min(bounds["startup_s"], bounds["health_fail_s"]):
-        # A server that never becomes healthy is a startup failure once the
-        # startup budget is spent. Five minutes of failed checks after a
-        # successful start is handled by consecutive_failures.
-        if elapsed >= bounds["startup_s"]:
-            reason = "failure"
+    elif (
+        not clock.healthy
+        and clock.healthy_at is not None
+        and clock.unhealthy_since is not None
+        and (now - clock.unhealthy_since) >= bounds["health_fail_s"]
+    ):
+        reason = "failure"
+    elif not clock.healthy and clock.healthy_at is None and elapsed >= bounds["startup_s"]:
+        reason = "failure"
     elif clock.manual_stop:
         reason = "manual"
     return {

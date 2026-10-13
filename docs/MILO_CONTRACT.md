@@ -53,3 +53,25 @@ A job that would pass the cap pauses with a blocker of kind `cap`. Paid fallback
 ## Restart
 
 Set `AYVEN_RESUME=1`. On startup Campus re-dispatches projects still marked `running` whose package is not waiting for Lee. Finished employee calls are not repeated.
+
+## Checklist
+
+| Row | Status | Evidence |
+|---|---|---|
+| R1 | Implemented and verified | Job and monthly caps. `test_a_job_over_its_cap_halts`, `test_the_monthly_cap_refuses_a_new_job`. `GET /budget` and `PUT /budget`. |
+| R2 | Implemented and verified | `test_wf1_harness` tasks. |
+| R3 | Implemented awaiting live verification | Tool calls are gated. A live per-step log is not in this branch. |
+| R4 | Implemented awaiting live verification | Files and traces are rows. `test_files_and_traces_survive_a_process_restart`. Turso needs both `AYVEN_DB_URL` and `AYVEN_DB_AUTH_TOKEN`. |
+| R5 | Implemented and verified | `test_wf1_harness` handovers. |
+| R6 | Implemented and verified | `test_wf1_harness` reject and fix. `POST /approvals/{id}/resolve` requires a reason. |
+| R7 | Implemented and verified | `AYVEN_RESUME=1` and the resume tests, including `test_a_running_job_resumes_after_the_worker_sleeps`. |
+| R8 | Implemented and verified | Completion stays closed until the files exist (`test_wf1_harness`). |
+| R9 | Implemented and verified | `test_r9_reasoning.py`. |
+| R10 | Implemented awaiting live verification | `scripts/run_ayven_live.sh` is plan-only until `AYVEN_CONFIRM_SPEND=YES` on a pod. |
+| R11 | Implemented awaiting live verification | This branch is not deployed. |
+| R12 | Implemented awaiting live verification | `Idempotency-Key` and `test_a_repeated_submission_returns_the_same_project`. The Node harness was not run. |
+| R13 | Implemented awaiting live verification | `GET /campus/view` returns blockers, files, and criteria. No browser pass. |
+| R14 | Implemented awaiting live verification | Simulated `run_metrics`. No GPU cost report. |
+| R15 | Implemented awaiting live verification | Bearer or a session cookie that expires after 12 hours. `test_a_session_older_than_twelve_hours_is_refused`. |
+| R16 | Implemented awaiting live verification | Simulated harness passes. GPU run not done. |
+| R17 | Implemented and verified | `allow_paid_fallback` defaults off. `test_escalation_disabled_makes_no_external_call`. |

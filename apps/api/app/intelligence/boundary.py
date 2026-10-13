@@ -66,8 +66,13 @@ class ToolGate:
 
 def separate_channels(text: str | None, reasoning_field: str | None = None) -> Channels:
     """Drop reasoning by scanning markers. The discarded channel is never returned as a tool input."""
-    raw = text or ""
+    from .think import strip_think
+
+    original = text or ""
+    raw = strip_think(original)
     discarded: list[str] = []
+    if raw != original.strip():
+        discarded.append(original)
     if reasoning_field:
         discarded.append(reasoning_field)
     out: list[str] = []
@@ -344,6 +349,8 @@ def validate_tool_call(call: dict) -> ToolGate:
     raw_args = call.get("arguments")
     if not isinstance(raw_args, str):
         raw_args = json.dumps(raw_args) if raw_args is not None else ""
+    if contains_think(raw_args) or "<|" in raw_args:
+        return ToolGate(False, error="reasoning_marker", schema_name=name)
     channels = separate_channels(raw_args)
     if channels.discarded and not channels.executable:
         return ToolGate(False, error="arguments_were_reasoning", schema_name=name)

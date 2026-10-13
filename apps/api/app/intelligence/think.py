@@ -8,6 +8,11 @@ _CLOSED = re.compile(
     r"(?is)<\s*(think|redacted_thinking|reasoning)\b[^>]*>.*?<\s*/\s*\1\s*>"
 )
 _OPEN = re.compile(r"(?is)<\s*(think|redacted_thinking|reasoning)\b[^>]*>.*")
+# Harmony analysis and commentary are reasoning. A later final channel is kept.
+_HARMONY = re.compile(
+    r"(?is)<\|channel\|>(?:analysis|commentary)\b.*?(?=<\|channel\|>final|<\|end\|>|$)"
+)
+_HARMONY_TOKEN = re.compile(r"(?is)<\|(?:channel|start|end|message|call|return)\|>")
 
 
 def strip_think(text: str | None) -> str:
@@ -15,6 +20,8 @@ def strip_think(text: str | None) -> str:
         return ""
     cleaned = _CLOSED.sub("", text)
     cleaned = _OPEN.sub("", cleaned)
+    cleaned = _HARMONY.sub("", cleaned)
+    cleaned = _HARMONY_TOKEN.sub("", cleaned)
     return cleaned.strip()
 
 

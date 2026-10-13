@@ -29,17 +29,34 @@ AYVEN_LLM_STUB=1 AYVEN_ENV=local python3 -c "from pathlib import Path; from vali
 
 `run_type` is `SIMULATED`. The eight package files are synthetic stand-ins with the page counts from the brief. The real trial PDFs are not in this repo. Verdict files land in `evidence/qa/wf1/<run-id>/`. Nothing is published or sent.
 
-## Checklist (honest)
+## Checklist
 
-| Row | Status | Note |
+Each row has one status: Implemented and verified, Implemented awaiting live verification, Blocked, or Unresolved defect.
+
+| Row | Status | Evidence |
 |---|---|---|
-| R1–R6, R8, R14 | VERIFIED in code and unit paths | Goals, caps, handovers, QA reject/fix, completion gate, and per-run metrics exist. The simulated wf1 run exercises them. |
-| R7 | VERIFIED | Restart re-dispatch covered by the tests named above. |
-| R9 | VERIFIED for the tool and message paths in this tree | Reasoning fields are not copied into tool arguments. A live GPU leak test was not run. |
-| R10, R11, R16 live, R17 live | AWAITING-LIVE | Scripts and the decision function are in the tree. No pod was started. |
-| R15 | Lee reports `AYVEN_ACCESS_KEY` is set on Render | This agent got no response from `GET /health` within 20s, so the live flag was not re-checked here. This branch is not deployed. Non-local startup still refuses a short token. |
-| R16 simulated | VERIFIED | Pass mark is the harness verdict, labelled SIMULATED. |
-| R12, R13 | Not re-proven in a browser this run | Milo contract is `docs/MILO_CONTRACT.md`. |
+| R1 | Implemented and verified | `test_a_job_over_its_cap_halts`, `test_the_monthly_cap_refuses_a_new_job`. A goal with no budget uses the `$2` default cap. |
+| R2 | Implemented and verified | `test_wf1_harness` records at least two tasks for the host-kit brief. |
+| R3 | Implemented awaiting live verification | `validate_tool_call` and `test_archive_think_queries_and_media_cannot_execute` reject bad calls. A live run has not logged a tool call on every step. |
+| R4 | Implemented awaiting live verification | `test_files_and_traces_survive_a_process_restart`. Turso is optional and was not created. |
+| R5 | Implemented and verified | `test_wf1_harness` records at least two handovers. |
+| R6 | Implemented and verified | `test_wf1_harness` keeps a rejected finding and records the fix. |
+| R7 | Implemented and verified | `test_startup_resumes_a_killed_run_without_redoing_finished_work`, `test_resume_keeps_the_same_package_and_does_not_repeat_model_calls`, `test_a_running_job_resumes_after_the_worker_sleeps`. |
+| R8 | Implemented and verified | `test_wf1_harness` (`completion_allowed` stays false until the files exist). |
+| R9 | Implemented and verified | `test_r9_reasoning.py`: unclosed think, think inside JSON, harmony analysis, planning prose, `think.mp3`, empty content with a reasoning field. |
+| R10 | Implemented awaiting live verification | `scripts/run_ayven_live.sh` prints the llama-server plan and exits 0. `load_s` is null until a model is loaded. No pod was created. |
+| R11 | Implemented awaiting live verification | The API runs without a laptop. This branch is not the service Render is serving. |
+| R12 | Implemented awaiting live verification | `test_a_repeated_submission_returns_the_same_project`. The Node harness was not run. |
+| R13 | Implemented awaiting live verification | `GET /campus/view` returns blockers, files, and criteria. No browser pass on this turn. |
+| R14 | Implemented awaiting live verification | `run_metrics` and `test_wf1_harness` cover the simulated fields. No GPU cost report exists. |
+| R15 | Implemented awaiting live verification | `test_a_session_older_than_twelve_hours_is_refused`. The live `/health` check was not repeated, and this branch is not deployed. |
+| R16 | Implemented awaiting live verification | `test_wf1_harness` passes with `run_type` SIMULATED. The GPU run was not done. |
+| R17 | Implemented and verified | `test_escalation_disabled_makes_no_external_call`, `test_escalation_armed_without_prices_refuses_startup`. |
+
+```bash
+python3 -m pytest apps/api/tests/test_r9_reasoning.py apps/api/tests/test_hosting.py apps/api/tests/test_spend_controls.py apps/api/tests/test_qa_defects.py -q
+bash scripts/run_ayven_live.sh
+```
 
 ## Lee still has to do
 
