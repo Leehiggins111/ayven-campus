@@ -1200,6 +1200,7 @@ def _drop_failed_sentences(key: str, text: str, objective: str, blob: str) -> st
     for sentence in _sentence_list(body):
         stripped = sentence.strip()
         # A banner such as PAY ON COMPLETION can open a real £ sentence. Drop only a heading line.
+        # The £ figure and the citation stay with the sentence.
         if "£" not in stripped and re.match(r"\s*" + _SHOUTED_HEADING.pattern, stripped):
             continue
         if claim_mismatch(stripped, blob):
