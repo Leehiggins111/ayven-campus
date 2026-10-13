@@ -49,6 +49,15 @@ def finalize_project(project_id: str) -> None:
         project_status = "unresolved"
     else:
         project_status = "running"
+    if pkg and findings and state != "FAILED":
+        # Generated files go into the file store, or bundle.zip has nothing to serve.
+        from .blobs import store_package_files
+
+        row = dict(pkg)
+        store_package_files(
+            row.get("parent_id") or row["id"], findings,
+            row.get("research_json") or "", row.get("observability_json") or "",
+        )
     conn.execute("UPDATE projects SET status=?, result=? WHERE id=?", (project_status, findings, project_id))
     conn.execute("UPDATE tasks SET status=? WHERE id=?", (project_status, f"engine:{project_id}"))
     conn.commit()

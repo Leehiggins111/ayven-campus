@@ -237,6 +237,54 @@ def test_files_and_traces_survive_a_process_restart():
     assert any(row["event"] == "note" for row in events)
 
 
+
+def test_a_finished_package_saves_its_files_and_bundle_zip_serves_them():
+    import io
+    import zipfile
+
+    from app.orchestrator import finalize_project
+
+    project_id = "bundle-" + uuid.uuid4().hex
+    conn = connect()
+    conn.execute(
+        "INSERT INTO projects(id, title, objective, status, created_at) VALUES(?,?,?,?,?)",
+        (project_id, "Bundle", "Write a listing.", "running", "2026-10-13T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+    parent = insert_package(
+        project_id=project_id, task_id="bundle-task", title="Research programme", objective="Write a listing.",
+        origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="complete",
+    )
+    update_package(parent, findings="Draft listing.\nNothing was sent.\n", workflow_state="COMPLETED")
+    finalize_project(project_id)
+    assert load_bytes(parent, "report.md") == b"Draft listing.\nNothing was sent.\n"
+    response = TestClient(app).get(f"/work-packages/{parent}/bundle.zip")
+    assert response.status_code == 200, response.text
+    names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
+    assert "report.md" in names
+
+
+def test_a_failed_package_does_not_save_a_deliverable():
+    from app.blobs import list_files
+    from app.orchestrator import finalize_project
+
+    project_id = "failed-" + uuid.uuid4().hex
+    conn = connect()
+    conn.execute(
+        "INSERT INTO projects(id, title, objective, status, created_at) VALUES(?,?,?,?,?)",
+        (project_id, "Failed", "Write a listing.", "running", "2026-10-13T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+    parent = insert_package(
+        project_id=project_id, task_id="failed-task", title="Research programme", objective="Write a listing.",
+        origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="exception", status="failed",
+    )
+    update_package(parent, findings="Work still missing.", workflow_state="FAILED")
+    finalize_project(project_id)
+    assert list_files(parent) == []
+
 def test_cors_wildcard_is_rejected_and_a_named_origin_is_allowed(monkeypatch):
     monkeypatch.setenv("AYVEN_CORS_ORIGINS", "*")
     try:

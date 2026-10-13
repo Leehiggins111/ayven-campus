@@ -70,3 +70,32 @@ def list_files(package_id: str) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def store_package_files(package_id: str, findings: str, research_json: str = "", observability_json: str = "") -> list[dict]:
+    """Save a finished package's generated files so bundle.zip can serve them.
+
+    The report is always saved. Program files are saved only when their tests
+    passed (``stored_files``); web files only when the web check verified them.
+    """
+    import json
+
+    if not package_id or not (findings or "").strip():
+        return []
+    saved = [save_bytes(package_id, "report.md", findings.encode("utf-8"), "deliverable")]
+    from .intelligence.software import stored_files
+
+    for name, source in stored_files(findings).items():
+        saved.append(save_bytes(package_id, name, source.encode("utf-8"), "program"))
+    try:
+        research = json.loads(research_json or "{}")
+        obs = json.loads(observability_json or "{}")
+        research["web_execution"] = research.get("web_execution") or obs.get("web_execution") or {}
+        from .intelligence.web_artifact import artifact_files, verified_web
+
+        web = artifact_files(findings) if verified_web(findings, research) else {}
+    except (ValueError, TypeError, AttributeError, KeyError):
+        web = {}
+    for name, source in web.items():
+        saved.append(save_bytes(package_id, name, str(source).encode("utf-8"), "web"))
+    return saved
