@@ -307,15 +307,6 @@ def set_task_status(task_id: str, status: str) -> None:
 
 def handover(project_id: str, task_id: str, from_role: str, to_role: str, criteria: list[str]) -> dict:
     ensure_schema()
-    conn = connect()
-    # The same open blocker is written once. A second review pass reports it again; it is not a new blocker.
-    existing = conn.execute(
-        "SELECT * FROM blockers WHERE project_id=? AND package_id=? AND kind=? AND reason=? AND status='open'",
-        (project_id, package_id, kind, reason),
-    ).fetchone()
-    conn.close()
-    if existing:
-        return dict(existing)
     row = {
         "id": str(uuid.uuid4()),
         "project_id": project_id,
@@ -351,15 +342,6 @@ def list_handovers(project_id: str) -> list[dict]:
 
 def record_qa(project_id: str, task_id: str, verdict: str, findings: list[dict], attempt: int) -> dict:
     ensure_schema()
-    conn = connect()
-    # The same open blocker is written once. A second review pass reports it again; it is not a new blocker.
-    existing = conn.execute(
-        "SELECT * FROM blockers WHERE project_id=? AND package_id=? AND kind=? AND reason=? AND status='open'",
-        (project_id, package_id, kind, reason),
-    ).fetchone()
-    conn.close()
-    if existing:
-        return dict(existing)
     row = {
         "id": str(uuid.uuid4()),
         "project_id": project_id,

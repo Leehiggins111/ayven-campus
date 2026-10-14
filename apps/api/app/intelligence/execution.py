@@ -559,7 +559,7 @@ class Programme:
         )
         deterministic = self.objective or ""
         # Lee's acceptance criteria are part of the brief: a figure he set there
-        # (for example "Full groom price: £25") is supplied, not an unsupported fact.
+        # (for example a fixed price such as "£25") is supplied, not an unsupported fact.
         criteria = self._acceptance_criteria()
         if criteria:
             deterministic = f"{deterministic}\n" + "\n".join(criteria)
