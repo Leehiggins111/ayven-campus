@@ -715,129 +715,154 @@ def test_no_injected_source_variant_reaches_the_failed_report(name):
     assert "- Tests: FAILED" in report
 
 
-def test_source_quoted_inside_a_blocker_or_reason_is_collapsed():
-    from tests.test_web_artifact import FILES
 
-    quoted = "Review: invalid output\n```html\n" + FILES["index.html"] + "\n```\n" + FILES["app.js"]
-    report = _failed_zip_report("Tests: FAILED\n", blocker=quoted, error="Build failed:\n    " + FILES["app.js"])
-    leaks = [m for m in _fixture_markers() if m.lower() in report.lower()]
-    assert not leaks, (leaks, report)
-    assert "Review: invalid output [code omitted]" in report, report
-    assert "[code omitted]" in report.split("## Failure reason")[1].split("##")[0]
+# FAILED report.md is fixed wording per failure type (option B). No free text reaches it. -------------
 
+import base64 as _b64
+import html as _html_mod
+import json as _json_mod
+import re as _re_mod
+import urllib.parse as _urlparse
 
-def test_failed_report_lines_are_truncated():
-    report = _failed_zip_report("Tests: FAILED\n", blocker="Review: " + "x" * 2000, error="Build failed: " + "y" * 2000)
-    assert all(len(line) <= 310 for line in report.splitlines()), max(len(line) for line in report.splitlines())
+from tests.test_web_artifact import FILES as _FILES
 
-
-def test_failed_report_keeps_the_job_brief_and_status_but_never_the_report_body():
-    report = _failed_zip_report("Tests: FAILED\nSome narrative the model wrote about the app.\n")
-    assert "Brief: Build a customer job tracking application." in report
-    assert "- Tests: FAILED" in report and "Browser check: failed" in report
-    assert "Some narrative" not in report
+_HTML, _JS = _FILES["index.html"], _FILES["app.js"]
+_PY = "def add(left, right):\n    return left + right\n\nif __name__ == '__main__':\n    print(add(4, 7))\n"
+_TPY = "import main\ndef test_add():\n    assert main.add(4, 7) == 11\n"
+_B64 = _b64.b64encode(_HTML.encode()).decode()
+_B64P = _b64.b64encode(_PY.encode()).decode()
+_HEXP = _PY.encode().hex()
+_MIN = _re_mod.sub(r"\s*\n\s*", " ", _JS)
+_ENT = _html_mod.escape(_HTML)
 
 
-# Sanitiser hardening (QA retest d8d6127): blobs, Python blocks, inline-only replacement, fallback ----
-
-def _qa_d8d_variants():
-    import base64
-    import html as _html
-    import json as _json
-    import re as _re
-    from tests.test_web_artifact import FILES
-
-    HTML, JS = FILES["index.html"], FILES["app.js"]
-    PY = "def add(left, right):\n    return left + right\n\nif __name__ == '__main__':\n    print(add(4, 7))\n"
-    TPY = "import main\ndef test_add():\n    assert main.add(4, 7) == 11\n"
-    ART = _json.dumps({"files": FILES})
-    MIN = _re.sub(r"\s*\n\s*", " ", JS)
-    SPLIT = "The build failed while checking the page. " + ("x" * 250) + " " + JS
-    SPLIT2 = "Step one passed and step two passed and the form saved a record and the list rendered fine. " * 3 + "\nlet jobs=[]\ntry{jobs=JSON.parse(localStorage.getItem('jobs')||'[]')}catch(e){}"
-    B64 = base64.b64encode(HTML.encode()).decode()
-    ENT = _html.escape(HTML)
-
-    def fence(tag, src):
-        return f"```{tag}\n{src}\n```"
-
-    return [
-        ("unfenced web source", "W", "findings", HTML + "\n" + JS),
-        ("indented code block", "W", "findings", "Report\n\n" + "\n".join("    " + l for l in HTML.splitlines())),
-        ("~~~ fence", "W", "findings", "~~~html\n" + HTML + "\n~~~"),
-        ("``` no language", "W", "findings", fence("", JS)),
-        ("```HTML uppercase", "W", "findings", fence("HTML", HTML)),
-        ("```index.HTML", "W", "findings", fence("index.HTML", HTML)),
-        ("```javascript", "W", "findings", fence("javascript", JS)),
-        ("unfenced ayven-artifact JSON", "W", "findings", "ayven-artifact " + ART),
-        ("unfenced python (program)", "P", "findings", PY + "\n" + TPY),
-        ("```python (program)", "P", "findings", fence("python", PY)),
-        ("source quoted in blocker", "W", "blocker", "Build failed: the page is:\n" + fence("html", HTML)),
-        ("source in job title", "W", "title", HTML),
-        ("source in job brief", "W", "objective", "Build this exactly:\n" + HTML + "\n" + JS),
-        ("python in brief (program)", "P", "objective", "Write this program: " + PY),
-        ("lone __main__ line in brief", "P", "objective", "Run it with\nif __name__ == '__main__':"),
-        ("one-line minified JS in error", "W", "error", MIN),
-        ("one-line minified JS in blocker", "W", "blocker", MIN),
-        ("minified JS in title", "W", "title", MIN),
-        ("source past 300 cap (error)", "W", "error", SPLIT),
-        ("prose then code lines (blocker)", "W", "blocker", SPLIT2),
-        ("HTML entities in error", "W", "error", "Rendered page: " + ENT),
-        ("HTML entities in brief", "W", "objective", "Use this page " + _html.escape("<script>localStorage.setItem('a','b')</script>")),
-        ("base64 in error", "W", "error", "Artifact payload: " + B64),
-        ("base64 in blocker", "W", "blocker", "Bundle " + base64.b64encode(PY.encode()).decode()),
-        ("base64 html-escaped in blocker", "W", "blocker", "Bundle " + _html.escape(base64.b64encode(HTML.encode()).decode())),
-        ("source in browser error", "W", "weberr", "Error: page threw\n" + JS),
-        ("one-line source in browser error", "W", "weberr", MIN),
-        ("entities in browser error", "W", "weberr", "Error: " + ENT.replace("\n", " ")),
-        ("python call no colon in error", "P", "error", "Build failed: print(add(4, 7)) gave 12; expected sum 11 with add(left, right) return left + right"),
-    ], FILES, PY, TPY
+def _fence(tag, src):
+    return f"```{tag}\n{src}\n```"
 
 
-def _qa_scan(text: str, fragments: set) -> list:
-    import base64
-    import html as _html
-    import re as _re
+# QA's variant list (variants_6ff.py), r690 and r6ff included.
+_QA_VARIANTS = [
+    ("unfenced web source", "W", "findings", _HTML + "\n" + _JS),
+    ("indented code block", "W", "findings", "Report\n\n" + "\n".join("    " + l for l in _HTML.splitlines())),
+    ("~~~ fence", "W", "findings", "~~~html\n" + _HTML + "\n~~~"),
+    ("``` no language", "W", "findings", _fence("", _JS)),
+    ("```HTML uppercase", "W", "findings", _fence("HTML", _HTML)),
+    ("```index.HTML", "W", "findings", _fence("index.HTML", _HTML)),
+    ("```javascript", "W", "findings", _fence("javascript", _JS)),
+    ("unfenced ayven-artifact JSON", "W", "findings", "ayven-artifact " + _json_mod.dumps({"files": _FILES})),
+    ("unfenced python (program)", "P", "findings", _PY + "\n" + _TPY),
+    ("```python (program)", "P", "findings", _fence("python", _PY)),
+    ("source quoted in blocker", "W", "blocker", "Build failed: the page is:\n" + _fence("html", _HTML)),
+    ("source in job title", "W", "title", _HTML),
+    ("source in job brief", "W", "objective", "Build this exactly:\n" + _HTML + "\n" + _JS),
+    ("python in brief (program)", "P", "objective", "Write this program: " + _PY),
+    ("one-line minified JS in error", "W", "error", _MIN),
+    ("one-line minified JS in blocker", "W", "blocker", _MIN),
+    ("minified JS in title", "W", "title", _MIN),
+    ("source past 300 cap (error)", "W", "error", "The build failed while checking the page. " + "x" * 250 + " " + _JS),
+    ("prose then code lines (blocker)", "W", "blocker", "Step one passed and the list rendered fine. " * 3 + "\nlet jobs=[]\ntry{jobs=JSON.parse(localStorage.getItem('jobs')||'[]')}catch(e){}"),
+    ("HTML entities in error", "W", "error", "Rendered page: " + _ENT),
+    ("HTML entities in brief", "W", "objective", "Use this page " + _html_mod.escape("<script>localStorage.setItem('a','b')</script>")),
+    ("base64 in error", "W", "error", "Artifact payload: " + _B64),
+    ("base64 in blocker", "W", "blocker", "Bundle " + _B64P),
+    ("source in browser error", "W", "weberr", "Error: page threw\n" + _JS),
+    ("one-line source in browser error", "W", "weberr", _MIN),
+    ("entities in browser error", "W", "weberr", "Error: " + _ENT.replace("\n", " ")),
+    ("python call no colon in error", "P", "error", "Build failed: print(add(4, 7)) gave 12; expected sum 11 with add(left, right) return left + right"),
+    ("lone __main__ line in brief", "P", "objective", "if __name__ == '__main__':"),
+    ("escaped base64 in error", "W", "error", "Payload: " + _html_mod.escape(_B64).replace("+", "&#43;").replace("/", "&#47;")),
+    ("base64 chunked 32 (error)", "W", "error", "Payload " + " ".join(_B64[i:i + 32] for i in range(0, len(_B64), 32))),
+    ("base64 chunked 30 (blocker)", "W", "blocker", "Bundle " + " ".join(_B64P[i:i + 30] for i in range(0, len(_B64P), 30))),
+    ("hex source (error)", "W", "error", "Hex dump: " + _HTML.encode().hex()),
+    ("hex chunked 32 (blocker)", "P", "blocker", "Hex " + " ".join(_HEXP[i:i + 32] for i in range(0, len(_HEXP), 32))),
+    ("source split across blockers", "P", "multiblock", ["Build failed at def add(left, right):", "then it does return left + right", "then print(add(4, 7)) and assert main.add(4, 7) == 11"]),
+    ("web source split across blockers", "W", "multiblock", [l for l in _JS.splitlines() if l.strip()][:6]),
+    ("b64 chunks of 7 (error)", "W", "error", "Payload " + " ".join(_B64[k:k + 7] for k in range(0, len(_B64), 7))),
+    ("b64 chunks of 7 (blocker, py)", "P", "blocker", "Bundle " + " ".join(_B64P[k:k + 7] for k in range(0, len(_B64P), 7))),
+    ("hex chunks of 7 (blocker)", "P", "blocker", "Hex " + " ".join(_HEXP[k:k + 7] for k in range(0, len(_HEXP), 7))),
+    ("b64 comma-separated 12 (error)", "W", "error", "Payload " + ",".join(_B64[k:k + 12] for k in range(0, len(_B64), 12))),
+    ("b64 comma+space 12 (blocker)", "P", "blocker", "Bundle " + ", ".join(_B64P[k:k + 12] for k in range(0, len(_B64P), 12))),
+    ("b64 newline-separated 12 (error)", "W", "error", "Payload\n" + "\n".join(_B64[k:k + 12] for k in range(0, len(_B64), 12))),
+    ("hex newline-separated 16 (blocker)", "P", "blocker", "Hex\n" + "\n".join(_HEXP[k:k + 16] for k in range(0, len(_HEXP), 16))),
+    ("b64 alternating with words (error)", "W", "error", " ".join(f"{_B64[k:k + 12]} and" for k in range(0, len(_B64), 12))),
+    ("b64 alternating with words (blocker, py)", "P", "blocker", " ".join(f"step {_B64P[k:k + 12]}" for k in range(0, len(_B64P), 12))),
+    ("hex alternating with words (blocker)", "P", "blocker", " ".join(f"part {_HEXP[k:k + 12]}" for k in range(0, len(_HEXP), 12))),
+    ("source in URL queries (blocker)", "P", "blocker", " ".join(f"https://ex.com/r?q={_urlparse.quote(_PY[k:k + 12], safe='')}" for k in range(0, len(_PY), 12))),
+    ("source in URL paths (blocker)", "P", "blocker", " ".join(f"https://ex.com/{_urlparse.quote(_PY[k:k + 30], safe='')}" for k in range(0, len(_PY), 30))),
+    ("raw source in URL paths (error)", "P", "error", " ".join("https://ex.com/" + _PY[k:k + 30].replace(" ", "%20").replace("\n", "%0A") for k in range(0, len(_PY), 30))),
+    ("web source in URL queries (error)", "W", "error", " ".join(f"https://ex.com/a?x={_urlparse.quote(_JS[k:k + 12], safe='')}" for k in range(0, len(_JS), 12))),
+    ("source in URL across blockers", "P", "multiblock", [f"See https://ex.com/p?c={_urlparse.quote(_PY[k:k + 14], safe='')}" for k in range(0, len(_PY), 14)]),
+    ("web source in URL across blockers", "W", "multiblock", [f"See https://ex.com/{_urlparse.quote(_HTML[k:k + 30], safe='')}" for k in range(0, len(_HTML), 30)]),
+    ("b64 chunks of 5 mixed with words in brief", "W", "objective", " ".join(f"{_B64[k:k + 5]} it" for k in range(0, 200, 5))),
+]
 
+_FRAGS = set()
+for _src in list(_FILES.values()) + [_PY, _TPY]:
+    for _l in _src.splitlines():
+        _l = _l.strip()
+        for _i in range(0, max(1, len(_l) - 15), 8):
+            _f = _l[_i:_i + 16]
+            if len(_f) == 16 and _re_mod.search(r"[(){};=<>\[\]]", _f):
+                _FRAGS.add(_f)
+
+
+def _qa_scanner(text: str) -> list:
+    """QA's scanner (variants_6ff.py) plus URL-decoding and every base64 alignment."""
     hits = []
-    views = {"raw": text, "unescaped": _html.unescape(text)}
-    for m in _re.findall(r"[A-Za-z0-9+/]{16,}={0,2}", text):
-        for pad in ("", "=", "=="):
+    tt = _html_mod.unescape(text)
+    views = {"raw": text, "unescaped": tt, "urldecoded": _urlparse.unquote(tt)}
+    joined = _re_mod.sub(r"(?<=[A-Za-z0-9+/=])[ ,\n]+(?=[A-Za-z0-9+/=])", "", tt)
+    for m in _re_mod.findall(r"[A-Za-z0-9+/]{16,}={0,2}", joined):
+        for start in range(4):
+            chunk = m[start:]
+            chunk = chunk[: len(chunk) // 4 * 4]
             try:
-                views["b64"] = views.get("b64", "") + base64.b64decode(m[: len(m) - len(m) % 4] + pad).decode("utf8", "ignore")
-                break
+                views["b64"] = views.get("b64", "") + " " + _b64.b64decode(chunk).decode("utf8", "ignore")
             except Exception:
-                continue
+                pass
+    for m in _re_mod.findall(r"(?:[0-9a-f]{2}){8,}", _re_mod.sub(r"(?<=[0-9a-f])[ ,\n]+(?=[0-9a-f])", "", tt)):
+        try:
+            views["hex"] = views.get("hex", "") + " " + bytes.fromhex(m[: len(m) // 2 * 2]).decode("utf8", "ignore")
+        except Exception:
+            pass
     for name, view in views.items():
-        found = [f for f in fragments if f in view]
+        found = [f for f in _FRAGS if f in view]
         if found:
             hits.append(f"{name}: fragment {found[0]!r}")
         for marker in ["```", "~~~", "<!doctype", "<script", "localStorage", "ayven-artifact", "def add", "return left",
-                       "assert main.add", "JSON.parse", "=>", "__main__"]:
+                       "assert main.add", "JSON.parse", "=>", "__main__", "?q=", "?c=", "?x="]:
             if marker.lower() in view.lower():
                 hits.append(f"{name}: marker {marker!r}")
     return sorted(set(hits))
 
 
-def _inject_failed(which: str, field: str, value: str) -> str:
-    import json as _json
-    from app.goals import add_blocker
+def _inject_failed(which: str, field: str, value, *, extra_blockers=(), goal_cap=None) -> str:
+    from app.goals import add_blocker, open_goal
     from app.intelligence.store import update_package as store_update
     from app.intelligence.workflow import log_transition
 
-    task = "software_build" if which == "P" else "application_build"
-    objective = "Write a small Python program that adds 4 and 7." if which == "P" else "Build a customer job tracking application."
+    task = "software_build" if which == "P" else ("application_build" if which == "W" else "business_research")
+    objective = {"P": "Write a small Python program that adds 4 and 7.", "W": "Build a customer job tracking application."}.get(which, "Write a price sheet.")
     project_id = _project(objective)
+    if goal_cap is not None:
+        open_goal(project_id, [], job_cap_gbp=goal_cap)
     parent = insert_package(
-        project_id=project_id, task_id="d8-" + uuid.uuid4().hex[:6], title="Research programme", objective=objective,
+        project_id=project_id, task_id="fr-" + uuid.uuid4().hex[:6], title="Research programme", objective=objective,
         origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="failed",
     )
-    obs = {"software_execution": {"passed": False, "exit_code": 1}} if which == "P" else {"web_execution": {"passed": False, "status": "unavailable", "error": "Executable doesn't exist"}}
-    fields = {"findings": "Tests: FAILED\n", "error": "Build failed: the checks did not pass.", "task_class": task}
-    blocker = "Build failed: the checks did not pass."
+    obs = {}
+    if which == "P":
+        obs = {"software_execution": {"passed": False, "exit_code": 1, "stderr": "Traceback ...\nAssertionError"}}
+    elif which == "W":
+        obs = {"web_execution": {"passed": False, "status": "unavailable", "error": "Executable doesn't exist"}}
+    fields = {"findings": "Tests: FAILED\n", "error": "", "task_class": task}
+    blockers = ["Build failed: the checks did not pass."] if which in ("P", "W") else []
     if field in ("findings", "error"):
         fields[field] = value
     elif field == "blocker":
-        blocker = value
+        blockers = [value]
+    elif field == "multiblock":
+        blockers = list(value)
     elif field == "weberr":
         obs["web_execution"]["error"] = value
     elif field in ("title", "objective"):
@@ -846,10 +871,12 @@ def _inject_failed(which: str, field: str, value: str) -> str:
         conn.commit()
         conn.close()
         fields[field] = value
-    fields["observability_json"] = _json.dumps(obs)
+    fields["observability_json"] = _json_mod.dumps(obs)
     store_update(parent, **fields)
-    log_transition(parent, "FAILED", "build failed")
-    add_blocker(project_id, "error", blocker, "Fix it", package_id=parent)
+    log_transition(parent, "FAILED", "failed")
+    for reason in list(blockers) + list(extra_blockers):
+        kind, text = reason if isinstance(reason, tuple) else ("error", reason)
+        add_blocker(project_id, kind, text, "Fix it", package_id=parent)
     response = TestClient(app).get(f"/work-packages/{parent}/bundle.zip")
     assert response.status_code == 200, response.text
     archive = zipfile.ZipFile(io.BytesIO(response.content))
@@ -857,219 +884,112 @@ def _inject_failed(which: str, field: str, value: str) -> str:
     return archive.read("report.md").decode()
 
 
-def test_every_qa_d8d_variant_is_clean_over_http():
-    import re as _re
-
-    variants, files, py, tpy = _qa_d8d_variants()
-    fragments = set()
-    for src in list(files.values()) + [py, tpy]:
-        for line in src.splitlines():
-            line = line.strip()
-            for i in range(0, max(1, len(line) - 15), 8):
-                frag = line[i:i + 16]
-                if len(frag) == 16 and _re.search(r"[(){};=<>\[\]]", frag):
-                    fragments.add(frag)
-    leaks = {}
-    for name, which, field, value in variants:
-        report = _inject_failed(which, field, value)
-        assert report.startswith("# FAILED") and "Nothing was sent." in report, name
-        hits = _qa_scan(report, fragments)
-        if hits:
-            leaks[name] = (hits, report)
-    assert not leaks, leaks
+@pytest.mark.parametrize("variant", _QA_VARIANTS, ids=[v[0] for v in _QA_VARIANTS])
+def test_no_qa_variant_leaks_source_through_the_failed_report(variant):
+    name, which, field, value = variant
+    report = _inject_failed(which, field, value)
+    assert _qa_scanner(report) == [], (name, _qa_scanner(report), report)
+    assert report.startswith("# FAILED") and "## Failure reason" in report and "Nothing was sent." in report
+    assert "http" not in report and "?" not in report.split("## Job")[0]
 
 
-def test_base64_is_replaced_in_full_and_when_it_would_be_truncated():
-    import base64
-    from app.main import _safe_line
-    from tests.test_web_artifact import FILES
-
-    blob = base64.b64encode(FILES["index.html"].encode()).decode()
-    assert _safe_line("Payload: " + blob) == "Payload: [data omitted]"
-    # Truncation happens after the blob is replaced, so no decodable prefix survives a cut.
-    out = _safe_line("Payload: " + blob, limit=120)
-    assert "[data omitted]" in out and blob[:40] not in out
-    out = _safe_line(("word " * 50) + blob, limit=300)
-    assert blob[:20] not in out
-    # Split across lines, each piece still 40+ characters.
-    assert blob[:60] not in _safe_line("Payload:\n" + blob[:60] + "\n" + blob[60:120])
+def _section(report: str, heading: str) -> str:
+    if f"## {heading}" not in report:
+        return ""
+    body = report.split(f"## {heading}")[1].split("\n## ")[0]
+    return body.split("Nothing was sent.")[0].strip()
 
 
-def test_a_lone_main_guard_and_python_block_lines_are_dropped():
-    from app.main import _safe_line
+def test_realistic_failures_get_fixed_wording():
+    from app import failure_report as fr
 
-    assert "__main__" not in _safe_line("if __name__ == '__main__':")
-    for line in ("if x > 3:", "for item in items:", "while True:", "class Thing:", "def add(a, b):"):
-        out = _safe_line("Context words\n" + line)
-        assert out == "Context words [code omitted]", (line, out)
+    cases = {
+        "Build failed: the program's tests did not pass. AssertionError": fr.FailureType.TESTS_FAILED,
+        "Build failed: the browser check did not pass (unavailable).": fr.FailureType.BROWSER_CHECK_FAILED,
+        "Review: Invalid review | Missing: price": fr.FailureType.MALFORMED_REVIEW,
+        "delivery-review failed after 3 attempts. Last error: malformed_review. Escalated to the director as a blocker.": fr.FailureType.MALFORMED_REVIEW,
+        "Review: the draft lacks a price | Missing: price; notice period": fr.FailureType.REVIEW_REJECTED,
+        "planning failed after 3 attempts. Last error: ConnectError: [Errno 111] Connection refused.": fr.FailureType.MODEL_ERROR,
+        "model-EMPLOYEE failed after 3 attempts. Last error: empty_or_malformed.": fr.FailureType.MODEL_ERROR,
+        "Stopped during prepare. Cause: ValueError: Ayven could not produce a valid job plan.": fr.FailureType.STEP_ERROR,
+        "search-plan failed after 2 attempts. Last error: KeyError: 'q'.": fr.FailureType.STEP_ERROR,
+        "Timeout after 120s waiting for the model.": fr.FailureType.TIMEOUT,
+        "Error: page.click: Timeout 30000ms exceeded.": fr.FailureType.TIMEOUT,
+        "Something odd happened.": fr.FailureType.OTHER,
+    }
+    for text, expected in cases.items():
+        assert fr.classify("error", text) is expected, text
+    assert fr.classify("cap", "anything") is fr.FailureType.BUDGET_EXCEEDED
+    assert fr.classify("rework", "anything") is fr.FailureType.REWORK_REQUESTED
+    assert fr.exception_class("Last error: ConnectError: [Errno 111]") == "ConnectError"
 
-
-_QA_REALISTIC_BLOCKERS = [
-    "Build failed: the program's tests did not pass. AssertionError",
-    "Build failed: the browser check did not pass (Error: BrowserType.launch: Failed to launch chromium because executable doesn't exist at /nonexistent/chrome).",
-    "The delivery review did not return valid JSON, so the work could not be checked.",
-    "Budget cap reached: spent £1.48 of £1.50; stopping before the next step.",
-    "Criterion not met: Full groom price is £25 (report says £30).",
-    "Test failed: expected 11, got 12.",
-    "AssertionError: assert 12 == 11",
-    "Timeout after 120s waiting for the model.",
-    "Model returned HTTP 429 (rate limited); retry later.",
-    "The page has no <form> element, so jobs cannot be created.",
-    "Clicking Save did nothing: the list stayed empty after reload.",
-    "Validation missing: an empty customer name was accepted.",
-    "Edit button not found; selector #edit-1 matched nothing.",
-    "Error: page.click: Timeout 30000ms exceeded.",
-    "TypeError: Cannot read properties of null (reading 'value')",
-    "Network error: connect ECONNREFUSED 127.0.0.1:8080",
-    "Needs Lee: confirm the price list before we publish anything.",
-    "The brief asks for x = 5 items per page but the page shows 10.",
-    "Exit code 1 from pytest; 2 tests failed, 1 passed.",
-    "Missing file: index.html was not produced.",
-    "Price must be at least £10; the sheet lists a £5 nail trim.",
-    "Reason: the customer list is not saved between visits {persistence}.",
-    "Step 3 of 5 failed; see the browser check.",
-    "ModuleNotFoundError: No module named 'main'",
-    "Form submits but the new job is not shown; expected 1 row, found 0.",
-]
-
-# Only the code span itself may change; the rest must read as written.
-_EXPECTED_CHANGES = {
-    "The page has no <form> element, so jobs cannot be created.": "The page has no [code omitted] element, so jobs cannot be created.",
-    "The brief asks for x = 5 items per page but the page shows 10.": "The brief asks for [code omitted] items per page but the page shows 10.",
-}
+    program = _inject_failed("P", "error", "Build failed: the program's tests did not pass. AssertionError")
+    assert _section(program, "Failure reason") == "Build failed: the program's tests did not pass. (AssertionError, exit code 1)"
+    assert "- Tests: FAILED" in program and "- Test exit code: 1" in program
+    web = _inject_failed("W", "error", "")
+    assert _section(web, "Failure reason") == "Build failed: the browser check did not pass. (browser unavailable)"
+    assert "- Browser check: failed (unavailable)" in web
+    review = _inject_failed("D", "error", "Review: the draft lacks a price | Missing: price; notice period",
+                            extra_blockers=["delivery-review failed after 3 attempts. Last error: malformed_review."])
+    assert _section(review, "Failure reason") == "The delivery review rejected the work. (2 required items missing)"
+    assert "- The delivery review did not return a valid result." in review
+    budget = _inject_failed("D", "error", "", extra_blockers=[("cap", "Job cap reached")], goal_cap=1.23)
+    assert _section(budget, "Failure reason") == "The job stopped at its budget cap. (spent £0.00 of £1.23)"
+    model = _inject_failed("D", "error", "planning failed after 3 attempts. Last error: ConnectError: [Errno 111] Connection refused.")
+    assert _section(model, "Failure reason") == "The model could not be reached or did not reply. (ConnectError)"
 
 
-@pytest.mark.parametrize("message", _QA_REALISTIC_BLOCKERS)
-def test_realistic_blockers_keep_their_meaningful_text(message):
-    from app.main import _safe_line
-
-    assert _safe_line(message) == _EXPECTED_CHANGES.get(message, message)
-
-
-def test_inline_code_is_replaced_in_place_and_the_sentence_survives():
-    from app.main import _safe_line
-
-    assert _safe_line("Build failed: `print(add(4, 7))` gave 12, expected 11.") == "Build failed: [code omitted] gave 12, expected 11."
-    assert _safe_line("Build failed: print(add(4, 7)) gave 12, expected 11.") == "Build failed: [code omitted] gave 12, expected 11."
-    assert _safe_line("The delivery review did not return valid JSON.") == "The delivery review did not return valid JSON."
-
-
-def test_an_empty_cleaned_reason_falls_back_to_what_failed():
-    from app.main import _safe_line
-
-    assert _safe_line("```python\ndef add(a, b):\n    return a\n```") == "[code omitted]"
-    program = _inject_failed("P", "error", "```python\ndef add(a, b):\n    return a\n```")
-    assert program.split("## Failure reason")[1].split("##")[0].strip() == "Build failed: tests did not pass."
-    web = _inject_failed("W", "error", "<!doctype html><html><body></body></html>")
-    assert web.split("## Failure reason")[1].split("##")[0].strip() == "Build failed: browser check did not pass."
-    empty = _inject_failed("W", "error", "")
-    assert "Build failed: browser check did not pass." in empty
+def test_usability_cases_do_not_appear_rather_than_being_mangled():
+    usability = [
+        "See https://github.com/Leehiggins111/ayven-campus/blob/cursor/ayven-workforce-fe56/apps/api/app/main.py#L640 for the sanitiser.",
+        "Issue https://github.com/microsoft/playwright/issues/12345#issuecomment-1234567890 matches this failure.",
+        "Signed link https://storage.example.com/bucket/report.pdf?X-Amz-Signature=3f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c expired.",
+        "Error: BrowserType.launch: Executable doesn't exist at /home/box/.cache/ms-playwright/chromium-1140/chrome-linux/chrome",
+        "Log written to C:\\Users\\Lee\\AppData\\Local\\Ayven\\logs\\build-2026-10-14.log",
+        "Commit 6ff5e73670039c4bb421378bad4199974645c385 introduced the regression.",
+    ]
+    report = _inject_failed("W", "multiblock", usability)
+    for needle in ("http", "#L640", "issuecomment", "X-Amz", "ms-playwright", "chrome-linux", "C:\\", "6ff5e736", "[data omitted]", "[code omitted]"):
+        assert needle not in report, (needle, report)
+    assert "- The job failed its checks." in report
 
 
-# Chunked encodings and the long-token exemption (QA retest 690a949) -----------------------------
-
-def _b64_chunks(text: str, size: int = 30) -> str:
-    import base64
-
-    blob = base64.b64encode(text.encode()).decode()
-    return " ".join(blob[i:i + size] for i in range(0, len(blob), size))
-
-
-def _hex_chunks(text: str, size: int = 32) -> str:
-    import binascii
-
-    blob = binascii.hexlify(text.encode()).decode()
-    return " ".join(blob[i:i + size] for i in range(0, len(blob), size))
-
-
-def _no_decodable_source(report: str) -> None:
-    import base64
-    import binascii
-    import re as _re
-
-    for marker in ("<!doctype", "def add", "return left", "__main__"):
-        assert marker not in report.lower()
-    joined = "".join(_re.findall(r"[A-Za-z0-9+/=]{8,}", report))
-    for start in range(4):
-        try:
-            decoded = base64.b64decode(joined[start:][: (len(joined) - start) // 4 * 4]).decode("utf8", "ignore")
-        except Exception:
-            decoded = ""
-        assert "doctype" not in decoded and "def add" not in decoded
-    hexes = "".join(_re.findall(r"[0-9a-fA-F]{8,}", report))
-    try:
-        assert b"def add" not in binascii.unhexlify(hexes[: len(hexes) // 2 * 2])
-    except binascii.Error:
-        pass
+def test_blockers_are_deduped_by_type_and_capped_at_five():
+    reasons = [
+        ("error", "Build failed: the browser check did not pass (unavailable)."),
+        ("error", "Build failed: the browser check did not pass (again)."),
+        ("error", "Review: the draft lacks a price | Missing: price"),
+        ("error", "delivery-review failed after 3 attempts. Last error: malformed_review."),
+        ("error", "planning failed after 3 attempts. Last error: ConnectError."),
+        ("error", "Stopped during prepare. Cause: ValueError."),
+        ("error", "Timeout after 120s."),
+        ("cap", "Job cap reached"),
+        ("rework", "Please redo it"),
+        ("error", "Something odd happened."),
+    ]
+    report = _inject_failed("W", "multiblock", [], extra_blockers=reasons)
+    lines = [l for l in _section(report, "Blockers").splitlines() if l.startswith("- ")]
+    assert len(lines) == 6, lines
+    assert lines[-1] == "- +4 more", lines  # 9 distinct types, 5 shown
+    assert len(set(lines[:5])) == 5
+    assert lines[0] == "- Build failed: the browser check did not pass. (browser unavailable)"
 
 
-_PROGRAM_SOURCE = "def add(left, right):\n    return left + right\n\nif __name__ == '__main__':\n    print(add(4, 7))\n"
+@pytest.mark.parametrize("which,error", [("P", ""), ("W", ""), ("D", ""), ("D", "```python\ndef add(a, b):\n```")])
+def test_a_failure_reason_is_always_present(which, error):
+    report = _inject_failed(which, "error", error, extra_blockers=[] if which != "D" else [])
+    reason = _section(report, "Failure reason")
+    from app.failure_report import WORDING
+    assert any(reason.startswith(w) for w in WORDING.values()), reason
 
 
-def test_chunked_base64_in_the_reason_is_omitted():
-    from tests.test_web_artifact import FILES
+def test_title_and_brief_pass_the_allowlist_or_are_left_out():
+    from app.failure_report import plain_detail
 
-    report = _inject_failed("W", "error", "Payload: " + _b64_chunks(FILES["index.html"]))
-    assert "Payload: [data omitted]" in report
-    _no_decodable_source(report)
-
-
-def test_chunked_base64_in_a_blocker_split_across_lines_is_omitted():
-    chunks = _b64_chunks(_PROGRAM_SOURCE, 20).split(" ")
-    value = "Bundle " + " ".join(chunks[:3]) + "\n" + " ".join(chunks[3:])
-    report = _inject_failed("P", "blocker", value)
-    assert "- Bundle [data omitted]" in report
-    _no_decodable_source(report)
-
-
-def test_hex_in_32_char_chunks_is_omitted():
-    report = _inject_failed("P", "blocker", "Bundle " + _hex_chunks(_PROGRAM_SOURCE))
-    assert "- Bundle [data omitted]" in report
-    _no_decodable_source(report)
-
-
-def test_chunk_rule_runs_after_truncation_too():
-    from app.main import _safe_line
-
-    out = _safe_line(("word " * 55) + _b64_chunks(_PROGRAM_SOURCE, 12), limit=300)
-    assert len(out) <= 300
-    _no_decodable_source(out)
-
-
-def test_prose_words_never_look_like_chunks():
-    from app.main import _safe_line
-
-    for text in ("Necessary validation requirements incomplete for Database configuration.",
-                 "Customer information persisted correctly between sessions afterwards.",
-                 "deadline12 is not data on its own"):
-        assert _safe_line(text) == text
-
-
-def test_urls_and_paths_are_kept():
-    from app.main import _safe_line
-
-    url = "https://docs.example.com/guides/browser-checks/troubleshooting-launch-failures.html"
-    assert _safe_line(f"See {url} for help.") == f"See {url} for help."
-    path = "/home/box/.cache/ms-playwright/chromium-1243/chrome-linux/headless_shell.log"
-    assert _safe_line(f"Error: executable doesn't exist at {path}.") == f"Error: executable doesn't exist at {path}."
-    query = "https://example.com/search?q=browser+launch&page=2"
-    assert _safe_line(f"Read {query} first") == f"Read {query} first"
-
-
-def test_a_url_hiding_base64_in_its_query_or_fragment_or_path_loses_only_that_part():
-    import base64
-    from app.main import _safe_line
-    from tests.test_web_artifact import FILES
-
-    blob = base64.b64encode(FILES["index.html"].encode()).decode()[:150]
-    assert _safe_line(f"Link https://example.com/x?data={blob} done") == "Link https://example.com/x?[data omitted] done"
-    assert _safe_line(f"Link https://example.com/x#{blob} done") == "Link https://example.com/x#[data omitted] done"
-    assert _safe_line(f"Link https://example.com/{blob[:60]}/page.html done") == "Link https://example.com/[data omitted]/page.html done"
-    assert blob[:20] not in _safe_line(f"https://example.com/?a={blob[:40]}&b=1")
-
-
-def test_qa_realistic_blockers_unchanged_except_the_two_accepted():
-    from app.main import _safe_line
-
-    changed = {m: _safe_line(m) for m in _QA_REALISTIC_BLOCKERS if _safe_line(m) != m}
-    assert changed == _EXPECTED_CHANGES, changed
+    assert plain_detail("Write a small Python program that adds 4 and 7.") == "Write a small Python program that adds 4 and 7."
+    assert plain_detail("Write a dog grooming price sheet: £25 a groom.") == "Write a dog grooming price sheet: £25 a groom."
+    for bad in ("Build <b>this</b>", "print(add(4, 7))", "x = 5", "see https://ex.com/a", "ZGVm IGFk ZChs ZWZ0 LCBy aWdo dCk6 CiAg",
+                "a " + "Z" * 16, "Ab3dE " * 10, "step ZGVmIGF step IGFkZCh step bGVmdCw"):
+        assert plain_detail(bad) == "", bad
+    long = plain_detail("word " * 60)
+    assert len(long) <= 121 and long.endswith("…")

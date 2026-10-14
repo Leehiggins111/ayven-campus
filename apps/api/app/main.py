@@ -616,148 +616,11 @@ def milo_status(project_id: str):
         raise HTTPException(404)
 
 
-import re as _re
-
-# Lines that are clearly multi-line or structural source are dropped whole.
-_STRUCTURAL_LINE = _re.compile(
-    r"```|~~~|<!doctype|<\s*/?\s*(?:html|head|body|script|style|meta|link)\b|ayven-artifact|"
-    r"^\s*[{\[]\s*[\"'{\[]|^\s*[}\]]|"                                    # JSON objects / arrays
-    r"^\s*(?:if|elif|else|for|while|class|def|try|except|finally|with|async\s+def)\b[^\n]*:\s*$|"  # Python blocks
-    r"^\s*(?:import\s+\w|from\s+[\w.]+\s+import\b|return\b|assert\s+\w+[\w.]*\()",
-    _re.I,
-)
-# Inline spans replaced by a marker; the words around them stay.
-_INLINE_CODE = [
-    _re.compile(r"`[^`\n]*`"),                                                     # inline backticks
-    _re.compile(r"<\s*/?\s*[A-Za-z!?][^<>\n]{0,200}>"),                             # tags such as <form>
-    _re.compile(r"\b[A-Za-z_][\w.]*\((?:[^()\n]|\((?:[^()\n]|\([^()\n]*\))*\))*\)"),  # call expressions
-    _re.compile(r"\breturn\s+[\w.\[\]]+\s*(?:[-+*/%]|[<>!=]=?)\s*[\w.\[\]]+"),       # return left + right
-    _re.compile(r"\b[A-Za-z_][\w.\[\]]*\s*(?<![=!<>+\-*/])=(?!=)\s*[^\s,;]+"),        # x = 5
-    _re.compile(r"\S*=>\S*"),                                                       # arrow functions
-    _re.compile(r"\b(?:localStorage|sessionStorage|document|window|console|JSON)\.\w+\S*"),
-]
-_BLOB = _re.compile(r"\S{40,}")
-_ENCODED_TOKEN = _re.compile(r"^[A-Za-z0-9+/=_-]{8,}$")
-_HEX_TOKEN = _re.compile(r"^[0-9A-Fa-f]{8,}$")
-_URL = _re.compile(r"^(https?://[A-Za-z0-9.-]+(?::\d+)?)(/[^\s?#]*)?(\?[^\s#]*)?(#\S*)?$")
-_PATH_EXT = _re.compile(r"\.[A-Za-z0-9]{1,8}$")
-
-
-def _encoded_shape(token: str) -> bool:
-    """Digits, internal capitals or +/= mark an encoded token rather than a word."""
-    return bool(_re.search(r"[0-9+/=]", token) or _re.search(r".[A-Z]", token) and _re.search(r"[a-z]", token))
-
-
-def _suspicious_value(value: str) -> bool:
-    return len(value) >= 40 or (len(value) >= 16 and _ENCODED_TOKEN.match(value) is not None
-                                and (_encoded_shape(value) or _HEX_TOKEN.match(value) is not None))
-
-
-def _blob_token(match) -> str:
-    """40+ chars without whitespace is data, except a well-formed URL or file path."""
-    token = match.group(0)
-    core = token.rstrip(".,;:!?)]'\"")
-    tail = token[len(core):]
-    url = _URL.match(core)
-    if url and len(core) <= 200:
-        base, path, query, fragment = (part or "" for part in url.groups())
-        path = "/".join(_DATA if len(seg) >= 40 else seg for seg in path.split("/"))
-        if query and any(_suspicious_value(v) for v in _re.split(r"[?&=;]", query) if v):
-            query = "?" + _DATA
-        if fragment and any(_suspicious_value(v) for v in _re.split(r"[#&=;]", fragment) if v):
-            fragment = "#" + _DATA
-        return base + path + query + fragment + tail
-    if "/" in core and _PATH_EXT.search(core) and all(len(seg) < 40 for seg in core.split("/")):
-        return token
-    return _DATA
-
-
-def _chunk_runs(text: str) -> str:
-    """3+ consecutive base64/hex-looking tokens of 8+ chars are data split into chunks."""
-    tokens = text.split(" ")
-    out, i = [], 0
-    while i < len(tokens):
-        j = i
-        while j < len(tokens) and _ENCODED_TOKEN.match(tokens[j].rstrip(".,;:")):
-            j += 1
-        run = [t.rstrip(".,;:") for t in tokens[i:j]]
-        if len(run) >= 3 and (any(_encoded_shape(t) for t in run) or all(_HEX_TOKEN.match(t) for t in run)):
-            out.append(_DATA)
-            i = j
-            continue
-        out.append(tokens[i])
-        i += 1
-    return " ".join(out)
-_MARK = "[code omitted]"
-_DATA = "[data omitted]"
-
-
-def _structural(line: str) -> bool:
-    if line.startswith(("    ", "\t")) and line.strip():
-        return True
-    if _STRUCTURAL_LINE.search(line):
-        return True
-    # Minified source: several braces/semicolons on one line.
-    return len(_re.findall(r"[{};]", line)) >= 3
-
-
-def _safe_line(text: str, limit: int = 300) -> str:
-    """One short line of readable prose from a free-text field.
-
-    Order: decode HTML entities; drop structural source lines; replace blobs (40+ chars
-    without whitespace) with [data omitted]; replace inline code spans with [code omitted];
-    then truncate, so a cut can never leave half a blob or a fragment of source behind.
-    """
-    import html
-
-    raw = html.unescape(html.unescape(str(text or "")))
-    kept, dropped = [], False
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        if _structural(line):
-            dropped = True
-            continue
-        kept.append(line.strip())
-    out = _re.sub(r"\s+", " ", " ".join(kept)).strip()   # runs split across lines join here
-    out = _BLOB.sub(_blob_token, out)
-    out = _chunk_runs(out)
-    # URLs that survived the blob rule are links, not code: shield them from the inline patterns.
-    shielded = []
-
-    def _shield(match):
-        shielded.append(match.group(0))
-        return f"\x00{len(shielded) - 1}\x00"
-
-    out = _re.sub(r"https?://[^\s<>`]+?(?=[.,;:!?)\]'\"]*(?:\s|$))", _shield, out)
-    for pattern in _INLINE_CODE:
-        out = pattern.sub(_MARK, out)
-    out = _re.sub(r"\x00(\d+)\x00", lambda m: shielded[int(m.group(1))], out)
-    if dropped:
-        out = (out + " " + _MARK).strip()
-    out = _re.sub(r"(?:\[code omitted\]\s*){2,}", _MARK + " ", out)
-    out = _re.sub(r"\s+", " ", out).strip()
-    if len(out) > limit:
-        out = out[: limit - 1].rstrip() + "…"
-        # A cut must not leave a partial marker, a fresh blob or a chunk run.
-        out = _chunk_runs(_BLOB.sub(_blob_token, out))
-    return out
-
-
-def _meaningful(text: str) -> bool:
-    return bool(_re.search(r"[A-Za-z]{3,}", text.replace(_MARK, "").replace(_DATA, "")))
-
-
 def _failed_package_report(package_id: str) -> bytes | None:
-    """report.md for a FAILED package, built from an allowlist of structured fields only.
+    """report.md for a FAILED package: fixed wording per failure type (app/failure_report.py).
 
-    Heading, job brief, failure reason, blockers and test/browser status. The report body
-    (findings) is never copied, so no generated source can reach the customer. None when the
-    package is not FAILED; 404 when there is nothing to explain (no reason and no blocker).
+    None when the package is not FAILED; 404 when there is nothing to report.
     """
-    import json
-    import re
-
     rows = _rows(
         "SELECT project_id, title, objective, task_class, workflow_state, findings, error, observability_json "
         "FROM work_packages WHERE id=?",
@@ -766,74 +629,24 @@ def _failed_package_report(package_id: str) -> bytes | None:
     if not rows or (rows[0]["workflow_state"] or "") != "FAILED":
         return None
     row = rows[0]
-    from .goals import list_blockers
+    from . import failure_report
+    from .goals import get_goal, list_blockers
 
-    blockers = [_safe_line(b["reason"]) for b in list_blockers(package_id=package_id)]
-    blockers = [b for b in blockers if b]
-    reason = _safe_line(row["error"] or "")
-    blockers = [b for b in blockers if _meaningful(b)] or blockers
-    if not reason and not blockers and not (row["findings"] or "").strip():
+    blockers = list_blockers(package_id=package_id)
+    blockers.reverse()  # oldest first
+    if not (row["error"] or "").strip() and not blockers and not (row["findings"] or "").strip():
         raise HTTPException(404, "This job didn't produce a report.")
     project = _rows("SELECT title, objective FROM projects WHERE id=?", (row["project_id"],))
-    brief = _safe_line((project[0]["objective"] if project else "") or row["objective"] or "")
-    title = _safe_line((project[0]["title"] if project else "") or row["title"] or "", 120)
-
-    evidence = {}
-    for column in ("observability_json",):
-        try:
-            data = json.loads(row[column] or "{}")
-        except (TypeError, ValueError):
-            data = {}
-        if isinstance(data, dict):
-            for key in ("software_execution", "web_execution"):
-                if data.get(key) and not evidence.get(key):
-                    evidence[key] = data[key]
-    checks = []
-    task_class = row["task_class"] or ""
-    if not _meaningful(reason):
-        # Never an empty reason: say what failed, from the evidence.
-        if task_class == "software_build" or evidence.get("software_execution"):
-            reason = "Build failed: tests did not pass."
-        elif task_class in ("website_build", "application_build") or evidence.get("web_execution"):
-            reason = "Build failed: browser check did not pass."
-        else:
-            reason = "The job failed its checks."
-    software = evidence.get("software_execution") or {}
-    web = evidence.get("web_execution") or {}
-    if task_class == "software_build" or software:
-        passed = isinstance(software, dict) and software.get("passed") is True
-        checks.append(f"Tests: {'PASSED' if passed else 'FAILED'}")
-        if isinstance(software, dict) and not passed and software.get("exit_code") is not None:
-            checks.append(f"Test exit code: {int(software.get('exit_code') or 0)}")
-    if task_class in ("website_build", "application_build") or web:
-        passed = isinstance(web, dict) and web.get("passed") is True and web.get("status") == "ok"
-        checks.append(f"Tests: {'PASSED' if passed else 'FAILED'}")
-        status = _safe_line((web or {}).get("status") or "not run", 40) if isinstance(web, dict) else "not run"
-        detail = _safe_line(((web or {}).get("error") or "").splitlines()[0] if isinstance(web, dict) and web.get("error") else "", 160)
-        checks.append(f"Browser check: {'passed' if passed else 'failed'} ({status})" + (f": {detail}" if detail else ""))
-    if not checks:
-        # Only the structured status line is read from the report, never its body.
-        match = re.search(r"^Tests: (PASSED|FAILED)\s*$", row["findings"] or "", re.M)
-        if match:
-            checks.append(f"Tests: {match.group(1)}")
-
-    lines = ["# FAILED: this job did not pass its checks", "",
-             "Nothing was delivered for approval. No source files or generated content are included.", ""]
-    if title or brief:
-        lines += ["## Job", ""]
-        if title:
-            lines.append(f"Title: {title}")
-        if brief:
-            lines.append(f"Brief: {brief}")
-        lines.append("")
-    if reason:
-        lines += ["## Failure reason", "", reason, ""]
-    if blockers:
-        lines += ["## Blockers", ""] + [f"- {b}" for b in blockers] + [""]
-    if checks:
-        lines += ["## Checks", ""] + [f"- {c}" for c in checks] + [""]
-    lines += ["Nothing was sent.", ""]
-    return "\n".join(lines).encode("utf-8")
+    report = failure_report.build(
+        task_class=row["task_class"] or "",
+        error=row["error"] or "",
+        blockers=blockers,
+        evidence=failure_report.evidence_from(row["observability_json"] or ""),
+        title=(project[0]["title"] if project else "") or row["title"] or "",
+        brief=(project[0]["objective"] if project else "") or row["objective"] or "",
+        goal=get_goal(row["project_id"]),
+    )
+    return report.encode("utf-8")
 
 
 @app.get("/work-packages/{package_id}/bundle.zip")
