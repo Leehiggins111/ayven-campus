@@ -616,48 +616,75 @@ def milo_status(project_id: str):
         raise HTTPException(404)
 
 
-_CODE_LINE = None
+import re as _re
+
+# Lines that are clearly multi-line or structural source are dropped whole.
+_STRUCTURAL_LINE = _re.compile(
+    r"```|~~~|<!doctype|<\s*/?\s*(?:html|head|body|script|style|meta|link)\b|ayven-artifact|"
+    r"^\s*[{\[]\s*[\"'{\[]|^\s*[}\]]|"                                    # JSON objects / arrays
+    r"^\s*(?:if|elif|else|for|while|class|def|try|except|finally|with|async\s+def)\b[^\n]*:\s*$|"  # Python blocks
+    r"^\s*(?:import\s+\w|from\s+[\w.]+\s+import\b|return\b|assert\s+\w+[\w.]*\()",
+    _re.I,
+)
+# Inline spans replaced by a marker; the words around them stay.
+_INLINE_CODE = [
+    _re.compile(r"`[^`\n]*`"),                                                     # inline backticks
+    _re.compile(r"<\s*/?\s*[A-Za-z!?][^<>\n]{0,200}>"),                             # tags such as <form>
+    _re.compile(r"\b[A-Za-z_][\w.]*\((?:[^()\n]|\((?:[^()\n]|\([^()\n]*\))*\))*\)"),  # call expressions
+    _re.compile(r"\breturn\s+[\w.\[\]]+\s*(?:[-+*/%]|[<>!=]=?)\s*[\w.\[\]]+"),       # return left + right
+    _re.compile(r"\b[A-Za-z_][\w.\[\]]*\s*(?<![=!<>+\-*/])=(?!=)\s*[^\s,;]+"),        # x = 5
+    _re.compile(r"\S*=>\S*"),                                                       # arrow functions
+    _re.compile(r"\b(?:localStorage|sessionStorage|document|window|console|JSON)\.\w+\S*"),
+]
+_BLOB = _re.compile(r"\S{40,}")
+_MARK = "[code omitted]"
+_DATA = "[data omitted]"
 
 
-def _code_like(line: str) -> bool:
-    """A line that looks like source, markup, a fence or a data blob."""
-    import re
-
-    global _CODE_LINE
-    if _CODE_LINE is None:
-        _CODE_LINE = re.compile(
-            r"(```|~~~|<\s*/?\s*[A-Za-z!?][^>]*>|^\s*[{}\[\]]|[{};]\s*$|\{\s*\"|\":\s*\"|=>|"
-            r"\b(?:def|class|return|import|from\s+\S+\s+import|assert|function|let|const|var|if\s*\(|for\s*\(|while\s*\(|"
-            r"lambda|print\s*\(|console\.|document\.|window\.|localStorage|JSON\.)\b|"
-            r"[A-Za-z_][\w.]*\s*\([^)]*\)\s*[:{]|[A-Za-z_][\w.]*\s*=\s*[^=\s]|ayven-artifact|<!doctype)",
-            re.I,
-        )
+def _structural(line: str) -> bool:
     if line.startswith(("    ", "\t")) and line.strip():
         return True
-    return bool(_CODE_LINE.search(line))
+    if _STRUCTURAL_LINE.search(line):
+        return True
+    # Minified source: several braces/semicolons on one line.
+    return len(_re.findall(r"[{};]", line)) >= 3
 
 
 def _safe_line(text: str, limit: int = 300) -> str:
-    """One short line of prose. Code-like content is collapsed to a marker, never quoted."""
-    import re
+    """One short line of readable prose from a free-text field.
 
-    kept = []
-    omitted = False
-    for line in str(text or "").splitlines():
+    Order: decode HTML entities; drop structural source lines; replace blobs (40+ chars
+    without whitespace) with [data omitted]; replace inline code spans with [code omitted];
+    then truncate, so a cut can never leave half a blob or a fragment of source behind.
+    """
+    import html
+
+    raw = html.unescape(html.unescape(str(text or "")))
+    kept, dropped = [], False
+    for line in raw.splitlines():
         if not line.strip():
             continue
-        if _code_like(line):
-            omitted = True
+        if _structural(line):
+            dropped = True
             continue
         kept.append(line.strip())
-    out = re.sub(r"\s+", " ", " ".join(kept)).strip()
-    # Belt and braces: drop any fragment that still looks like markup or a call.
-    out = re.sub(r"<[^>]{0,200}>", "", out)
-    if omitted:
-        out = (out + " [code omitted]").strip()
+    out = " ".join(kept)
+    out = _BLOB.sub(_DATA, out)
+    for pattern in _INLINE_CODE:
+        out = pattern.sub(_MARK, out)
+    if dropped:
+        out = (out + " " + _MARK).strip()
+    out = _re.sub(r"(?:\[code omitted\]\s*){2,}", _MARK + " ", out)
+    out = _re.sub(r"\s+", " ", out).strip()
     if len(out) > limit:
         out = out[: limit - 1].rstrip() + "…"
+        # A cut must not leave a partial marker or a fresh blob.
+        out = _BLOB.sub(_DATA, out)
     return out
+
+
+def _meaningful(text: str) -> bool:
+    return bool(_re.search(r"[A-Za-z]{3,}", text.replace(_MARK, "").replace(_DATA, "")))
 
 
 def _failed_package_report(package_id: str) -> bytes | None:
@@ -683,6 +710,7 @@ def _failed_package_report(package_id: str) -> bytes | None:
     blockers = [_safe_line(b["reason"]) for b in list_blockers(package_id=package_id)]
     blockers = [b for b in blockers if b]
     reason = _safe_line(row["error"] or "")
+    blockers = [b for b in blockers if _meaningful(b)] or blockers
     if not reason and not blockers and not (row["findings"] or "").strip():
         raise HTTPException(404, "This job didn't produce a report.")
     project = _rows("SELECT title, objective FROM projects WHERE id=?", (row["project_id"],))
@@ -701,6 +729,14 @@ def _failed_package_report(package_id: str) -> bytes | None:
                     evidence[key] = data[key]
     checks = []
     task_class = row["task_class"] or ""
+    if not _meaningful(reason):
+        # Never an empty reason: say what failed, from the evidence.
+        if task_class == "software_build" or evidence.get("software_execution"):
+            reason = "Build failed: tests did not pass."
+        elif task_class in ("website_build", "application_build") or evidence.get("web_execution"):
+            reason = "Build failed: browser check did not pass."
+        else:
+            reason = "The job failed its checks."
     software = evidence.get("software_execution") or {}
     web = evidence.get("web_execution") or {}
     if task_class == "software_build" or software:

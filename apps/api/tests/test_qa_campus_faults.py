@@ -736,3 +736,231 @@ def test_failed_report_keeps_the_job_brief_and_status_but_never_the_report_body(
     assert "Brief: Build a customer job tracking application." in report
     assert "- Tests: FAILED" in report and "Browser check: failed" in report
     assert "Some narrative" not in report
+
+
+# Sanitiser hardening (QA retest d8d6127): blobs, Python blocks, inline-only replacement, fallback ----
+
+def _qa_d8d_variants():
+    import base64
+    import html as _html
+    import json as _json
+    import re as _re
+    from tests.test_web_artifact import FILES
+
+    HTML, JS = FILES["index.html"], FILES["app.js"]
+    PY = "def add(left, right):\n    return left + right\n\nif __name__ == '__main__':\n    print(add(4, 7))\n"
+    TPY = "import main\ndef test_add():\n    assert main.add(4, 7) == 11\n"
+    ART = _json.dumps({"files": FILES})
+    MIN = _re.sub(r"\s*\n\s*", " ", JS)
+    SPLIT = "The build failed while checking the page. " + ("x" * 250) + " " + JS
+    SPLIT2 = "Step one passed and step two passed and the form saved a record and the list rendered fine. " * 3 + "\nlet jobs=[]\ntry{jobs=JSON.parse(localStorage.getItem('jobs')||'[]')}catch(e){}"
+    B64 = base64.b64encode(HTML.encode()).decode()
+    ENT = _html.escape(HTML)
+
+    def fence(tag, src):
+        return f"```{tag}\n{src}\n```"
+
+    return [
+        ("unfenced web source", "W", "findings", HTML + "\n" + JS),
+        ("indented code block", "W", "findings", "Report\n\n" + "\n".join("    " + l for l in HTML.splitlines())),
+        ("~~~ fence", "W", "findings", "~~~html\n" + HTML + "\n~~~"),
+        ("``` no language", "W", "findings", fence("", JS)),
+        ("```HTML uppercase", "W", "findings", fence("HTML", HTML)),
+        ("```index.HTML", "W", "findings", fence("index.HTML", HTML)),
+        ("```javascript", "W", "findings", fence("javascript", JS)),
+        ("unfenced ayven-artifact JSON", "W", "findings", "ayven-artifact " + ART),
+        ("unfenced python (program)", "P", "findings", PY + "\n" + TPY),
+        ("```python (program)", "P", "findings", fence("python", PY)),
+        ("source quoted in blocker", "W", "blocker", "Build failed: the page is:\n" + fence("html", HTML)),
+        ("source in job title", "W", "title", HTML),
+        ("source in job brief", "W", "objective", "Build this exactly:\n" + HTML + "\n" + JS),
+        ("python in brief (program)", "P", "objective", "Write this program: " + PY),
+        ("lone __main__ line in brief", "P", "objective", "Run it with\nif __name__ == '__main__':"),
+        ("one-line minified JS in error", "W", "error", MIN),
+        ("one-line minified JS in blocker", "W", "blocker", MIN),
+        ("minified JS in title", "W", "title", MIN),
+        ("source past 300 cap (error)", "W", "error", SPLIT),
+        ("prose then code lines (blocker)", "W", "blocker", SPLIT2),
+        ("HTML entities in error", "W", "error", "Rendered page: " + ENT),
+        ("HTML entities in brief", "W", "objective", "Use this page " + _html.escape("<script>localStorage.setItem('a','b')</script>")),
+        ("base64 in error", "W", "error", "Artifact payload: " + B64),
+        ("base64 in blocker", "W", "blocker", "Bundle " + base64.b64encode(PY.encode()).decode()),
+        ("base64 html-escaped in blocker", "W", "blocker", "Bundle " + _html.escape(base64.b64encode(HTML.encode()).decode())),
+        ("source in browser error", "W", "weberr", "Error: page threw\n" + JS),
+        ("one-line source in browser error", "W", "weberr", MIN),
+        ("entities in browser error", "W", "weberr", "Error: " + ENT.replace("\n", " ")),
+        ("python call no colon in error", "P", "error", "Build failed: print(add(4, 7)) gave 12; expected sum 11 with add(left, right) return left + right"),
+    ], FILES, PY, TPY
+
+
+def _qa_scan(text: str, fragments: set) -> list:
+    import base64
+    import html as _html
+    import re as _re
+
+    hits = []
+    views = {"raw": text, "unescaped": _html.unescape(text)}
+    for m in _re.findall(r"[A-Za-z0-9+/]{16,}={0,2}", text):
+        for pad in ("", "=", "=="):
+            try:
+                views["b64"] = views.get("b64", "") + base64.b64decode(m[: len(m) - len(m) % 4] + pad).decode("utf8", "ignore")
+                break
+            except Exception:
+                continue
+    for name, view in views.items():
+        found = [f for f in fragments if f in view]
+        if found:
+            hits.append(f"{name}: fragment {found[0]!r}")
+        for marker in ["```", "~~~", "<!doctype", "<script", "localStorage", "ayven-artifact", "def add", "return left",
+                       "assert main.add", "JSON.parse", "=>", "__main__"]:
+            if marker.lower() in view.lower():
+                hits.append(f"{name}: marker {marker!r}")
+    return sorted(set(hits))
+
+
+def _inject_failed(which: str, field: str, value: str) -> str:
+    import json as _json
+    from app.goals import add_blocker
+    from app.intelligence.store import update_package as store_update
+    from app.intelligence.workflow import log_transition
+
+    task = "software_build" if which == "P" else "application_build"
+    objective = "Write a small Python program that adds 4 and 7." if which == "P" else "Build a customer job tracking application."
+    project_id = _project(objective)
+    parent = insert_package(
+        project_id=project_id, task_id="d8-" + uuid.uuid4().hex[:6], title="Research programme", objective=objective,
+        origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="failed",
+    )
+    obs = {"software_execution": {"passed": False, "exit_code": 1}} if which == "P" else {"web_execution": {"passed": False, "status": "unavailable", "error": "Executable doesn't exist"}}
+    fields = {"findings": "Tests: FAILED\n", "error": "Build failed: the checks did not pass.", "task_class": task}
+    blocker = "Build failed: the checks did not pass."
+    if field in ("findings", "error"):
+        fields[field] = value
+    elif field == "blocker":
+        blocker = value
+    elif field == "weberr":
+        obs["web_execution"]["error"] = value
+    elif field in ("title", "objective"):
+        conn = connect()
+        conn.execute(f"UPDATE projects SET {field}=? WHERE id=?", (value, project_id))
+        conn.commit()
+        conn.close()
+        fields[field] = value
+    fields["observability_json"] = _json.dumps(obs)
+    store_update(parent, **fields)
+    log_transition(parent, "FAILED", "build failed")
+    add_blocker(project_id, "error", blocker, "Fix it", package_id=parent)
+    response = TestClient(app).get(f"/work-packages/{parent}/bundle.zip")
+    assert response.status_code == 200, response.text
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    assert archive.namelist() == ["report.md"]
+    return archive.read("report.md").decode()
+
+
+def test_every_qa_d8d_variant_is_clean_over_http():
+    import re as _re
+
+    variants, files, py, tpy = _qa_d8d_variants()
+    fragments = set()
+    for src in list(files.values()) + [py, tpy]:
+        for line in src.splitlines():
+            line = line.strip()
+            for i in range(0, max(1, len(line) - 15), 8):
+                frag = line[i:i + 16]
+                if len(frag) == 16 and _re.search(r"[(){};=<>\[\]]", frag):
+                    fragments.add(frag)
+    leaks = {}
+    for name, which, field, value in variants:
+        report = _inject_failed(which, field, value)
+        assert report.startswith("# FAILED") and "Nothing was sent." in report, name
+        hits = _qa_scan(report, fragments)
+        if hits:
+            leaks[name] = (hits, report)
+    assert not leaks, leaks
+
+
+def test_base64_is_replaced_in_full_and_when_it_would_be_truncated():
+    import base64
+    from app.main import _safe_line
+    from tests.test_web_artifact import FILES
+
+    blob = base64.b64encode(FILES["index.html"].encode()).decode()
+    assert _safe_line("Payload: " + blob) == "Payload: [data omitted]"
+    # Truncation happens after the blob is replaced, so no decodable prefix survives a cut.
+    out = _safe_line("Payload: " + blob, limit=120)
+    assert "[data omitted]" in out and blob[:40] not in out
+    out = _safe_line(("word " * 50) + blob, limit=300)
+    assert blob[:20] not in out
+    # Split across lines, each piece still 40+ characters.
+    assert blob[:60] not in _safe_line("Payload:\n" + blob[:60] + "\n" + blob[60:120])
+
+
+def test_a_lone_main_guard_and_python_block_lines_are_dropped():
+    from app.main import _safe_line
+
+    assert "__main__" not in _safe_line("if __name__ == '__main__':")
+    for line in ("if x > 3:", "for item in items:", "while True:", "class Thing:", "def add(a, b):"):
+        out = _safe_line("Context words\n" + line)
+        assert out == "Context words [code omitted]", (line, out)
+
+
+_QA_REALISTIC_BLOCKERS = [
+    "Build failed: the program's tests did not pass. AssertionError",
+    "Build failed: the browser check did not pass (Error: BrowserType.launch: Failed to launch chromium because executable doesn't exist at /nonexistent/chrome).",
+    "The delivery review did not return valid JSON, so the work could not be checked.",
+    "Budget cap reached: spent £1.48 of £1.50; stopping before the next step.",
+    "Criterion not met: Full groom price is £25 (report says £30).",
+    "Test failed: expected 11, got 12.",
+    "AssertionError: assert 12 == 11",
+    "Timeout after 120s waiting for the model.",
+    "Model returned HTTP 429 (rate limited); retry later.",
+    "The page has no <form> element, so jobs cannot be created.",
+    "Clicking Save did nothing: the list stayed empty after reload.",
+    "Validation missing: an empty customer name was accepted.",
+    "Edit button not found; selector #edit-1 matched nothing.",
+    "Error: page.click: Timeout 30000ms exceeded.",
+    "TypeError: Cannot read properties of null (reading 'value')",
+    "Network error: connect ECONNREFUSED 127.0.0.1:8080",
+    "Needs Lee: confirm the price list before we publish anything.",
+    "The brief asks for x = 5 items per page but the page shows 10.",
+    "Exit code 1 from pytest; 2 tests failed, 1 passed.",
+    "Missing file: index.html was not produced.",
+    "Price must be at least £10; the sheet lists a £5 nail trim.",
+    "Reason: the customer list is not saved between visits {persistence}.",
+    "Step 3 of 5 failed; see the browser check.",
+    "ModuleNotFoundError: No module named 'main'",
+    "Form submits but the new job is not shown; expected 1 row, found 0.",
+]
+
+# Only the code span itself may change; the rest must read as written.
+_EXPECTED_CHANGES = {
+    "The page has no <form> element, so jobs cannot be created.": "The page has no [code omitted] element, so jobs cannot be created.",
+    "The brief asks for x = 5 items per page but the page shows 10.": "The brief asks for [code omitted] items per page but the page shows 10.",
+}
+
+
+@pytest.mark.parametrize("message", _QA_REALISTIC_BLOCKERS)
+def test_realistic_blockers_keep_their_meaningful_text(message):
+    from app.main import _safe_line
+
+    assert _safe_line(message) == _EXPECTED_CHANGES.get(message, message)
+
+
+def test_inline_code_is_replaced_in_place_and_the_sentence_survives():
+    from app.main import _safe_line
+
+    assert _safe_line("Build failed: `print(add(4, 7))` gave 12, expected 11.") == "Build failed: [code omitted] gave 12, expected 11."
+    assert _safe_line("Build failed: print(add(4, 7)) gave 12, expected 11.") == "Build failed: [code omitted] gave 12, expected 11."
+    assert _safe_line("The delivery review did not return valid JSON.") == "The delivery review did not return valid JSON."
+
+
+def test_an_empty_cleaned_reason_falls_back_to_what_failed():
+    from app.main import _safe_line
+
+    assert _safe_line("```python\ndef add(a, b):\n    return a\n```") == "[code omitted]"
+    program = _inject_failed("P", "error", "```python\ndef add(a, b):\n    return a\n```")
+    assert program.split("## Failure reason")[1].split("##")[0].strip() == "Build failed: tests did not pass."
+    web = _inject_failed("W", "error", "<!doctype html><html><body></body></html>")
+    assert web.split("## Failure reason")[1].split("##")[0].strip() == "Build failed: browser check did not pass."
+    empty = _inject_failed("W", "error", "")
+    assert "Build failed: browser check did not pass." in empty
