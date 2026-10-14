@@ -142,3 +142,17 @@ Criteria checks are deterministic whole-token coverage, not a model judgement. K
 - **Negation.** "No setup fee" is met by a report that says "a setup fee applies".
 - **Hyphen versus space.** "30-day" and "30 day" are different tokens.
 - **Plurals.** "prospect" does not match "prospects".
+
+## State at d198768 (14 Oct 2026): budget, timeouts, restart
+
+- **Metered model calls:** every workforce call goes through `models.complete_role` → `app/metering.py:metered_call`. It checks the job cap before the call (`budget.check_and_reserve`) and commits the cost to `spend_ledger` afterwards, including for failed or timed-out calls (charged for the time they ran). The job id comes from a context variable set by the durable steps and by `Programme`.
+- **Total per-call deadline:** `models._post` streams the response and stops at `AYVEN_TIMEOUT_MODEL`, else `AYVEN_STAGE_TIMEOUT_S`, else `AYVEN_LLM_TIMEOUT_S`. A slow drip can't keep a call open. After 3 timeouts in a row (`AYVEN_MODEL_TIMEOUTS_BEFORE_STOP`) the job stops.
+- **Restart result cache:** finished calls are stored in `model_call_cache`, keyed by job + step key + occurrence. After a crash, the restarted process reuses them instead of calling and charging again. The cache is cleared when a job finishes or fails.
+- **Budget and timeout stops end FAILED:** a budget stop is final (never retried) and adds a `cap` blocker. A timeout adds a `timeout` blocker ("model call timed out"). Neither creates an approval, all criteria are not_met, other unfinished packages are cancelled, and `bundle.zip` contains only `report.md`.
+- **Tests and CI:** full suite 483 passed, 1 skipped (run alone, with `test_browser_use_reads_a_local_http_page` deselected). CI is green on d198768.
+
+### Known gaps
+- Paid escalation is recorded by `llm.py` with no job id, so it isn't counted in the per-job cap. It's off by default.
+- qwen-agent live employee mode doesn't go through `complete_role`, so it isn't metered.
+- The crash/restart test only covers a crash at the EMPLOYEE stage.
+- An over-cap job ends FAILED. The older `goals.halt_for_cap` design (pause plus approval to raise the budget) is not used on this path.
