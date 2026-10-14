@@ -473,6 +473,21 @@ with TestClient(app) as client:
     assert r.status_code == 200, r.text
     s = failed_job_checks(client, auth, r.json()["project_id"], criteria)
     assert s["web_artifact_verified"] is False
+    # The FAILED web report carries no app source: no fixture content, no fenced html/css/js, no artifact blob.
+    import io, re, zipfile
+    z = client.get(f"/work-packages/{s['package_id']}/bundle.zip", headers=auth)
+    assert z.status_code == 200, z.text
+    archive = zipfile.ZipFile(io.BytesIO(z.content))
+    assert archive.namelist() == ["report.md"], archive.namelist()
+    report = archive.read("report.md").decode()
+    for name, source in FILES.items():
+        assert source not in report, name
+        for line in [ln for ln in source.splitlines() if len(ln.strip()) > 20][:5]:
+            assert line not in report, (name, line)
+    assert not re.search(r"^```(?:[A-Za-z0-9_./-]+\.(?:html?|css|js)|ayven-artifact|html|css|js|javascript)\b", report, re.M), report
+    assert "localStorage" not in report and "<!doctype" not in report.lower()
+    # Failure narrative is kept.
+    assert report.startswith("# FAILED") and "Build failed" in report and "Tests: FAILED" in report, report[:800]
 print("OK")
 '''
     # Simulated launch failure: the browser executable does not exist.
@@ -629,3 +644,19 @@ def test_a_failed_package_without_a_report_is_404():
     )
     log_transition(parent, "FAILED", "planning failed")
     assert TestClient(app).get(f"/work-packages/{parent}/bundle.zip").status_code == 404
+
+
+def test_failed_report_stripper_keeps_narrative_and_drops_every_fenced_source():
+    from app.main import _strip_failed_report_sources
+    from tests.test_web_artifact import FILES
+
+    report = "# Browser application deliverable\nTests: FAILED\nTitle: Local job tracker\n## Browser checks\n- Create: failed (1280px)\n## Defect\nExecutable doesn't exist\n## Source files\n"
+    for name, source in FILES.items():
+        report += f"## {name}\n```{name}\n{source}\n```\n"
+    report += '## Artifact source\n```ayven-artifact\n{"index.html":"<h1>x</h1>"}\n```\n\nNothing was sent.\n'
+    out = _strip_failed_report_sources(report)
+    for keep in ("Tests: FAILED", "Title: Local job tracker", "## Browser checks", "Create: failed", "## Defect", "Executable doesn't exist", "Nothing was sent."):
+        assert keep in out, keep
+    for name, source in FILES.items():
+        assert source not in out and f"## {name}" not in out and f"```{name}" not in out
+    assert "```" not in out and "Source files" not in out and "ayven-artifact" not in out

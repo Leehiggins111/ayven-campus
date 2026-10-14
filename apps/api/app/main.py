@@ -629,7 +629,7 @@ def _failed_package_report(package_id: str) -> bytes | None:
     from .goals import list_blockers
 
     blockers = [b["reason"] for b in list_blockers(package_id=package_id)]
-    findings = (row["findings"] or "").strip()
+    findings = _strip_failed_report_sources(row["findings"] or "").strip()
     if not findings:
         raise HTTPException(404, "This job didn't produce a report.")
     lines = ["# FAILED: this job did not pass its checks", "", "Nothing was delivered for approval and no source files are included.", ""]
@@ -639,6 +639,33 @@ def _failed_package_report(package_id: str) -> bytes | None:
         lines += ["## Blockers", ""] + [f"- {reason}" for reason in blockers] + [""]
     lines += ["## Report", "", findings, ""]
     return "\n".join(lines).encode("utf-8")
+
+
+def _strip_failed_report_sources(findings: str) -> str:
+    """Drop embedded app sources from a FAILED report. The zip already omits the named files.
+
+    Web and application reports fence each file and the ayven-artifact JSON. A FAILED
+    package must not leak those; keep the failure heading, checks, defects and narrative.
+    """
+    import re
+
+    text = findings or ""
+    # Fenced copies of app files and the machine-readable artifact blob.
+    text = re.sub(
+        r"^```(?:ayven-artifact|[A-Za-z0-9_./-]+\.(?:html?|css|js|mjs|ts|tsx|jsx|py))\s*\n.*?\n```\s*$",
+        "",
+        text,
+        flags=re.M | re.S,
+    )
+    # Headings that only introduced those files.
+    text = re.sub(
+        r"^## (?:Source files|Artifact source|[A-Za-z0-9_./-]+\.(?:html?|css|js|mjs|ts|tsx|jsx|py))\s*$",
+        "",
+        text,
+        flags=re.M,
+    )
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 @app.get("/work-packages/{package_id}/bundle.zip")
