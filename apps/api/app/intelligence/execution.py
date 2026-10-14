@@ -1025,6 +1025,17 @@ class Programme:
             update_package(self.parent_id, findings=findings, status="failed", stage="delivery_incomplete", requires_approval=0, error=blocker, next_action="Review missing items and retry the job")
             _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="The requested deliverable is incomplete", progress=1)
             return
+        build_failure = _failed_build_reason(self.task_class, self.research)
+        if build_failure:
+            # A program or web build whose tests or browser check did not pass is a failed
+            # step, exactly like a rejected review: FAILED with a blocker, never approval.
+            from ..goals import add_blocker
+
+            add_blocker(self.project_id, "error", build_failure, "Fix the build, then retry the job.", package_id=self.parent_id)
+            log_transition(self.parent_id, "FAILED", build_failure)
+            update_package(self.parent_id, findings=findings, status="failed", stage="build_failed", requires_approval=0, error=build_failure, next_action="Read the test output and retry the job")
+            _set_agent(MANAGER, visual_state="FAILED", status="idle", last_summary="The build did not pass its checks", progress=1)
+            return
         if decision == "ESCALATE":
             log_transition(self.parent_id, "ESCALATED", self.resolution.get("reason") or "escalated")
             if approval_required:
@@ -1069,6 +1080,23 @@ class Programme:
             mark_stage(self.parent_id, "MANAGER", project_id=self.project_id, task_id=self.task_id or "")
             _set_agent(MANAGER, visual_state="IDLE", status="idle", last_summary=decision, progress=1)
         _set_agent(SUPERVISOR, visual_state="COMPLETED", status="idle", last_summary="Audit complete", progress=1)
+
+
+def _failed_build_reason(task_class: str, research: dict) -> str:
+    """Why a program or web build failed its checks, or "" when it passed or isn't a build."""
+    if task_class == "software_build":
+        evidence = research.get("software_execution") or {}
+        if research.get("tests_passed") is True and evidence.get("passed") is True:
+            return ""
+        detail = str(evidence.get("stderr") or evidence.get("stdout") or evidence.get("error") or "the tests did not pass").strip()
+        return "Build failed: the program's tests did not pass. " + detail.splitlines()[-1][:300] if detail else "Build failed."
+    if task_class in {"website_build", "application_build"}:
+        evidence = research.get("web_execution") or {}
+        if research.get("tests_passed") is True and evidence.get("passed") is True and evidence.get("status") == "ok":
+            return ""
+        detail = str(evidence.get("error") or evidence.get("status") or "the browser check did not pass").strip()
+        return "Build failed: the browser check did not pass (" + detail.splitlines()[0][:300] + ")."
+    return ""
 
 
 def _delivery_blocker(review: dict, errors: list) -> str:

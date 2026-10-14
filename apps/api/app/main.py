@@ -655,20 +655,46 @@ def patch_package(package_id: str, body: CapIn):
 
 @app.post("/work-packages/{package_id}/accept")
 def accept_package(package_id: str):
-    rows = _rows("SELECT project_id FROM work_packages WHERE id=?", (package_id,))
+    """Lee accepts a result.
+
+    Approval rows are the gate a package waits on, so accepting a package that is
+    waiting for approval resolves that approval through POST /approvals/{id}/resolve:
+    one code path, the same resume, the same final state. Accept never moves a
+    package that is not waiting for approval and not already complete.
+    """
+    rows = _rows("SELECT project_id, workflow_state FROM work_packages WHERE id=?", (package_id,))
     if not rows:
         raise HTTPException(404)
+    project_id = rows[0]["project_id"]
+    state = rows[0]["workflow_state"] or ""
     from .blobs import list_files
     from .goals import mark_complete
     from .intelligence.budget import record_intervention
 
+    pending = _rows(
+        "SELECT id FROM approvals WHERE project_id=? AND status='pending' ORDER BY created_at DESC",
+        (project_id,),
+    )
+    if pending:
+        result = resolve(pending[0]["id"], ApprovalIn(decision="approved"))
+        record_intervention(project_id, "Lee accepted the result")
+        after = _rows("SELECT workflow_state FROM work_packages WHERE id=?", (package_id,))
+        final = (after[0]["workflow_state"] if after else "") or ""
+        return {**result, "approval_id": pending[0]["id"], "workflow_state": final,
+                "status": "completed" if final == "COMPLETED" else final.lower()}
+    if state != "COMPLETED":
+        raise HTTPException(
+            409,
+            f"This package can't be accepted: it is {state or 'not finished'} and has no pending approval."
+            " A failed package must be fixed and retried.",
+        )
     names = [item["name"] for item in list_files(package_id)]
     try:
-        result = mark_complete(rows[0]["project_id"], names, True)
+        result = mark_complete(project_id, names, True)
     except ValueError as exc:
         raise HTTPException(409, str(exc))
-    record_intervention(rows[0]["project_id"], "Lee accepted the result")
-    return result
+    record_intervention(project_id, "Lee accepted the result")
+    return {**result, "workflow_state": state}
 
 
 @app.post("/work-packages/{package_id}/rework")

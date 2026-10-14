@@ -389,3 +389,123 @@ def test_a_review_failed_job_marks_its_criteria_not_met():
         {"criterion": "Mentions the cancellation policy", "status": "not_met"},
         {"criterion": "Covers payment terms", "status": "not_met"},
     ]
+
+
+# Failed builds never reach approval; accept and resolve agree -------------------------------
+
+def _http_env(tmp_path, name: str, **extra) -> dict:
+    import os
+    from pathlib import Path
+
+    api = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "PYTHONPATH": str(api), "AYVEN_DURABLE": "1", "AYVEN_DB": str(tmp_path / f"{name}.sqlite"),
+           "AYVEN_LLM_STUB": "0", "AYVEN_LOCAL_LLM_BASE_URL": "http://127.0.0.1:9/v1", "AYVEN_AGENT_RUNTIME": "native",
+           "AYVEN_USE_QWEN_AGENT": "0", "AYVEN_ALLOW_CODE": "1", "AYVEN_RESEARCH_MODE": "fixtures",
+           "AYVEN_ALLOW_ESCALATION": "0", "AYVEN_API_TOKEN": "private-api-key-with-at-least-32-characters", **extra}
+    env.pop("AYVEN_WORKFLOW_DATABASE_URL", None)
+    return env
+
+
+def _run_script(script: str, env: dict, timeout: int = 300) -> None:
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    api = Path(__file__).resolve().parents[1]
+    result = subprocess.run([sys.executable, "-c", script], cwd=str(api), env=env, capture_output=True, text=True, timeout=timeout)
+    assert result.returncode == 0 and "OK" in result.stdout, (result.stdout + result.stderr)[-4000:]
+
+
+_FAILED_JOB_CHECKS = r'''
+def failed_job_checks(client, auth, pid, criteria):
+    import io, time, zipfile
+    for _ in range(1200):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    assert s["status"] == "rejected", s
+    assert s["workflow_state"] == "FAILED", s
+    assert s["approval"] is None, s
+    from app.db import connect
+    conn = connect()
+    approvals = conn.execute("SELECT status FROM approvals WHERE project_id=?", (pid,)).fetchall()
+    blockers = [r["reason"] for r in conn.execute("SELECT reason FROM blockers WHERE project_id=? AND status='open'", (pid,)).fetchall()]
+    conn.close()
+    assert [dict(a) for a in approvals] == [], approvals
+    assert any(b.startswith("Build failed") for b in blockers), blockers
+    assert s["criteria_results"] == [{"criterion": c, "status": "not_met"} for c in criteria], s["criteria_results"]
+    z = client.get(f"/work-packages/{s['package_id']}/bundle.zip", headers=auth)
+    if z.status_code == 200:
+        names = zipfile.ZipFile(io.BytesIO(z.content)).namelist()
+        assert not any(n.endswith((".py", ".js", ".html", ".css")) for n in names), names
+    accept = client.post(f"/work-packages/{s['package_id']}/accept", headers=auth)
+    assert accept.status_code == 409, accept.text
+    return s
+'''
+
+
+def test_a_failing_program_build_over_http_is_failed_with_a_blocker_not_approval(tmp_path):
+    script = _HTTP_PROGRAM_JOB.split("set_role_generator(gen)")[0].replace("return left + right", "return left") + _FAILED_JOB_CHECKS + r'''
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+criteria = ["Adds 4 and 7"]
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Write a small Python program that adds 4 and 7 and prints the sum.", "acceptance_criteria": criteria}, headers=auth)
+    assert r.status_code == 200, r.text
+    s = failed_job_checks(client, auth, r.json()["project_id"], criteria)
+    assert "Tests: FAILED" in s["result"]
+print("OK")
+'''
+    _run_script(script, _http_env(tmp_path, "badprog"))
+
+
+def test_a_web_build_whose_browser_cannot_launch_is_failed_and_not_met(tmp_path):
+    script = _HTTP_WEB_JOB.split("set_role_generator(gen)")[0] + _FAILED_JOB_CHECKS + r'''
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+criteria = ["Customer job tracking application"]
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Build a customer job tracking application with create, edit, persistence and validation.", "acceptance_criteria": criteria}, headers=auth)
+    assert r.status_code == 200, r.text
+    s = failed_job_checks(client, auth, r.json()["project_id"], criteria)
+    assert s["web_artifact_verified"] is False
+print("OK")
+'''
+    # Simulated launch failure: the browser executable does not exist.
+    _run_script(script, _http_env(tmp_path, "nobrowser", AYVEN_CHROME_PATH="/nonexistent/chrome"))
+
+
+def test_accept_resolves_the_pending_approval_like_resolve_does(tmp_path):
+    script = _HTTP_PROGRAM_JOB.split("set_role_generator(gen)")[0] + r'''
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Write a small Python program that adds 4 and 7 and prints the sum."}, headers=auth)
+    pid = r.json()["project_id"]
+    for _ in range(300):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    assert s["workflow_state"] == "AWAITING_APPROVAL", s
+    approval_id = s["approval"]["id"]
+    accept = client.post(f"/work-packages/{s['package_id']}/accept", headers=auth)
+    assert accept.status_code == 200, accept.text
+    body = accept.json()
+    assert body["approval_id"] == approval_id and body["workflow_state"] == "COMPLETED" and body["status"] == "completed", body
+    s = client.get("/milo/jobs/" + pid, headers=auth).json()
+    assert s["status"] == "complete" and s["workflow_state"] == "COMPLETED", s
+    from app.db import connect
+    conn = connect()
+    status = conn.execute("SELECT status FROM approvals WHERE id=?", (approval_id,)).fetchone()["status"]
+    conn.close()
+    assert status == "approved", status
+    # Resolving the same approval again (the other path) changes nothing, and accepting again is a no-op.
+    client.post(f"/approvals/{approval_id}/resolve", json={"decision": "approved"}, headers=auth)
+    assert client.get("/milo/jobs/" + pid, headers=auth).json()["workflow_state"] == "COMPLETED"
+    again = client.post(f"/work-packages/{s['package_id']}/accept", headers=auth)
+    assert again.status_code == 200 and again.json()["workflow_state"] == "COMPLETED", again.text
+print("OK")
+'''
+    _run_script(script, _http_env(tmp_path, "accept"))
