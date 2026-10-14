@@ -262,7 +262,17 @@ def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence
     try:
         programme = restore(state)
         calls = []
+        build_research = {}
         for prompt in programme.prompts(role):
+            builder = _build_turn(programme.task_class) if role == 'EMPLOYEE' else None
+            if builder is not None:
+                # The same dispatch run_objective uses: a program or web build runs its
+                # builder (spec, tests, code, sandbox or browser check), not the generic prompt.
+                # A failed build is a valid FAILED deliverable, not a model-call failure.
+                text, meta = builder(programme, prompt['id'])
+                calls.append((prompt['id'], text, meta))
+                build_research = dict(programme.research)
+                continue
             limit = 480 if role == 'MANAGER' else (1400 if role == 'EMPLOYEE' and programme.plan.get('planning_source') == 'live_model' else 320)
             text, _, meta = _complete(
                 role, prompt['system'], prompt['user'], max_tokens=limit,
@@ -284,6 +294,9 @@ def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence
 
     def action():
         stored = restore(state)
+        if build_research:
+            # The builder recorded its execution evidence on the programme it ran on.
+            stored.research.update(build_research)
         if precheck is not None:
             stored._delivery_precheck = precheck
         for package_id, text, meta in calls:
@@ -291,6 +304,16 @@ def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence
         return snapshot(stored)
 
     return atomic_stage(project_id, role, action)
+
+
+def _build_turn(task_class: str):
+    """The builder run_objective uses for this task class, or None for a generic prompt."""
+    from .intelligence import execution
+    if task_class == 'software_build':
+        return execution._software_turn
+    if task_class in ('website_build', 'application_build'):
+        return execution._web_turn
+    return None
 
 
 @DBOS.step()

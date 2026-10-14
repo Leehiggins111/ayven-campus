@@ -62,7 +62,9 @@ def finalize_project(project_id: str) -> None:
         # Acceptance criteria are checked against what was delivered, so criteria_results is never left empty.
         from .goals import evaluate_criteria
 
-        evaluate_criteria(project_id, findings or "")
+        # A FAILED package (for example a rejected delivery review) delivered nothing,
+        # so its criteria are not_met; the undelivered draft is not scored.
+        evaluate_criteria(project_id, "" if state == "FAILED" else (findings or ""))
     conn.execute("UPDATE projects SET status=?, result=? WHERE id=?", (project_status, findings, project_id))
     conn.execute("UPDATE tasks SET status=? WHERE id=?", (project_status, f"engine:{project_id}"))
     conn.commit()

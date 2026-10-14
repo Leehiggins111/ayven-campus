@@ -222,3 +222,170 @@ def test_the_status_endpoint_shows_the_budget_cap():
     assert body["job_cap_gbp"] == 1.23
     assert body["job_cap_usd"] == pytest.approx(1.6246, abs=0.01)
     assert "spent_gbp" in body
+
+
+# (a) The real submitted-job path: HTTP -> durable runner -> builder -> approval -> bundle.zip --------
+
+_HTTP_PROGRAM_JOB = r'''
+import io, json, time, zipfile
+from fastapi.testclient import TestClient
+from app.main import app
+from app.models import set_role_generator
+
+PROGRAM = """FILE: main.py
+def add(left, right):
+    return left + right
+
+FILE: test_main.py
+import main
+assert main.add(4, 7) == 11
+assert main.add(0, 0) == 0
+
+LAUNCH: python test_main.py
+"""
+seen = []
+
+def gen(role, system, user, max_tokens):
+    seen.append((role, system[:60]))
+    if role == "MANAGER":
+        return "SYNTHESISE\nRationale: the files are the deliverable", 3, {"backend": "mock"}
+    if role == "SUPERVISOR":
+        return "ACCEPT\nNothing was sent.", 2, {"backend": "mock"}
+    if "Write the test file only" in user or "Write main.py only" in user:
+        return PROGRAM, 40, {"backend": "mock"}
+    if "example_output" in user:
+        return json.dumps({"function": "add", "parameters": ["left", "right"], "example_input": [4, 7], "example_output": 11}), 8, {"backend": "mock"}
+    return "Nothing was sent.", 2, {"backend": "mock"}
+
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Write a small Python program that adds 4 and 7 and prints the sum.",
+                                        "acceptance_criteria": ["Adds 4 and 7"]}, headers=auth)
+    assert r.status_code == 200, r.text
+    pid = r.json()["project_id"]
+    for _ in range(300):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    assert s["status"] == "waiting", s
+    assert s["workflow_state"] == "AWAITING_APPROVAL", s
+    assert any("specification" in sys_ for _, sys_ in seen), seen  # the software builder ran
+    pkg = s["package_id"]
+    names = sorted(zipfile.ZipFile(io.BytesIO(client.get(f"/work-packages/{pkg}/bundle.zip", headers=auth).content)).namelist())
+    assert names == ["main.py", "report.md", "test_main.py"], names
+    approval = s["approval"]
+    assert approval, s
+    r = client.post(f"/approvals/{approval['id']}/resolve", json={"decision": "approved", "reason": ""}, headers=auth)
+    assert r.status_code == 200, r.text
+    for _ in range(300):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] == "complete":
+            break
+        time.sleep(0.1)
+    assert s["status"] == "complete", s
+    z = zipfile.ZipFile(io.BytesIO(client.get(f"/work-packages/{pkg}/bundle.zip", headers=auth).content))
+    assert sorted(z.namelist()) == ["main.py", "report.md", "test_main.py"]
+    assert "return left + right" in z.read("main.py").decode()
+print("OK")
+'''
+
+
+def test_a_program_job_submitted_over_http_puts_its_py_files_in_bundle_zip(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    api = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "PYTHONPATH": str(api), "AYVEN_DURABLE": "1", "AYVEN_DB": str(tmp_path / "http.sqlite"),
+           "AYVEN_LLM_STUB": "0", "AYVEN_LOCAL_LLM_BASE_URL": "http://127.0.0.1:9/v1", "AYVEN_AGENT_RUNTIME": "native",
+           "AYVEN_USE_QWEN_AGENT": "0", "AYVEN_ALLOW_CODE": "1", "AYVEN_RESEARCH_MODE": "fixtures",
+           "AYVEN_ALLOW_ESCALATION": "0", "AYVEN_API_TOKEN": "private-api-key-with-at-least-32-characters"}
+    env.pop("AYVEN_WORKFLOW_DATABASE_URL", None)
+    result = subprocess.run([sys.executable, "-c", _HTTP_PROGRAM_JOB], cwd=str(api), env=env, capture_output=True, text=True, timeout=240)
+    assert result.returncode == 0 and "OK" in result.stdout, (result.stdout + result.stderr)[-4000:]
+
+
+_HTTP_WEB_JOB = r'''
+import io, json, time, zipfile
+from fastapi.testclient import TestClient
+from app.main import app
+from app.models import set_role_generator
+from tests.test_web_artifact import FILES, PLAN
+
+seen = []
+
+def gen(role, system, user, max_tokens):
+    seen.append(system[:40])
+    if role == "MANAGER":
+        return "SYNTHESISE\nNothing was sent.", 2, {"backend": "mock"}
+    if role == "SUPERVISOR":
+        return "ACCEPT\nNothing was sent.", 2, {"backend": "mock"}
+    if system.startswith("Specify"):
+        return json.dumps(PLAN), 30, {"backend": "mock"}
+    if system.startswith("Independently"):
+        return json.dumps({"passed": True, "missing": []}), 5, {"backend": "mock"}
+    for name in FILES:
+        if system.startswith("Write " + name + " only"):
+            return json.dumps({name: FILES[name]}), 30, {"backend": "mock"}
+    return "Nothing was sent.", 2, {"backend": "mock"}
+
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Build a customer job tracking application with create, edit, persistence and validation."}, headers=auth)
+    assert r.status_code == 200, r.text
+    pid = r.json()["project_id"]
+    for _ in range(1200):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    assert s["workflow_state"] == "AWAITING_APPROVAL", (s, seen)
+    assert s["web_artifact_verified"] is True, s
+    names = set(zipfile.ZipFile(io.BytesIO(client.get(f"/work-packages/{s['package_id']}/bundle.zip", headers=auth).content)).namelist())
+    assert set(FILES) | {"report.md"} <= names, names
+print("OK")
+'''
+
+
+def test_a_web_job_submitted_over_http_puts_its_files_in_bundle_zip(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from app.intelligence.web_browser_runner import chrome_path
+
+    if not chrome_path():
+        pytest.skip("Playwright Chromium is not installed")
+    api = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "PYTHONPATH": str(api), "AYVEN_DURABLE": "1", "AYVEN_DB": str(tmp_path / "web.sqlite"),
+           "AYVEN_LLM_STUB": "0", "AYVEN_LOCAL_LLM_BASE_URL": "http://127.0.0.1:9/v1", "AYVEN_AGENT_RUNTIME": "native",
+           "AYVEN_USE_QWEN_AGENT": "0", "AYVEN_ALLOW_CODE": "1", "AYVEN_RESEARCH_MODE": "fixtures",
+           "AYVEN_ALLOW_ESCALATION": "0", "AYVEN_API_TOKEN": "private-api-key-with-at-least-32-characters"}
+    env.pop("AYVEN_WORKFLOW_DATABASE_URL", None)
+    result = subprocess.run([sys.executable, "-c", _HTTP_WEB_JOB], cwd=str(api), env=env, capture_output=True, text=True, timeout=400)
+    assert result.returncode == 0 and "OK" in result.stdout, (result.stdout + result.stderr)[-4000:]
+
+
+def test_a_review_failed_job_marks_its_criteria_not_met():
+    from app.goals import criteria_for, open_goal
+    from app.intelligence.store import update_package as store_update
+    from app.orchestrator import finalize_project
+
+    project_id = _project("Write a dog grooming price sheet.")
+    open_goal(project_id, ["Mentions the cancellation policy", "Covers payment terms"])
+    parent = insert_package(
+        project_id=project_id, task_id="rf", title="Research programme", objective="Write a dog grooming price sheet.",
+        origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="complete",
+    )
+    # The draft would meet both criteria, but the delivery review rejected it.
+    store_update(parent, findings="Cancellation policy: 24 hours notice.\nPayment terms: pay by card.", workflow_state="FAILED")
+    finalize_project(project_id)
+    assert criteria_for(project_id) == [
+        {"criterion": "Mentions the cancellation policy", "status": "not_met"},
+        {"criterion": "Covers payment terms", "status": "not_met"},
+    ]
