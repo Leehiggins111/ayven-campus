@@ -86,6 +86,17 @@ def _code_only(source: str) -> str:
     """Drop the essay around a program and dedent what remains."""
     import textwrap
 
+    # Valid source is already the deliverable. Filtering individual lines loses
+    # multiline literals, expressions and user-visible strings.
+    candidate = textwrap.dedent(source or "").strip()
+    if candidate:
+        try:
+            compile(candidate + "\n", "<ayven>", "exec")
+        except SyntaxError:
+            pass
+        else:
+            return candidate + "\n"
+
     kept: list[str] = []
     for line in (source or "").splitlines():
         stripped = line.strip()
@@ -242,7 +253,7 @@ def _failure_line(detail: str) -> str:
 
 
 def format_deliverable(files: dict[str, str], launch: str, result: dict) -> str:
-    passed = bool(result.get("passed")) and bool(files.get("main.py")) and bool(files.get("test_main.py"))
+    passed = bool(result.get("passed")) and len(files) == 2 and any(name.startswith("test_") for name in files)
     lines = [
         "# Software deliverable",
         f"Tests: {'PASSED' if passed else 'FAILED'}",
@@ -270,11 +281,11 @@ def stored_files(findings: str) -> dict[str, str]:
     files: dict[str, list[str]] = {}
     current = ""
     for line in (findings or "").splitlines():
-        if line.startswith("## ") and line[3:].strip() in {"main.py", "test_main.py"}:
+        if line.startswith("## ") and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", line[3:].strip()):
             current = line[3:].strip()
             files[current] = []
             continue
-        if current and (line.startswith("## ") or line == "Nothing was sent."):
+        if current and (line.startswith("## ") or line in {"Nothing was sent.", "Test output:"}):
             current = ""
             continue
         if current:
@@ -284,9 +295,39 @@ def stored_files(findings: str) -> dict[str, str]:
         source = "\n".join(body).strip()
         if source:
             saved[name] = source + "\n"
-    if "main.py" not in saved or "test_main.py" not in saved:
+    if len(saved) != 2 or not any(name.startswith("test_") for name in saved):
         return {}
     return saved
+
+
+def execution_evidence(files: dict[str, str], result: dict) -> dict:
+    """Bind the actual runner result to the exact source bytes delivered."""
+    import hashlib
+
+    return {
+        "passed": result.get("passed") is True,
+        "exit_code": result.get("exit_code"),
+        "status": result.get("status"),
+        "sandbox": result.get("sandbox"),
+        "stdout": result.get("stdout") or "",
+        "stderr": result.get("stderr") or "",
+        "sha256": {name: hashlib.sha256(body.encode("utf-8")).hexdigest() for name, body in files.items()},
+    }
+
+
+def verified_software(findings: str, research: dict) -> bool:
+    """A status sentence cannot substitute for an executed file set."""
+    evidence = research.get("software_execution") or {}
+    if not isinstance(evidence, dict):
+        return False
+    if evidence.get("passed") is not True or evidence.get("exit_code") != 0 or evidence.get("status") != "ok":
+        return False
+    if evidence.get("sandbox") not in {"unshare-user-net-pid", "bubblewrap-unshare-net", "timeout-subprocess-tempdir"}:
+        return False
+    files = stored_files(findings)
+    if not files:
+        return False
+    return execution_evidence(files, evidence)["sha256"] == evidence.get("sha256")
 
 
 SPEC_FORMAT = {
@@ -409,6 +450,8 @@ def _test_prompt(objective: str, spec: dict, feedback: str) -> str:
     )
     if feedback:
         text += f"\nCheck: {feedback}\n"
+    if re.search(r"\bunittest\b", objective or "", re.I):
+        text += "\nUse unittest.TestCase with test_ methods and self.assertEqual(main.function(...), expected). Import unittest and main. The runner will load and run the suite. For generation use main as the module; the verified files will be renamed to the requested module names.\n"
     return text
 
 
@@ -417,7 +460,9 @@ def _impl_prompt(objective: str, spec: dict, test_source: str, feedback: str) ->
     params = ", ".join(spec.get("parameters") or [])
     text = (
         "Write main.py only. Reply with one JSON object {\"main.py\": \"...\"} and then stop.\n"
-        f"Define {signature}({params}) so the test below passes. Do not write the test again.\n\n"
+        f"Define {signature}({params}) so the separate test file below passes. "
+        "Return only the implementation in main.py. Do not copy assertions or test calls into main.py. "
+        "The name main refers to this module from the separate test file; it is not defined inside main.py.\n\n"
         f"Test that will be run:\n{(test_source or '')[:1200]}\n\n"
         f"Request:\n{(objective or '')[:400]}\n"
     )
@@ -464,6 +509,14 @@ def _assert_problem(test_source: str, objective: str) -> str:
             return "The test checked __file__ or __dict__ and cannot fail, so it was not saved. Assert the number the program produces."
         return "The test cannot fail, so the program was not saved."
     asserts = re.findall(r"^\s*assert\s+(.+)$", test_source or "", re.M)
+    import ast
+    try:
+        tree = ast.parse(test_source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "assertEqual" and len(node.args) >= 2:
+                asserts.append(f"{ast.unparse(node.args[0])} == {ast.unparse(node.args[1])}")
+    except SyntaxError:
+        return "The test has invalid Python syntax."
     if not any(re.search(r"==\s*-?\d+(?:\.\d+)?|==\s*['\"]", item) for item in asserts):
         return "The test does not assert an input against an expected output."
     wanted = _requested_sum(objective)
@@ -601,6 +654,8 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
         tokens += int(piece_tokens or 0)
         meta = piece_meta or {}
         candidate = _parse_one_file(piece or "", "test_main.py")
+        if candidate:
+            candidate = _qualify_tests(f"def {spec['function']}():\n    pass\n", candidate)
         problem = _assert_problem(candidate, objective) if candidate else "The reply did not contain one test_main.py, so nothing was saved."
         if problem:
             feedback = problem
@@ -613,6 +668,10 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
             continue
         if mutated.get("passed"):
             feedback = "The test passed against a function that returns nothing. Assert the input against the expected output."
+            test_source = ""
+            continue
+        if mutated.get("exit_code") != 1 or "AssertionError" not in (mutated.get("stderr") or ""):
+            feedback = "The test did not reach a behavioural assertion: " + _failure_line(mutated.get("stderr") or "Execution was unavailable.")
             test_source = ""
             continue
         test_source = candidate
@@ -647,4 +706,27 @@ def build_deliverable(objective: str, complete) -> tuple[str, dict]:
     meta["sandbox"] = result.get("sandbox")
     if not meta["tests_passed"]:
         files = {}
-    return format_deliverable(files, "python test_main.py", result), meta
+    launch = "python test_main.py"
+    if files:
+        requested = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*\.py)\b", objective or "")
+        main_name = next((name for name in requested if not name.startswith("test_")), "main.py")
+        test_name = next((name for name in requested if name.startswith("test_")), "test_main.py")
+        if main_name != "main.py" or test_name != "test_main.py":
+            import ast
+            tree = ast.parse(files["test_main.py"])
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == "main":
+                            alias.name = main_name[:-3]
+                            alias.asname = alias.asname or "main"
+                elif isinstance(node, ast.ImportFrom) and node.module == "main":
+                    node.module = main_name[:-3]
+            files = {main_name: files["main.py"], test_name: ast.unparse(tree) + "\n"}
+            result = run_files(files, test_name=test_name, main_name=main_name)
+            meta["tests_passed"] = result.get("passed") is True
+            if not meta["tests_passed"]:
+                files = {}
+        launch = f"python -m unittest {test_name[:-3]}" if re.search(r"\bunittest\b", objective or "", re.I) else f"python {test_name}"
+    meta["software_execution"] = execution_evidence(files, result)
+    return format_deliverable(files, launch, result), meta

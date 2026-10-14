@@ -10,9 +10,9 @@ from pathlib import Path
 from . import llm
 
 DEFAULT_MODELS = {
-    "EMPLOYEE": os.environ.get("AYVEN_EMPLOYEE_MODEL", "Qwen/Qwen3-8B"),
-    "SUPERVISOR": os.environ.get("AYVEN_SUPERVISOR_MODEL", "Qwen/Qwen3-32B"),
-    "MANAGER": os.environ.get("AYVEN_MANAGER_MODEL", "Qwen/Qwen3-30B-A3B"),
+    "EMPLOYEE": (os.environ.get("AYVEN_EMPLOYEE_MODEL") or "Qwen/Qwen3-8B"),
+    "SUPERVISOR": (os.environ.get("AYVEN_SUPERVISOR_MODEL") or "Qwen/Qwen3-32B"),
+    "MANAGER": (os.environ.get("AYVEN_MANAGER_MODEL") or "Qwen/Qwen3-30B-A3B"),
     "ESCALATION": os.environ.get("AYVEN_ESCALATION_MODEL", ""),
 }
 
@@ -26,7 +26,7 @@ def set_role_generator(fn):
 
 
 def role_model(role: str) -> str:
-    return DEFAULT_MODELS.get(role.upper(), DEFAULT_MODELS["EMPLOYEE"])
+    return os.environ.get(f"AYVEN_{role.upper()}_MODEL") or DEFAULT_MODELS.get(role.upper(), DEFAULT_MODELS["EMPLOYEE"])
 
 
 def plan_model() -> str:
@@ -110,6 +110,62 @@ def _emit(role: str, text: str, tokens: int, meta: dict, raw: str | None = None)
 
 
 def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, model: str | None = None):
+    """Every workforce model call. Metered against the current job: cap pre-check, ledger, replay cache."""
+    from .metering import metered_call
+
+    def call():
+        return _complete_role(role, system, user, max_tokens=max_tokens, schema=schema, prefill=prefill, stop=stop,
+                              expand_unfinished=expand_unfinished, ollama_format=ollama_format, model=model)
+
+    extra = [prefill or "", list(stop or []), bool(expand_unfinished), str(ollama_format or ""), model or "",
+             str(getattr(schema, "__name__", "") or "")]
+    return metered_call(role, system, user, max_tokens, call, extra)
+
+
+try:
+    import httpx as _httpx
+
+    _ORIGINAL_POST = _httpx.post
+except Exception:  # pragma: no cover
+    _ORIGINAL_POST = None
+
+
+def _post(url: str, *, json=None, headers=None, timeout: float = 90, follow_redirects: bool = True):
+    """httpx.post with a total deadline, not just a per-read timeout: a slow drip cannot hold a call open."""
+    import httpx
+
+    from .metering import ModelCallTimeout, call_deadline
+
+    if httpx.post is not _ORIGINAL_POST:  # a test double replaced httpx.post: keep the old call shape
+        kwargs = {"json": json, "timeout": timeout}
+        if headers is not None:
+            kwargs["headers"] = headers
+        if follow_redirects is False:
+            kwargs["follow_redirects"] = False
+        return httpx.post(url, **kwargs)
+
+    deadline = call_deadline()
+    stop_at = time.monotonic() + deadline
+    per_read = min(float(timeout), deadline)
+    with httpx.Client(timeout=per_read, follow_redirects=follow_redirects) as client:
+        try:
+            with client.stream("POST", url, json=json, headers=headers) as response:
+                chunks = []
+                for chunk in response.iter_bytes():
+                    chunks.append(chunk)
+                    if time.monotonic() > stop_at:
+                        raise ModelCallTimeout(deadline)
+                if time.monotonic() > stop_at:
+                    raise ModelCallTimeout(deadline)
+                return httpx.Response(response.status_code, headers=response.headers, content=b"".join(chunks),
+                                      request=response.request)
+        except httpx.TimeoutException:
+            if time.monotonic() > stop_at - 0.05:
+                raise ModelCallTimeout(deadline)
+            raise
+
+
+def _complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, model: str | None = None):
     started = time.time()
     model = (model or "").strip() or role_model(role)
     meta = {"role": role.upper(), "model": model, "backend": "stub", "elapsed_s": 0.0, "provider": "ayven"}
@@ -145,6 +201,8 @@ def complete_role(role: str, system: str, user: str, max_tokens: int = 500, sche
         meta["elapsed_s"] = round(time.time() - started, 3)
         meta["completion_tokens"] = int(tokens or 0)
         return _emit(role, text, tokens, meta)
+    if os.environ.get("AYVEN_LLM_STUB", "1") == "0":
+        raise RuntimeError("Live workforce endpoint is not configured; fixture fallback is disabled")
     text, tokens = llm.complete(f"[{role}/{model}] {system}", user, max_tokens=max_tokens)
     meta["elapsed_s"] = round(time.time() - started, 3)
     meta["backend"] = "stub"
@@ -269,12 +327,14 @@ def ollama_chat_body(model: str, system: str, user: str, max_tokens: int, prefil
 
 def ollama_answer(payload: dict) -> str:
     """Visible answer only. Text inside a think block, and the thinking field, are discarded."""
-    from .intelligence.think import strip_think
+    from .intelligence.think import strip_think, visible_message
 
     message = payload.get("message") or {}
     if not message and payload.get("choices"):
         message = (payload["choices"][0] or {}).get("message") or {}
-    content = message.get("content") or payload.get("response") or ""
+    if not message and payload.get("response") is not None:
+        message = {"content": payload.get("response") or ""}
+    content = visible_message(message)
     marker = "</think>"
     lowered = content.lower()
     at = lowered.rfind(marker)
@@ -288,6 +348,8 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None, pref
     import httpx
     from .intelligence.constrained import enforce_output, server_body
 
+    if os.environ.get("AYVEN_PROVIDER_FORMAT") == "ollama":
+        return _ollama_chat(base, model, system, user, max_tokens, schema)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     timeout = float(os.environ.get("AYVEN_LLM_TIMEOUT_S", "600" if ":11434" in (base or "") else "90"))
     if ":11434" in (base or ""):
@@ -301,14 +363,21 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None, pref
             raise err
         return text, tokens, info
     body = local_request_body(base, server_body(model, messages, max_tokens, schema))
-    r = httpx.post(
+    if os.environ.get("AYVEN_PROVIDER_FORMAT", "qwen") in ("openai", "json_object"):
+        body.pop("guided_json", None)
+        body.pop("grammar", None)
+        if schema is not None and os.environ.get("AYVEN_PROVIDER_FORMAT") == "json_object":
+            import json
+            body["response_format"] = {"type": "json_object"}
+            body["messages"][0]["content"] += "\nReturn JSON matching this schema: " + json.dumps(schema.model_json_schema())
+    r = _post(
         f"{base.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
         json=body,
         timeout=timeout,
     )
     if r.status_code == 400 and any(key_name in body for key_name in ("guided_json", "grammar", "response_format")):
-        r = httpx.post(
+        r = _post(
             f"{base.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
             json=local_request_body(base, {k: body[k] for k in ("model", "messages", "max_tokens", "temperature") if k in body}),
@@ -386,7 +455,7 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
             body = ollama_chat_body(model, system, user, predict, prefill=prefill, stop=stop, ollama_format=ollama_format)
         started = time.time()
         try:
-            response = httpx.post(url, json=body, timeout=timeout)
+            response = _post(url, json=body, timeout=timeout)
         except httpx.TimeoutException:
             note_eval_call({
                 "model": model,
@@ -455,3 +524,30 @@ def _attach_prefill(stem: str, text: str) -> str:
         return text
     joiner = "" if stem.endswith((" ", "\n")) else " "
     return f"{stem}{joiner}{text.strip()}".strip()
+
+def _ollama_chat(base, model, system, user, max_tokens, schema=None):
+    """Native local API: explicit thinking control and model timings, no cloud fallback."""
+    import httpx
+    from urllib.parse import urlparse
+    from .intelligence.boundary import separate_channels
+    from .intelligence.constrained import enforce_output
+    parsed = urlparse(base)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ("localhost", "127.0.0.1", "::1") or "cloud" in model.lower():
+        raise ValueError("Ollama workforce mode permits local models only")
+    endpoint = f"{parsed.scheme}://{parsed.netloc}/api/chat"
+    body = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "stream": False, "think": False, "keep_alive": "15m",
+            "options": {"num_predict": max_tokens, "temperature": 0.2}}
+    if schema is not None:
+        body["format"] = schema.model_json_schema()
+    response = _post(endpoint, json=body, timeout=120, follow_redirects=False)
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("done") or data.get("done_reason") == "length":
+        raise RuntimeError("The local model did not finish its answer")
+    message = data.get("message") or {}
+    text = separate_channels(message.get("content") or "", message.get("thinking") or "").executable
+    text, info = enforce_output(schema, text)
+    info.update({"thinking_requested": False, "total_duration_s": round((data.get("total_duration") or 0) / 1e9, 3),
+                 "load_duration_s": round((data.get("load_duration") or 0) / 1e9, 3), "output_tokens": data.get("eval_count") or 0})
+    return text, int(data.get("prompt_eval_count") or 0) + int(data.get("eval_count") or 0), info

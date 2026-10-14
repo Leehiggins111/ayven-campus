@@ -321,6 +321,22 @@ function checksumHex(file) {
   return match ? match[0].toLowerCase() : "";
 }
 
+function acceptancePassed(result) {
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  return result.status === 0 && !output.split(/\r?\n/).some((line) => /^FAIL\b/i.test(line.trim()));
+}
+
+function fullProductAccepted(evidenceDir) {
+  try {
+    const report = JSON.parse(fs.readFileSync(path.join(evidenceDir, "acceptance.json"), "utf8"));
+    // The current 12 checks do not cover the unseen business, persistent app
+    // or interactive website. Their success cannot qualify the full product.
+    return report.acceptance_scope === "full-product" && report.full_product_accepted === true;
+  } catch {
+    return false;
+  }
+}
+
 function zipPath(source, dest) {
   fs.rmSync(dest, { force: true });
   const result = spawnSync("tar", ["-a", "-c", "-f", dest, "-C", path.dirname(source), path.basename(source)], {
@@ -514,14 +530,17 @@ async function main() {
   const zipSource = fs.existsSync(packageDir) ? packageDir : "";
   if (zipSource && fs.statSync(zipSource).isDirectory()) zipPath(zipSource, packageZip);
   if (fs.existsSync(evidence)) zipPath(evidence, evidenceZip);
-  let hex = checksumHex(checksum);
-  if (!hex && fs.existsSync(packageZip)) {
+  // Acceptance may produce a checksum of a directory manifest. The download
+  // checksum must always describe the final archive bytes.
+  let hex = "";
+  if (fs.existsSync(packageZip)) {
     hex = sha256File(packageZip);
     fs.writeFileSync(checksum, `${hex}\n`, "utf8");
   }
   say(`CHECKSUM ${hex || "missing"}`);
   const tag = releaseTag(campusSha, miloSha);
-  const notes = `Campus ${campusSha}\nMilo ${miloSha}\nChecksum ${hex || "missing"}\n`;
+  const acceptedPackage = acceptancePassed(accepted) && fullProductAccepted(evidence) && Boolean(hex);
+  const notes = `Campus ${campusSha}\nMilo ${miloSha}\nAcceptance ${acceptedPackage ? "PASSED" : "FAILED — diagnostic evidence only"}\nArchive checksum ${hex || "missing"}\n`;
   const uploads = [];
   const usedNames = new Set();
   const addUpload = (filePath) => {
@@ -531,8 +550,10 @@ async function main() {
     usedNames.add(name);
     uploads.push({ path: filePath, name });
   };
-  addUpload(packageZip);
-  addUpload(checksum);
+  if (acceptedPackage) {
+    addUpload(packageZip);
+    addUpload(checksum);
+  }
   addUpload(evidenceZip);
   for (const file of evidenceFiles(evidence)) addUpload(file);
   try {
@@ -542,8 +563,7 @@ async function main() {
     fail("release", error.message || "upload failed");
     process.exit(1);
   }
-  const acceptanceFailed = acceptOut.split(/\r?\n/).some((line) => /^FAIL\b/i.test(line.trim()));
-  if (accepted.status !== 0 || acceptanceFailed) {
+  if (!acceptedPackage) {
     const names = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir).slice(0, 40).join(",") : "missing");
     say(`FAIL layout: ${names(packageDir).slice(0, 400)}`);
     say(`FAIL evidence: ${names(evidence).slice(0, 400)}`);
@@ -635,4 +655,7 @@ module.exports = {
   seedArguments,
   linkCampus,
   campusRenderMatches,
+  sha256File,
+  acceptancePassed,
+  fullProductAccepted,
 };

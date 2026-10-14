@@ -1,16 +1,9 @@
 from __future__ import annotations
 
-import threading
-import uuid
 from datetime import datetime, timezone
 
 from . import events
 from .db import connect
-from .llm import complete
-from .researcher import run_package
-from .workforce import run_objective as run_workforce
-
-COST_PER_1K = 0.002
 
 
 def _set_agent(agent_id: str, **fields) -> None:
@@ -22,38 +15,19 @@ def _set_agent(agent_id: str, **fields) -> None:
 
 
 def run_project(project_id: str) -> None:
-    threading.Thread(target=_run_project, args=(project_id,), daemon=True).start()
+    """Start a job on the durable workflow. The thread stub does not run it."""
+    from .durable import enqueue_project, thread_stub_armed
+
+    if thread_stub_armed():
+        return
+    enqueue_project(project_id)
 
 
 def _run_project(project_id: str) -> None:
-    conn = connect()
-    project = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
-    conn.close()
-    if not project:
-        return
-    objective = project["objective"]
-    _set_agent("milo", status="working", visual_state="PLANNING", last_summary="Deciding required work", progress=0.15)
-    events.emit("agent.started_task", project_id=project_id, agent_id="milo", department_id="command", status="PLANNING", summary="Milo is scoping the objective for Research Lab", progress=0.15)
-    brief, tokens = complete("You are Milo, Ayven Chief of Staff. Write a short research brief. No chain-of-thought.", f"Lee's objective:\n{objective}", max_tokens=280)
-    conn = connect()
-    conn.execute("UPDATE agents SET tokens=tokens+?, cost_usd=cost_usd+? WHERE id=?", (tokens, tokens / 1000 * COST_PER_1K, "milo"))
-    conn.commit()
-    conn.close()
-    tid = str(uuid.uuid4())
-    pid = str(uuid.uuid4())
-    ts = datetime.now(timezone.utc).isoformat()
-    conn = connect()
-    conn.execute("INSERT INTO tasks(id,project_id,agent_id,title,brief,status,requires_approval,created_at) VALUES(?,?,?,?,?,?,?,?)", (tid, project_id, "research-mgr", "Research programme", brief, "queued", 0, ts))
-    conn.execute("INSERT INTO work_packages(id,project_id,task_id,title,objective,origin,agent_id,department_id,stage,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (pid, project_id, tid, "Research programme", objective, "milo", "research-mgr", "research", "command", "assigned", ts, ts))
-    conn.commit()
-    conn.close()
-    events.emit("task.created", project_id=project_id, task_id=tid, agent_id="research-mgr", department_id="research", status="queued", summary="Task created: Research programme")
-    events.emit("package.created", project_id=project_id, task_id=tid, agent_id="milo", department_id="command", status="assigned", summary="Handed to Research Manager")
-    _set_agent("milo", status="waiting", visual_state="WAITING", last_summary="Waiting on Research Lab", progress=0.4)
-    try:
-        run_workforce(project_id, objective, tid)
-    except Exception:
-        run_package(pid)
+    raise RuntimeError("Thread execution is not available. Jobs run through the durable workflow.")
+
+
+def finalize_project(project_id: str) -> None:
     conn = connect()
     pkg = conn.execute(
         "SELECT * FROM work_packages WHERE project_id=? AND tier='MANAGER' AND findings IS NOT NULL ORDER BY updated_at DESC",
@@ -61,19 +35,38 @@ def _run_project(project_id: str) -> None:
     ).fetchone()
     if not pkg:
         pkg = conn.execute("SELECT * FROM work_packages WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchone()
-    findings = pkg["findings"] if pkg else brief
+    findings = pkg["findings"] if pkg else ""
     state = (pkg["workflow_state"] if pkg and pkg["workflow_state"] else "") or ""
     if state in ("AWAITING_APPROVAL", "AWAITING_CLARIFICATION", "ESCALATED"):
         project_status = "waiting"
     elif state == "FAILED":
         project_status = "rejected"
+    elif state == "UNRESOLVED":
+        project_status = "unresolved"
     elif state == "COMPLETED":
         project_status = "complete"
     elif state == "UNRESOLVED":
         project_status = "unresolved"
     else:
-        project_status = "complete" if findings else "running"
+        project_status = "running"
+    if pkg and findings and state != "FAILED":
+        # Generated files go into the file store, or bundle.zip has nothing to serve.
+        from .blobs import store_package_files
+
+        row = dict(pkg)
+        store_package_files(
+            row.get("parent_id") or row["id"], findings,
+            row.get("research_json") or "", row.get("observability_json") or "",
+        )
+    if pkg and state in ("AWAITING_APPROVAL", "FAILED", "UNRESOLVED", "COMPLETED", "APPROVED"):
+        # Acceptance criteria are checked against what was delivered, so criteria_results is never left empty.
+        from .goals import evaluate_criteria
+
+        # A FAILED package (for example a rejected delivery review) delivered nothing,
+        # so its criteria are not_met; the undelivered draft is not scored.
+        evaluate_criteria(project_id, "" if state == "FAILED" else (findings or ""))
     conn.execute("UPDATE projects SET status=?, result=? WHERE id=?", (project_status, findings, project_id))
+    conn.execute("UPDATE tasks SET status=? WHERE id=?", (project_status, f"engine:{project_id}"))
     conn.commit()
     conn.close()
     if state == "AWAITING_CLARIFICATION":
@@ -95,6 +88,11 @@ def resolve_approval(approval_id: str, decision: str) -> None:
     if not row:
         conn.close()
         raise KeyError("approval not found")
+    if row["status"] != "pending":
+        conn.close()
+        if row["status"] != decision:
+            raise ValueError("approval already resolved with another decision")
+        return
     conn.execute("UPDATE approvals SET status=? WHERE id=?", (decision, approval_id))
     if row["task_id"]:
         conn.execute("UPDATE tasks SET approval_status=?, status=? WHERE id=?", (decision, "complete" if decision == "approved" else "rejected", row["task_id"]))

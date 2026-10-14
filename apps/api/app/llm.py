@@ -57,22 +57,48 @@ def complete(system: str, user: str, max_tokens: int = 600) -> tuple[str, int]:
         "temperature": 0.2,
     }
     headers = {"Authorization": f"Bearer {_api_key()}"}
+    from .intelligence.budget import check_and_reserve, commit
+    from .intelligence.think import visible_message
+
+    try:
+        reservation = check_and_reserve(
+            "",
+            "ESCALATION",
+            max_tokens,
+            model_id=MODEL,
+            route=BASE,
+            reason="explicit paid escalation",
+            allow_paid=True,
+        )
+    except RuntimeError as exc:
+        return strip_think(str(exc)), 0
+    if not reservation.get("ok"):
+        return strip_think(f"Paid call refused: {reservation.get('reason') or reservation.get('status')}"), 0
     try:
         r = httpx.post(f"{BASE.rstrip('/')}/chat/completions", json=payload, headers=headers, timeout=45)
         r.raise_for_status()
         data = r.json()
-        text = strip_think(data["choices"][0]["message"]["content"])
+        message = (data.get("choices") or [{}])[0].get("message") or {}
+        text = visible_message(message)
         usage = data.get("usage", {})
         tokens = int(usage.get("total_tokens") or len(text) // 4)
+        commit(
+            reservation["reservation_id"],
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or tokens),
+        )
         return text, tokens
     except Exception as exc:
-        return strip_think(stub_complete(user) + f"\n\n[provider fallback: {type(exc).__name__}]"), 48
+        commit(reservation["reservation_id"], amount_usd=reservation.get("estimate_usd") or 0)
+        return strip_think(f"Paid call failed ({type(exc).__name__}). No stub answer was substituted."), 0
 
 
 def stub_complete(user: str) -> str:
     u = user.lower()
     if "research review" in u:
         return "SUFFICIENT\nreviewer: stub\nThe opened pages cover the planned queries."
+    if "manager judgement" in u and "calculate" in u and "Unknowns: []" in user:
+        return "SYNTHESISE\nRationale: return the verified calculation; no external action requested."
     if "manager judgement" in u:
         return "CLARIFY\nRationale: the evidence can support the briefing, and a person must approve any external action."
     prefix = ""

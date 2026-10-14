@@ -66,8 +66,13 @@ class ToolGate:
 
 def separate_channels(text: str | None, reasoning_field: str | None = None) -> Channels:
     """Drop reasoning by scanning markers. The discarded channel is never returned as a tool input."""
-    raw = text or ""
+    from .think import strip_think
+
+    original = text or ""
+    raw = strip_think(original)
     discarded: list[str] = []
+    if raw != original.strip():
+        discarded.append(original)
     if reasoning_field:
         discarded.append(reasoning_field)
     out: list[str] = []
@@ -95,6 +100,25 @@ def separate_channels(text: str | None, reasoning_field: str | None = None) -> C
         i = close_at + len(closer)
     executable = "".join(out).strip()
     return Channels(executable=executable, discarded="".join(discarded), reasoning_field=reasoning_field or "")
+
+
+def _reasoning_in_value(value) -> str:
+    """Every non-empty string that would be sent to a tool, including strings inside JSON."""
+    if isinstance(value, str):
+        if not value.strip():
+            return ""
+        return reject_reasoning_query(value)
+    if isinstance(value, dict):
+        for item in value.values():
+            reason = _reasoning_in_value(item)
+            if reason:
+                return reason
+    if isinstance(value, list):
+        for item in value:
+            reason = _reasoning_in_value(item)
+            if reason:
+                return reason
+    return ""
 
 
 def reject_reasoning_query(query: str | None) -> str:
@@ -276,6 +300,12 @@ def parse_model(model: type[BaseModel], text: str, *, attempts: int = 2) -> tupl
     candidate = _json_blob(channels.executable)
     last_error = ""
     for attempt in range(attempts + 1):
+        if attempt:
+            import time
+
+            from .recovery import backoff_seconds
+
+            time.sleep(backoff_seconds(attempt))
         if not candidate:
             last_error = "no_json_object"
             break
@@ -319,6 +349,8 @@ def validate_tool_call(call: dict) -> ToolGate:
     raw_args = call.get("arguments")
     if not isinstance(raw_args, str):
         raw_args = json.dumps(raw_args) if raw_args is not None else ""
+    if contains_think(raw_args) or "<|" in raw_args:
+        return ToolGate(False, error="reasoning_marker", schema_name=name)
     channels = separate_channels(raw_args)
     if channels.discarded and not channels.executable:
         return ToolGate(False, error="arguments_were_reasoning", schema_name=name)
@@ -329,6 +361,9 @@ def validate_tool_call(call: dict) -> ToolGate:
         parsed = {"payload": payload_text}
     if not isinstance(parsed, dict):
         return ToolGate(False, error="arguments_not_object", schema_name=name)
+    leaked = _reasoning_in_value(parsed)
+    if leaked:
+        return ToolGate(False, error=leaked, schema_name=name)
     tool = str(parsed.get("tool") or (name if name != "ayven_tool" else ""))
     payload = parsed.get("payload", parsed)
     if isinstance(payload, str):

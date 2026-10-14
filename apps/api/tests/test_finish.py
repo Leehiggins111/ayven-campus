@@ -46,14 +46,16 @@ def test_version_stays_unvalidated():
 def test_constrained_request_carries_the_schema_and_the_first_token_mask():
     body = server_body("Qwen/Qwen3-8B", [{"role": "user", "content": "plan"}], 32, ResearchPlan)
     assert body["response_format"]["type"] == "json_schema"
-    assert "queries" in body["guided_json"]["properties"]
+    assert "queries" in body["structured_outputs"]["json"]["properties"]
+    assert "guided_json" not in body
     assert body["grammar"]
     masked = mask_first_scores([0.2, 0.4, 0.1], [1])
     assert masked[1] == 0.4
     assert masked[0] == float("-inf")
     report = contract_report("")
     assert report["status"] == "MODEL_UNVALIDATED"
-    assert report["has_guided_json"] is True
+    assert report["has_structured_outputs"] is True
+    assert report["has_guided_json"] is False
     assert report["gpu_validated"] is False
     assert report["model_validated"] is False
 
@@ -85,7 +87,8 @@ def test_openai_compat_posts_guided_json(monkeypatch):
         text, _tokens, meta = complete_role("EMPLOYEE", "Return JSON.", "Plan searches.", schema=ResearchPlan)
     finally:
         server.shutdown()
-    assert seen["body"]["guided_json"]["type"] == "object"
+    assert seen["body"]["structured_outputs"]["json"]["type"] == "object"
+    assert "guided_json" not in seen["body"]
     assert seen["body"]["response_format"]["json_schema"]["strict"] is True
     assert "queries" in text
     assert meta["model_validated"] is False
@@ -406,5 +409,5 @@ def test_campus_endpoints_list_approvals_and_evaluation():
     assert evaluation["package_id"] == parent
     assert evaluation["evaluation"]["overall"] in ("PASS", "PARTIAL", "FAIL")
     assert "stats" in evaluation["evaluation"]
-    resolved = client.post("/approvals/appr-finish/resolve", json={"decision": "rejected"})
+    resolved = client.post("/approvals/appr-finish/resolve", json={"decision": "rejected", "reason": "The numbers need a source."})
     assert resolved.status_code == 200

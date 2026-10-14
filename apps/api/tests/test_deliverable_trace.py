@@ -1,5 +1,6 @@
 """Each hop from the model reply to the screen keeps the plan and the program."""
 
+import os
 import re
 import uuid
 
@@ -93,7 +94,15 @@ def test_generation_record_keeps_finish_reason_tokens_timing_and_verbatim_text(m
     assert meta["prompt_tokens"] == 18
     assert tokens == 22
     assert meta["raw_response"] == payload["response"]
-    assert calls and calls[0].endswith("/api/generate")
+    from app.models import role_model, uses_qwen_chatml
+
+    if os.environ.get("AYVEN_PROVIDER_FORMAT") == "ollama":
+        expected = "/api/chat"
+    elif uses_qwen_chatml(role_model("EMPLOYEE")):
+        expected = "/api/generate"
+    else:
+        expected = "/api/chat"
+    assert calls and calls[0].endswith(expected), calls
     assert payload["response"] in caplog.text
     assert "finish_reason=stop" in caplog.text
     package_id = "trace-" + uuid.uuid4().hex[:8]
@@ -1395,6 +1404,10 @@ def test_a_service_name_from_an_opened_page_is_rejected():
     named = "Create a plan for Northwind Home Visits. The owner is willing to travel."
     page = "https://northwind.example/\nNorthwind Home Visits\nA home visit."
     assert borrowed_service_name("The service is Northwind Home Visits.", named, page) == ""
+    generic = "Create a plan for a mobile dog-grooming service in the UK."
+    page = "Mobile Dog Grooming Services\nCoco's Mobile Studio"
+    assert borrowed_service_name("Mobile Dog Grooming Services visit customers at home.", generic, page) == ""
+    assert "Coco's Mobile Studio" in borrowed_service_name("Book Coco's Mobile Studio.", generic, page)
 
 
 def test_later_sentences_keep_the_customer_the_problem_and_the_offer():

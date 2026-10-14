@@ -193,6 +193,31 @@ def test_a_relevant_page_and_a_written_plan_can_complete():
     assert _approved_research_is_unresolved(row, plan) is False
 
 
+def test_irrelevant_page_cannot_validate_a_claim_in_an_otherwise_relevant_plan():
+    evidence = [_preview(PAINTER["url"], PAINTER["title"], PAINTER["text"])]
+    plan = _filled_plan().replace(
+        "The owner posts on local search",
+        "Local search produces 75% of enquiries. The owner posts on local search",
+    )
+    unrelated = _preview(
+        "https://example.org/coffee", "Coffee machine rentals",
+        "Coffee machine rental businesses get 75% of enquiries through local search.",
+    )
+    # A matching number on an unrelated page is not support for this business.
+    assert not business_can_complete(plan, evidence + [unrelated], OBJECTIVE)
+    score = score_task("business_research", plan, {"objective": OBJECTIVE, "evidence": evidence + [unrelated]})
+    assert score["outcome"] == "FAIL"
+    # The identical assertion is supported when it actually belongs to the relevant page.
+    evidence[0]["extracted_content"] += " Local search produces 75% of enquiries."
+    assert business_can_complete(plan, evidence, OBJECTIVE)
+    assert score_task("business_research", plan, {"objective": OBJECTIVE, "evidence": evidence})["outcome"] == "PASS"
+
+
+def test_business_score_requires_the_objective_to_check_source_relevance():
+    evidence = [_preview(PAINTER["url"], PAINTER["title"], PAINTER["text"])]
+    assert score_task("business_research", _filled_plan(), {"evidence": evidence})["outcome"] == "FAIL"
+
+
 def test_extraction_keeps_the_article_and_drops_navigation():
     html = """
     <html><head><title>Kitchen painting</title></head><body>
@@ -523,7 +548,7 @@ def test_a_missing_plan_is_written_one_section_at_a_time(monkeypatch):
         ("Name the service.", answers["Service"]),
     )
 
-    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None, plan=False):
+    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None, expand_unfinished=True, ollama_format=None, plan=False):
         for marker, answer in by_marker:
             if marker in user:
                 return answer, 12, {"backend": "test"}
@@ -674,7 +699,7 @@ def test_a_channels_essay_is_replaced_by_the_finished_sentence(monkeypatch):
         ("Name the service.", "Alba Kitchen Refresh paints and resprays the kitchen cabinets a household already owns."),
     )
 
-    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None, plan=False):
+    def fake(role, system, user, max_tokens=320, programme=None, package_id="", plain=False, prefill="", stop=None, expand_unfinished=True, ollama_format=None, plan=False):
         if "Name the channel." in user:
             if "was rejected" in user:
                 return "Homeowners are reached through local search in the first week, and the owner posts one note about painting their kitchen cabinets.", 8, {"backend": "test"}

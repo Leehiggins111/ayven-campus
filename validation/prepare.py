@@ -133,7 +133,7 @@ def main() -> int:
         f"export AYVEN_LLM_STUB={'0' if info['cuda'] else '1'}\n"
         "export AYVEN_ALLOW_ESCALATION=0\n"
         f"export AYVEN_RESEARCH_MODE={research_mode}\n"
-        "export AYVEN_GPU_USD_PER_HOUR=\"${AYVEN_GPU_USD_PER_HOUR:-2.00}\"\n"
+        "export AYVEN_GPU_USD_PER_HOUR=\"${AYVEN_GPU_USD_PER_HOUR:-0.89}\"\n"
     )
     (ROOT/"validation"/".last_prepare.json").write_text(json.dumps(info, indent=2)); log("PREFLIGHT")
     for k,v in info.items(): log(f"  {k}: {v}")

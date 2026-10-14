@@ -20,6 +20,7 @@ a GPU, so the probe status is MODEL_UNVALIDATED until that first live call.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from pydantic import BaseModel
@@ -42,8 +43,13 @@ def server_body(model: str, messages: list[dict], max_tokens: int, schema: type[
     from .boundary import decoding_kwargs
 
     decoded = decoding_kwargs(schema)
+    schema_body = decoded["response_format"]["json_schema"]["schema"]
     body["response_format"] = decoded["response_format"]
-    body["guided_json"] = decoded["response_format"]["json_schema"]["schema"]
+    # vLLM 0.12 removed guided_json / --guided-decoding-backend. structured_outputs
+    # is the replacement. response_format stays because llama.cpp accepts it.
+    body["structured_outputs"] = {"json": schema_body}
+    if os.environ.get("AYVEN_VLLM_LEGACY_GUIDED", "0") == "1":
+        body["guided_json"] = schema_body
     if decoded.get("llguidance_grammar"):
         body["grammar"] = decoded["llguidance_grammar"]
     return body
@@ -136,9 +142,10 @@ def contract_report(base_url: str = "") -> dict:
         "status": "MODEL_UNVALIDATED",
         "model_validated": False,
         "gpu_validated": False,
-        "runtime": "vllm guided_json + llama.cpp response_format + transformers first-token mask",
+        "runtime": "vllm structured_outputs + llama.cpp response_format + transformers first-token mask",
         "request_keys": sorted(body),
         "has_response_format": "response_format" in body,
+        "has_structured_outputs": isinstance((body.get("structured_outputs") or {}).get("json"), dict),
         "has_guided_json": isinstance(body.get("guided_json"), dict),
         "has_grammar": bool(body.get("grammar")),
         "first_token_is_brace": bool(first_token_is_schema(ProbeAck)),

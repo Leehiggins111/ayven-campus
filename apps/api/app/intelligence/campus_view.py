@@ -389,6 +389,9 @@ def _doing(stage: str, package: dict, clarifying: bool, needs_you: bool, finishe
     if unresolved:
         return "Unresolved. The evidence is not enough to call this finished."
     if rejected:
+        detail = (package.get("error") or "").strip()
+        if detail:
+            return detail
         return "Rejected. Nothing was sent."
     if finished:
         return "Complete"
@@ -600,7 +603,7 @@ def _result(package: dict, obs: dict, evaluation: dict, trust: str, cost: str, *
     if unresolved or (package.get("workflow_state") or "") == "UNRESOLVED":
         summary = "Unresolved. Approval did not create evidence, so this job is not complete."
     elif (package.get("workflow_state") or "") == "FAILED":
-        summary = "Rejected. Nothing was sent."
+        summary = (package.get("error") or "").strip() or "Rejected. Nothing was sent."
     elif supported == 0 and (verdict == "PASS" or manager in {"ESCALATE", "CLARIFY", "PASS"}):
         summary = "No claim was supported. This is not a completed pass."
     else:
