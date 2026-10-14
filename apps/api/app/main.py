@@ -616,56 +616,127 @@ def milo_status(project_id: str):
         raise HTTPException(404)
 
 
-def _failed_package_report(package_id: str) -> bytes | None:
-    """report.md for a FAILED package: failure reason and blockers first, then the report.
+_CODE_LINE = None
 
-    None when the package is not FAILED. A FAILED package with no report and no
-    reason gets a 404 from the caller.
+
+def _code_like(line: str) -> bool:
+    """A line that looks like source, markup, a fence or a data blob."""
+    import re
+
+    global _CODE_LINE
+    if _CODE_LINE is None:
+        _CODE_LINE = re.compile(
+            r"(```|~~~|<\s*/?\s*[A-Za-z!?][^>]*>|^\s*[{}\[\]]|[{};]\s*$|\{\s*\"|\":\s*\"|=>|"
+            r"\b(?:def|class|return|import|from\s+\S+\s+import|assert|function|let|const|var|if\s*\(|for\s*\(|while\s*\(|"
+            r"lambda|print\s*\(|console\.|document\.|window\.|localStorage|JSON\.)\b|"
+            r"[A-Za-z_][\w.]*\s*\([^)]*\)\s*[:{]|[A-Za-z_][\w.]*\s*=\s*[^=\s]|ayven-artifact|<!doctype)",
+            re.I,
+        )
+    if line.startswith(("    ", "\t")) and line.strip():
+        return True
+    return bool(_CODE_LINE.search(line))
+
+
+def _safe_line(text: str, limit: int = 300) -> str:
+    """One short line of prose. Code-like content is collapsed to a marker, never quoted."""
+    import re
+
+    kept = []
+    omitted = False
+    for line in str(text or "").splitlines():
+        if not line.strip():
+            continue
+        if _code_like(line):
+            omitted = True
+            continue
+        kept.append(line.strip())
+    out = re.sub(r"\s+", " ", " ".join(kept)).strip()
+    # Belt and braces: drop any fragment that still looks like markup or a call.
+    out = re.sub(r"<[^>]{0,200}>", "", out)
+    if omitted:
+        out = (out + " [code omitted]").strip()
+    if len(out) > limit:
+        out = out[: limit - 1].rstrip() + "…"
+    return out
+
+
+def _failed_package_report(package_id: str) -> bytes | None:
+    """report.md for a FAILED package, built from an allowlist of structured fields only.
+
+    Heading, job brief, failure reason, blockers and test/browser status. The report body
+    (findings) is never copied, so no generated source can reach the customer. None when the
+    package is not FAILED; 404 when there is nothing to explain (no reason and no blocker).
     """
-    rows = _rows("SELECT project_id, workflow_state, findings, error FROM work_packages WHERE id=?", (package_id,))
+    import json
+    import re
+
+    rows = _rows(
+        "SELECT project_id, title, objective, task_class, workflow_state, findings, error, observability_json "
+        "FROM work_packages WHERE id=?",
+        (package_id,),
+    )
     if not rows or (rows[0]["workflow_state"] or "") != "FAILED":
         return None
     row = rows[0]
     from .goals import list_blockers
 
-    blockers = [b["reason"] for b in list_blockers(package_id=package_id)]
-    findings = _strip_failed_report_sources(row["findings"] or "").strip()
-    if not findings:
+    blockers = [_safe_line(b["reason"]) for b in list_blockers(package_id=package_id)]
+    blockers = [b for b in blockers if b]
+    reason = _safe_line(row["error"] or "")
+    if not reason and not blockers and not (row["findings"] or "").strip():
         raise HTTPException(404, "This job didn't produce a report.")
-    lines = ["# FAILED: this job did not pass its checks", "", "Nothing was delivered for approval and no source files are included.", ""]
-    if row["error"]:
-        lines += ["## Failure reason", "", str(row["error"]).strip(), ""]
+    project = _rows("SELECT title, objective FROM projects WHERE id=?", (row["project_id"],))
+    brief = _safe_line((project[0]["objective"] if project else "") or row["objective"] or "")
+    title = _safe_line((project[0]["title"] if project else "") or row["title"] or "", 120)
+
+    evidence = {}
+    for column in ("observability_json",):
+        try:
+            data = json.loads(row[column] or "{}")
+        except (TypeError, ValueError):
+            data = {}
+        if isinstance(data, dict):
+            for key in ("software_execution", "web_execution"):
+                if data.get(key) and not evidence.get(key):
+                    evidence[key] = data[key]
+    checks = []
+    task_class = row["task_class"] or ""
+    software = evidence.get("software_execution") or {}
+    web = evidence.get("web_execution") or {}
+    if task_class == "software_build" or software:
+        passed = isinstance(software, dict) and software.get("passed") is True
+        checks.append(f"Tests: {'PASSED' if passed else 'FAILED'}")
+        if isinstance(software, dict) and not passed and software.get("exit_code") is not None:
+            checks.append(f"Test exit code: {int(software.get('exit_code') or 0)}")
+    if task_class in ("website_build", "application_build") or web:
+        passed = isinstance(web, dict) and web.get("passed") is True and web.get("status") == "ok"
+        checks.append(f"Tests: {'PASSED' if passed else 'FAILED'}")
+        status = _safe_line((web or {}).get("status") or "not run", 40) if isinstance(web, dict) else "not run"
+        detail = _safe_line(((web or {}).get("error") or "").splitlines()[0] if isinstance(web, dict) and web.get("error") else "", 160)
+        checks.append(f"Browser check: {'passed' if passed else 'failed'} ({status})" + (f": {detail}" if detail else ""))
+    if not checks:
+        # Only the structured status line is read from the report, never its body.
+        match = re.search(r"^Tests: (PASSED|FAILED)\s*$", row["findings"] or "", re.M)
+        if match:
+            checks.append(f"Tests: {match.group(1)}")
+
+    lines = ["# FAILED: this job did not pass its checks", "",
+             "Nothing was delivered for approval. No source files or generated content are included.", ""]
+    if title or brief:
+        lines += ["## Job", ""]
+        if title:
+            lines.append(f"Title: {title}")
+        if brief:
+            lines.append(f"Brief: {brief}")
+        lines.append("")
+    if reason:
+        lines += ["## Failure reason", "", reason, ""]
     if blockers:
-        lines += ["## Blockers", ""] + [f"- {reason}" for reason in blockers] + [""]
-    lines += ["## Report", "", findings, ""]
+        lines += ["## Blockers", ""] + [f"- {b}" for b in blockers] + [""]
+    if checks:
+        lines += ["## Checks", ""] + [f"- {c}" for c in checks] + [""]
+    lines += ["Nothing was sent.", ""]
     return "\n".join(lines).encode("utf-8")
-
-
-def _strip_failed_report_sources(findings: str) -> str:
-    """Drop embedded app sources from a FAILED report. The zip already omits the named files.
-
-    Web and application reports fence each file and the ayven-artifact JSON. A FAILED
-    package must not leak those; keep the failure heading, checks, defects and narrative.
-    """
-    import re
-
-    text = findings or ""
-    # Fenced copies of app files and the machine-readable artifact blob.
-    text = re.sub(
-        r"^```(?:ayven-artifact|[A-Za-z0-9_./-]+\.(?:html?|css|js|mjs|ts|tsx|jsx|py))\s*\n.*?\n```\s*$",
-        "",
-        text,
-        flags=re.M | re.S,
-    )
-    # Headings that only introduced those files.
-    text = re.sub(
-        r"^## (?:Source files|Artifact source|[A-Za-z0-9_./-]+\.(?:html?|css|js|mjs|ts|tsx|jsx|py))\s*$",
-        "",
-        text,
-        flags=re.M,
-    )
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
 
 
 @app.get("/work-packages/{package_id}/bundle.zip")

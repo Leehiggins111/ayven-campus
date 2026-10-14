@@ -441,7 +441,8 @@ def failed_job_checks(client, auth, pid, criteria):
     assert archive.namelist() == ["report.md"], archive.namelist()
     report = archive.read("report.md").decode()
     assert report.startswith("# FAILED"), report[:300]
-    assert report.index("Build failed") < report.index("## Report"), report[:800]
+    assert report.index("Build failed") < report.index("## Checks"), report[:800]
+    assert "## Report" not in report and "```" not in report and "~~~" not in report
     accept = client.post(f"/work-packages/{s['package_id']}/accept", headers=auth)
     assert accept.status_code == 409, accept.text
     return s
@@ -630,8 +631,8 @@ def test_a_failed_package_zip_has_only_the_report_with_the_reason_first():
     assert archive.namelist() == ["report.md"]
     report = archive.read("report.md").decode()
     assert report.startswith("# FAILED")
-    assert report.index("## Failure reason") < report.index("## Blockers") < report.index("## Report")
-    assert "Tests: FAILED" in report and "return a" not in report
+    assert report.index("## Failure reason") < report.index("## Blockers") < report.index("## Checks")
+    assert "Tests: FAILED" in report and "return a" not in report and "Rejected: AssertionError" not in report
 
 
 def test_a_failed_package_without_a_report_is_404():
@@ -646,17 +647,92 @@ def test_a_failed_package_without_a_report_is_404():
     assert TestClient(app).get(f"/work-packages/{parent}/bundle.zip").status_code == 404
 
 
-def test_failed_report_stripper_keeps_narrative_and_drops_every_fenced_source():
-    from app.main import _strip_failed_report_sources
+
+# FAILED report.md is built from structured fields only: every QA injection variant (r119) -----------
+
+def _fixture_markers():
     from tests.test_web_artifact import FILES
 
-    report = "# Browser application deliverable\nTests: FAILED\nTitle: Local job tracker\n## Browser checks\n- Create: failed (1280px)\n## Defect\nExecutable doesn't exist\n## Source files\n"
-    for name, source in FILES.items():
-        report += f"## {name}\n```{name}\n{source}\n```\n"
-    report += '## Artifact source\n```ayven-artifact\n{"index.html":"<h1>x</h1>"}\n```\n\nNothing was sent.\n'
-    out = _strip_failed_report_sources(report)
-    for keep in ("Tests: FAILED", "Title: Local job tracker", "## Browser checks", "Create: failed", "## Defect", "Executable doesn't exist", "Nothing was sent."):
-        assert keep in out, keep
-    for name, source in FILES.items():
-        assert source not in out and f"## {name}" not in out and f"```{name}" not in out
-    assert "```" not in out and "Source files" not in out and "ayven-artifact" not in out
+    markers = ["<!doctype", "localStorage", "let jobs", "```", "~~~", "ayven-artifact", "def add(", "return left",
+               "assert main.add", "import main", "body{font", "document.querySelector"]
+    for source in FILES.values():
+        markers += [line.strip()[:40] for line in source.splitlines() if len(line.strip()) > 20][:5]
+    return markers
+
+
+def _variants():
+    import json as _json
+    from tests.test_web_artifact import FILES
+
+    html, css, js = FILES["index.html"], FILES["style.css"], FILES["app.js"]
+    prog = "def add(left, right):\n    return left\n"
+    test = "import main\nassert main.add(4, 7) == 11\n"
+    head = "# Browser application deliverable\nTests: FAILED\n"
+    return {
+        "unfenced web source": head + html + "\n" + js + "\n",
+        "indented code block": head + "\n".join("    " + line for line in (html + "\n" + css).splitlines()) + "\n",
+        "~~~ fence": head + "~~~html\n" + html + "\n~~~\n",
+        "``` fence no language": head + "```\n" + js + "\n```\n",
+        "```HTML uppercase tag": head + "```HTML\n" + html + "\n```\n",
+        "```index.HTML uppercase filename": head + "```index.HTML\n" + html + "\n```\n",
+        "```javascript tag": head + "```javascript\n" + js + "\n```\n",
+        "inline ayven-artifact JSON unfenced": head + "ayven-artifact " + _json.dumps(FILES) + "\n",
+        "unfenced python (program report)": "# Software deliverable\nTests: FAILED\n" + prog + test,
+        "```python tag (program report)": "# Software deliverable\nTests: FAILED\n```python\n" + prog + "```\n```python\n" + test + "```\n",
+    }
+
+
+def _failed_zip_report(findings: str, blocker: str = "Build failed: the browser check did not pass (unavailable).",
+                       error: str = "Build failed: the browser check did not pass (unavailable).", task_class: str = "application_build") -> str:
+    from app.goals import add_blocker
+    from app.intelligence.store import update_package as store_update
+    from app.intelligence.workflow import log_transition
+
+    project_id = _project("Build a customer job tracking application.")
+    parent = insert_package(
+        project_id=project_id, task_id="v-" + uuid.uuid4().hex[:6], title="Research programme", objective="Build a customer job tracking application.",
+        origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="failed",
+    )
+    store_update(parent, findings=findings, error=error, task_class=task_class)
+    log_transition(parent, "FAILED", "build failed")
+    add_blocker(project_id, "error", blocker, "Fix it", package_id=parent)
+    response = TestClient(app).get(f"/work-packages/{parent}/bundle.zip")
+    assert response.status_code == 200, response.text
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    assert archive.namelist() == ["report.md"]
+    return archive.read("report.md").decode()
+
+
+@pytest.mark.parametrize("name", list(_variants()))
+def test_no_injected_source_variant_reaches_the_failed_report(name):
+    findings = _variants()[name]
+    task = "software_build" if "program" in name else "application_build"
+    report = _failed_zip_report(findings, task_class=task)
+    leaks = [m for m in _fixture_markers() if m.lower() in report.lower()]
+    assert not leaks, (name, leaks, report)
+    assert not any(line.startswith(("    ", "\t")) for line in report.splitlines()), report
+    assert report.startswith("# FAILED") and "## Failure reason" in report and "## Blockers" in report
+    assert "- Tests: FAILED" in report
+
+
+def test_source_quoted_inside_a_blocker_or_reason_is_collapsed():
+    from tests.test_web_artifact import FILES
+
+    quoted = "Review: invalid output\n```html\n" + FILES["index.html"] + "\n```\n" + FILES["app.js"]
+    report = _failed_zip_report("Tests: FAILED\n", blocker=quoted, error="Build failed:\n    " + FILES["app.js"])
+    leaks = [m for m in _fixture_markers() if m.lower() in report.lower()]
+    assert not leaks, (leaks, report)
+    assert "Review: invalid output [code omitted]" in report, report
+    assert "[code omitted]" in report.split("## Failure reason")[1].split("##")[0]
+
+
+def test_failed_report_lines_are_truncated():
+    report = _failed_zip_report("Tests: FAILED\n", blocker="Review: " + "x" * 2000, error="Build failed: " + "y" * 2000)
+    assert all(len(line) <= 310 for line in report.splitlines()), max(len(line) for line in report.splitlines())
+
+
+def test_failed_report_keeps_the_job_brief_and_status_but_never_the_report_body():
+    report = _failed_zip_report("Tests: FAILED\nSome narrative the model wrote about the app.\n")
+    assert "Brief: Build a customer job tracking application." in report
+    assert "- Tests: FAILED" in report and "Browser check: failed" in report
+    assert "Some narrative" not in report
