@@ -122,13 +122,17 @@ def health():
         durability["persistence_live"] = live
         if not live:
             durability.update({"durable": False, "durable_storage": False, "persistence_state": "degraded", "persistence_error": error})
+    degraded = durability["persistence_state"] == "degraded"
     return {
-        "ok": True,
+        # Degraded storage is reported in the body but stays HTTP 200, so a brief
+        # database blip does not make Render restart the service or fail a deploy.
+        # Monitors that need a failing status use /health/ready.
+        "ok": not degraded,
         "service": "ayven-api",
         "version": __version__,
         "validation_status": VALIDATION_STATUS,
         "gpu_validated": False,
-        "runtime": "durable" if runtime_durable else "thread_stub",
+        "runtime": "degraded" if degraded else ("durable" if runtime_durable else "thread_stub"),
         "access_protected": protected(),
         "research_mode": os.environ.get("AYVEN_RESEARCH_MODE", "fixtures"),
         **durability,
@@ -137,6 +141,26 @@ def health():
         "label": "SIMULATED" if os.environ.get("AYVEN_LLM_STUB", "1") != "0" else "LIVE",
         "workforce": {"roles": DEFAULT_MODELS, "local_endpoint": local_configured(), "escalation_enabled": escalation_configured()},
     }
+
+@app.get("/health/ready")
+def health_ready():
+    """Readiness for monitors: HTTP 503 while durable storage is degraded, else 200."""
+    from fastapi.responses import JSONResponse
+
+    body = health()
+    ready = body["persistence_state"] != "degraded"
+    payload = {
+        "ready": ready,
+        "ok": body["ok"],
+        "runtime": body["runtime"],
+        "durable": body["durable"],
+        "persistence": body["persistence"],
+        "persistence_state": body["persistence_state"],
+    }
+    if not ready:
+        payload["persistence_error"] = body.get("persistence_error", "")
+    return JSONResponse(payload, status_code=200 if ready else 503)
+
 
 @app.get("/state")
 def state():

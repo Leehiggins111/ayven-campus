@@ -116,17 +116,44 @@ def test_health_reports_degraded_when_the_durable_database_does_not_answer(monke
 
     monkeypatch.setattr(main_module, "persistence_report", lambda: {"persistence": "libsql_http", "durable": True, "persistence_state": "durable"})
     monkeypatch.setattr(db_module, "live_check", lambda timeout=2.0: (False, "OperationalError: connection refused"))
-    body = TestClient(app).get("/health").json()
+    response = TestClient(app).get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["runtime"] == "degraded"
     assert body["durable"] is False
     assert body["persistence_state"] == "degraded"
     assert body["persistence_live"] is False
     assert "connection refused" in body["persistence_error"]
     monkeypatch.setattr(db_module, "live_check", lambda timeout=2.0: (True, ""))
     healthy = TestClient(app).get("/health").json()
+    assert healthy["ok"] is True
+    assert healthy["runtime"] == "durable"
     assert healthy["durable"] is True
     assert healthy["persistence_state"] == "durable"
     assert healthy["persistence_live"] is True
 
+
+
+def test_health_ready_is_503_while_degraded_and_both_paths_skip_access(monkeypatch):
+    import app.db as db_module
+    import app.main as main_module
+
+    monkeypatch.setenv("AYVEN_API_TOKEN", "a-private-test-key-with-at-least-32-characters")
+    monkeypatch.setattr(main_module, "persistence_report", lambda: {"persistence": "libsql_http", "durable": True, "persistence_state": "durable"})
+    monkeypatch.setattr(db_module, "live_check", lambda timeout=2.0: (False, "OperationalError: connection refused"))
+    client = TestClient(app)
+    assert client.get("/state").status_code == 401
+    assert client.get("/health").status_code == 200
+    ready = client.get("/health/ready")
+    assert ready.status_code == 503
+    assert ready.json()["ready"] is False
+    assert ready.json()["persistence_state"] == "degraded"
+    assert "connection refused" in ready.json()["persistence_error"]
+    monkeypatch.setattr(db_module, "live_check", lambda timeout=2.0: (True, ""))
+    ok = client.get("/health/ready")
+    assert ok.status_code == 200
+    assert ok.json()["ready"] is True
 
 def test_live_check_fails_fast_on_a_dead_database(monkeypatch):
     from app.db import live_check

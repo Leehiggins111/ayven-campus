@@ -49,7 +49,7 @@ def authorized(request: Request) -> bool:
 
 
 async def boundary(request: Request, call_next):
-    if request.url.path in ('/health', '/login', '/session') or authorized(request):
+    if request.url.path in ('/health', '/health/ready', '/login', '/session') or authorized(request):
         return await call_next(request)
     if request.method == 'GET' and 'text/html' in request.headers.get('accept', ''):
         return RedirectResponse('/login', status_code=303)

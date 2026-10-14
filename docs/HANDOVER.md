@@ -112,14 +112,28 @@ bash scripts/run_ayven_live.sh
 | `b2d6caa` | Criteria match whole tokens; figures must appear exactly (`£25` is not `£250`) |
 | `3975f80` | e2e (`validation/wf1.py`) and `MILO_CONTRACT.md` example budgets £2.00 to £1.00, under the unchanged $2 ceiling |
 
+### QA-verified at `9e68e3b` (CI green, 372 passed)
+
+| Commit | Change |
+| --- | --- |
+| `7c3e998` | `/health` runs a live `SELECT 1` (`db.live_check`, 2s timeout) when storage is configured durable |
+| `711836f` | Criteria keep figures of any length (`3`, `£5`, `$2`) and match them exactly as whole tokens, after normalising `£25.00` to `£25` and `1,000` to `1000` |
+| `9e68e3b` | This handover, previous revision |
+
 ### Pending QA
 
 | Commit | Change |
 | --- | --- |
-| `7c3e998` | `/health` runs a live `SELECT 1` (`db.live_check`, 2s timeout) when storage is configured durable. On failure it reports `durable: false`, `persistence_state: degraded`, `persistence_live: false` and `persistence_error` |
-| `711836f` | Criteria keep figures of any length (`3`, `£5`, `$2`) and match them exactly as whole tokens, after normalising `£25.00` to `£25` and `1,000` to `1000` |
+| the commit after `9e68e3b` (code, tests and this section together) | Degraded `/health` sets `ok: false`; new `/health/ready` |
 
-Run: `python3 -m pytest apps/api/tests/test_hosting.py apps/api/tests/test_qa_defects.py -q`, then the full suite.
+## Health and readiness
+
+- `GET /health` always returns HTTP 200. When durable storage is configured but `SELECT 1` fails, the body says `ok: false`, `runtime: "degraded"`, `durable: false`, `persistence_state: "degraded"`, `persistence_live: false` and `persistence_error`. It stays 200 so a brief database blip does not make Render restart the service or fail a deploy.
+- `GET /health/ready` returns HTTP 503 while storage is degraded and 200 otherwise, with `ready`, `ok`, `runtime`, `durable`, `persistence` and `persistence_state`. Use it for monitors.
+- Both paths skip access protection. `render.yaml` uses `healthCheckPath: /health`, which is unchanged.
+- Render's health check could later point at `/health/ready` if Lee chooses. That trades restart-on-blip risk for faster detection of a dead database.
+
+Run: `python3 -m pytest apps/api/tests/test_hosting.py apps/api/tests/test_access.py -q`, then the full suite.
 
 ## Backlog: criteria matching
 
