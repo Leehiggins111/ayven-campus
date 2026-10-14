@@ -179,26 +179,86 @@ def _complete_once(role: str, system: str, user: str, max_tokens: int = 400, pro
     return text, tokens, meta
 
 
+class BudgetExceeded(RuntimeError):
+    """The job's own cap would be passed by the next model call. The job stops FAILED."""
+
+
+# Project id -> the stop message, so a builder that swallows exceptions still stops the job.
+BUDGET_STOPS: dict[str, str] = {}
+
+
+def _job_cap_usd(project_id: str):
+    try:
+        from ..goals import get_goal
+
+        goal = get_goal(project_id) or {}
+        value = goal.get("job_cap_usd")
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _reserve(role: str, project_id: str, max_tokens: int):
+    """Reserve this call against the job cap; raise BudgetExceeded if the cap would be passed."""
+    if not project_id:
+        return None
+    from .budget import check_and_reserve, gbp
+
+    cap = _job_cap_usd(project_id)
+    held = check_and_reserve(project_id, role, max_tokens, job_cap_usd=cap)
+    if not held.get("ok"):
+        if held.get("status") == "BUDGET_EXCEEDED":
+            from .budget import effective_job_cap_usd
+
+            message = f"BudgetExceeded: this job's £{gbp(effective_job_cap_usd(cap)):.2f} budget would be passed by the next model call"
+            BUDGET_STOPS[project_id] = message
+            raise BudgetExceeded(message)
+        return None
+    return held.get("reservation_id")
+
+
+def _settle(reservation_id, role: str, tokens_in: int, tokens_out: int) -> None:
+    if not reservation_id:
+        return
+    from .budget import commit, estimate_usd
+
+    try:
+        commit(reservation_id, int(tokens_in or 0), int(tokens_out or 0),
+               amount_usd=estimate_usd(role, input_tokens=int(tokens_in or 0), output_tokens=int(tokens_out or 0)))
+    except Exception:
+        pass
+
+
 def _complete(role: str, system: str, user: str, max_tokens: int = 400, programme: Programme | None = None, package_id: str = "", plain: bool = False, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, plan: bool = False):
     """The normal model path. A timeout, a malformed reply, or an empty reply is retried here."""
     from .recovery import run_retries
 
+    project_id = getattr(programme, "project_id", "") if programme is not None else ""
+
     def attempt(_number: int):
-        text, tokens, meta = _complete_once(
+        reservation = _reserve(role, project_id or "", max_tokens)
+        try:
+            text, tokens, meta = _complete_once(
             role, system, user, max_tokens=max_tokens, programme=programme, package_id=package_id,
             plain=plain, prefill=prefill, stop=stop, expand_unfinished=expand_unfinished,
             ollama_format=ollama_format, plan=plan,
-        )
+            )
+        except BaseException:
+            _settle(reservation, role, max_tokens, 0)
+            raise
         meta = dict(meta or {})
+        _settle(reservation, role, int(meta.get("prompt_tokens") or len((system or "") + (user or "")) // 4),
+                int(meta.get("completion_tokens") or tokens or 0))
         failed = bool(meta.get("error")) or not isinstance(text, str) or not str(text).strip()
         if failed:
             return {"ok": False, "error": meta.get("error") or "empty_or_malformed", "text": text, "tokens": tokens, "meta": meta}
         return {"ok": True, "text": text, "tokens": tokens, "meta": meta}
 
-    project_id = getattr(programme, "project_id", "") if programme is not None else ""
     outcome = run_retries(
         attempt, stage=f"model-{role}", project_id=project_id or "", task_id=package_id or "",
     )
+    if project_id and project_id in BUDGET_STOPS:
+        raise BudgetExceeded(BUDGET_STOPS[project_id])
     if not outcome["ok"]:
         last = (outcome.get("attempts") or [{}])[-1]
         return "", 0, {
@@ -1391,6 +1451,8 @@ def _software_turn(programme: Programme, package_id: str) -> tuple[str, dict]:
         text, meta = build_deliverable(programme.objective, complete)
         meta = dict(meta or {})
         meta.pop("raw_response", None)
+    except BudgetExceeded:
+        raise
     except Exception as exc:
         text = f"# Software deliverable\nTests: FAILED\n\n{type(exc).__name__}: {exc}\n\nNothing was sent.\n"
         meta = {"error": f"{type(exc).__name__}: {exc}", "backend": "software", "tests_passed": False}

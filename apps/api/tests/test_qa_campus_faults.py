@@ -970,7 +970,7 @@ def test_blockers_are_deduped_by_type_and_capped_at_five():
     report = _inject_failed("W", "multiblock", [], extra_blockers=reasons)
     lines = [l for l in _section(report, "Blockers").splitlines() if l.startswith("- ")]
     assert len(lines) == 6, lines
-    assert lines[-1] == "- +4 more", lines  # 9 distinct types, 5 shown
+    assert lines[-1] == "- +5 more", lines  # every stored blocker not shown counts, same type or not
     assert len(set(lines[:5])) == 5
     assert lines[0] == "- Build failed: the browser check did not pass. (browser unavailable)"
 
@@ -993,3 +993,147 @@ def test_title_and_brief_pass_the_allowlist_or_are_left_out():
         assert plain_detail(bad) == "", bad
     long = plain_detail("word " * 60)
     assert len(long) <= 121 and long.endswith("…")
+
+
+# --- Pre-launch follow-ups after the 77adbdf sign-off ---------------------------------
+
+def test_exit_codes_are_clamped_or_named_or_unknown():
+    from app import failure_report as fr
+
+    assert fr.exit_code_text(0) == "exit code 0"
+    assert fr.exit_code_text(255) == "exit code 255"
+    assert fr.exit_code_text(-9) == "killed by SIGKILL"
+    assert fr.exit_code_text(-15) == "killed by SIGTERM"
+    for odd in (256, 4242424242, -999, None, "1", True, 1.5):
+        assert fr.exit_code_text(odd) == "exit code unknown", odd
+
+
+def test_n_of_m_counts_must_be_sane():
+    from app import failure_report as fr
+
+    assert fr.count_text(2, 5) == "2 of 5 checks failed"
+    assert fr.count_text(0, 1000) == "0 of 1000 checks failed"
+    for failed, total in ((6, 5), (1, 1001), (1, 0), (-1, 3), (True, 2), (1, "2")):
+        assert fr.count_text(failed, total) == "", (failed, total)
+
+
+def test_unknown_exception_classes_print_a_custom_error():
+    from app import failure_report as fr
+
+    for known in ("AssertionError", "TimeoutError", "ConnectError", "HTTPStatusError", "KeyError", "ReadTimeout"):
+        assert fr.exception_class(f"Traceback\n{known}: boom") == known
+    for custom in ("DefAddLeftRightReturnLeftPlusRightError", "SecretTokenError", "PriceIsGbpTwentyFiveException"):
+        assert fr.exception_class(f"{custom}: boom") == "a custom error"
+
+
+def test_brief_allowlist_accepts_brackets_but_not_code():
+    from app import failure_report as fr
+
+    assert fr.plain_detail("Job tracker (77a) for Lee [v2]") == "Job tracker (77a) for Lee [v2]"
+    for code in ("print(add(4, 7))", "items[0] is the total", "f(x) returns the sum"):
+        assert fr.plain_detail(code) == "", code
+
+
+def _built(**kw):
+    from app import failure_report as fr
+
+    base = dict(task_class="business_research", error="", blockers=[], evidence={}, title="Job", brief="Write a price sheet.")
+    base.update(kw)
+    return fr.build(**base)
+
+
+def test_every_failure_type_gets_one_what_next_line():
+    from app import failure_report as fr
+
+    for ftype in fr.FailureType:
+        assert fr.NEXT[ftype] and "\n" not in fr.NEXT[ftype]
+    report = _built(error="Stopped during EMPLOYEE. Cause: ValueError.")
+    assert _section(report, "What next") == fr.NEXT[fr.FailureType.STEP_ERROR]
+    # needed_from_lee from our own blocker wording is used when it passes the allowlist.
+    report = _built(blockers=[{"kind": "cap", "reason": "Stopped: budget used.", "needed_from_lee": "Raise this job's budget cap, then retry the job."}])
+    assert _section(report, "What next") == "Raise this job's budget cap, then retry the job."
+    report = _built(blockers=[{"kind": "cap", "reason": "Stopped: budget used.", "needed_from_lee": "run os.system(rm -rf)"}])
+    assert _section(report, "What next") == fr.NEXT[fr.FailureType.BUDGET_EXCEEDED]
+
+
+def test_review_failures_name_missing_items_by_the_customers_own_criteria():
+    criteria = ["Includes a price for a full groom", "Mentions the cancellation policy", "Payment terms: pay by card"]
+    goal = {"acceptance_criteria": criteria}
+    report = _built(error="Review: draft lacks things | Missing: a full groom price; pay by card", goal=goal)
+    reason = _section(report, "Failure reason")
+    assert "criterion 1: Includes a price for a full groom" in reason, reason
+    assert "criterion 3: Payment terms: pay by card" in reason, reason
+    assert "criterion 2" not in reason
+    # Review wording never prints; an unmatched item is only counted.
+    report = _built(error="Review: x | Missing: a full groom price; def add(a, b): return a + b", goal=goal)
+    reason = _section(report, "Failure reason")
+    assert "+1 more" in reason and "def add" not in reason, reason
+    # A customer criterion that fails the allowlist is shown by number only.
+    report = _built(error="Review: x | Missing: price groom", goal={"acceptance_criteria": ["print(groom) price"]})
+    assert "criterion 1)" in _section(report, "Failure reason")
+
+
+def test_plus_n_more_counts_same_type_blockers_too():
+    blockers = [{"kind": "error", "reason": f"Stopped during step {n}. Cause: ValueError."} for n in range(7)]
+    report = _built(blockers=blockers)
+    lines = [l for l in _section(report, "Blockers").splitlines() if l.startswith("- ")]
+    assert lines[-1] == "- +6 more", lines
+
+
+def test_timeout_blockers_and_model_timeouts_are_typed_timeout():
+    from app import failure_report as fr
+
+    assert fr.classify("timeout", "Stopped during EMPLOYEE.") is fr.FailureType.TIMEOUT
+    cause = "Stopped during EMPLOYEE. Cause: RuntimeError: Workforce model call failed (ReadTimeout: timed out); no fixture fallback was used."
+    assert fr.classify("", cause) is fr.FailureType.TIMEOUT
+    report = _built(task_class="software_build", error=cause)
+    assert _section(report, "Failure reason").startswith(fr.WORDING[fr.FailureType.TIMEOUT]), report
+
+
+def test_budget_stop_wins_over_a_build_that_never_ran():
+    from app import failure_report as fr
+
+    report = _built(task_class="software_build",
+                    error="Stopped during EMPLOYEE. Cause: BudgetExceeded: this job's £0.01 budget would be passed by the next model call.",
+                    goal={"spent_gbp": 0.0, "job_cap_gbp": 0.01})
+    assert _section(report, "Failure reason") == fr.WORDING[fr.FailureType.BUDGET_EXCEEDED] + " (spent £0.00 of £0.01)"
+
+
+def test_a_tiny_budget_cap_over_http_stops_the_job_failed_with_a_budget_blocker(tmp_path):
+    script = _HTTP_PROGRAM_JOB.split("set_role_generator(gen)")[0] + r'''
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+criteria = ["Adds 4 and 7"]
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Write a small Python program that adds 4 and 7 and prints the sum.",
+                                        "acceptance_criteria": criteria, "job_cap_gbp": 0.01}, headers=auth)
+    assert r.status_code == 200, r.text
+    pid = r.json()["project_id"]
+    for _ in range(1200):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    assert s["status"] == "rejected", s
+    assert s["workflow_state"] == "FAILED", s
+    assert s["approval"] is None, s
+    assert s["criteria_results"] == [{"criterion": c, "status": "not_met"} for c in criteria], s
+    assert s["spent_gbp"] <= 0.01, s
+    from app.db import connect
+    conn = connect()
+    approvals = conn.execute("SELECT status FROM approvals WHERE project_id=?", (pid,)).fetchall()
+    blockers = [dict(b) for b in conn.execute("SELECT kind, reason FROM blockers WHERE project_id=? AND status='open'", (pid,)).fetchall()]
+    conn.close()
+    assert approvals == [], approvals
+    assert any(b["kind"] == "cap" and "£0.01 budget" in b["reason"] for b in blockers), blockers
+    z = client.get(f"/work-packages/{s['package_id']}/bundle.zip", headers=auth)
+    assert z.status_code == 200, z.text
+    report = zipfile.ZipFile(io.BytesIO(z.content)).read("report.md").decode()
+    assert "budget" in report.split("## Failure reason", 1)[1].split("##", 1)[0].lower(), report
+    assert "of £0.01" in report, report
+    assert "Raise this job's budget cap" in report, report
+    assert client.post(f"/work-packages/{s['package_id']}/accept", headers=auth).status_code == 409
+print("OK")
+'''
+    # A pricier GPU rate so the very first reservation would pass the £0.01 cap.
+    _run_script(script, _http_env(tmp_path, "budget", AYVEN_GPU_USD_PER_HOUR="20"))

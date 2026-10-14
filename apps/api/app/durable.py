@@ -270,6 +270,9 @@ def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence
                 # builder (spec, tests, code, sandbox or browser check), not the generic prompt.
                 # A failed build is a valid FAILED deliverable, not a model-call failure.
                 text, meta = builder(programme, prompt['id'])
+                from .intelligence.execution import BUDGET_STOPS, BudgetExceeded
+                if project_id in BUDGET_STOPS:
+                    raise BudgetExceeded(BUDGET_STOPS[project_id])
                 calls.append((prompt['id'], text, meta))
                 build_research = dict(programme.research)
                 continue
@@ -279,7 +282,8 @@ def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence
                 programme=programme, package_id=prompt['id'],
             )
             if meta.get('error'):
-                raise RuntimeError('Workforce model call failed; no fixture fallback was used')
+                cause = " ".join(str(meta.get('error')).split())[:120]
+                raise RuntimeError(f'Workforce model call failed ({cause}); no fixture fallback was used')
             calls.append((prompt['id'], text, meta))
         # The delivery review and its repair call are model calls too. They run here,
         # before the stage write opens, never inside atomic_stage.
@@ -364,11 +368,19 @@ def fail_project(project_id: str, stage: str, cause: str, owner: str = "", fence
 
 def _fail_project(project_id: str, stage: str, cause: str) -> None:
     reason = rejection_reason(stage, cause)
+    from .intelligence.execution import BUDGET_STOPS
+    BUDGET_STOPS.pop(project_id, None)  # a retried job with a raised cap starts clean
 
     def action():
         from .goals import add_blocker
         # The exact cause is the blocker. A failed step is never routed to approval.
-        add_blocker(project_id, "error", reason, "Read the cause, fix it, then retry the job.")
+        if cause.startswith("BudgetExceeded"):
+            add_blocker(project_id, "cap", f"Stopped: {cause.split(': ', 1)[-1]}.",
+                        "Raise this job's budget cap, then retry the job.")
+        elif "timeout" in cause.lower():
+            add_blocker(project_id, "timeout", reason, "Retry the job; if it times out again, simplify the brief or raise the time limit.")
+        else:
+            add_blocker(project_id, "error", reason, "Read the cause, fix it, then retry the job.")
         conn = connect()
         conn.execute('UPDATE projects SET status=?, result=? WHERE id=?',
                      ('rejected', reason, project_id))
