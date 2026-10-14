@@ -637,6 +637,57 @@ _INLINE_CODE = [
     _re.compile(r"\b(?:localStorage|sessionStorage|document|window|console|JSON)\.\w+\S*"),
 ]
 _BLOB = _re.compile(r"\S{40,}")
+_ENCODED_TOKEN = _re.compile(r"^[A-Za-z0-9+/=_-]{8,}$")
+_HEX_TOKEN = _re.compile(r"^[0-9A-Fa-f]{8,}$")
+_URL = _re.compile(r"^(https?://[A-Za-z0-9.-]+(?::\d+)?)(/[^\s?#]*)?(\?[^\s#]*)?(#\S*)?$")
+_PATH_EXT = _re.compile(r"\.[A-Za-z0-9]{1,8}$")
+
+
+def _encoded_shape(token: str) -> bool:
+    """Digits, internal capitals or +/= mark an encoded token rather than a word."""
+    return bool(_re.search(r"[0-9+/=]", token) or _re.search(r".[A-Z]", token) and _re.search(r"[a-z]", token))
+
+
+def _suspicious_value(value: str) -> bool:
+    return len(value) >= 40 or (len(value) >= 16 and _ENCODED_TOKEN.match(value) is not None
+                                and (_encoded_shape(value) or _HEX_TOKEN.match(value) is not None))
+
+
+def _blob_token(match) -> str:
+    """40+ chars without whitespace is data, except a well-formed URL or file path."""
+    token = match.group(0)
+    core = token.rstrip(".,;:!?)]'\"")
+    tail = token[len(core):]
+    url = _URL.match(core)
+    if url and len(core) <= 200:
+        base, path, query, fragment = (part or "" for part in url.groups())
+        path = "/".join(_DATA if len(seg) >= 40 else seg for seg in path.split("/"))
+        if query and any(_suspicious_value(v) for v in _re.split(r"[?&=;]", query) if v):
+            query = "?" + _DATA
+        if fragment and any(_suspicious_value(v) for v in _re.split(r"[#&=;]", fragment) if v):
+            fragment = "#" + _DATA
+        return base + path + query + fragment + tail
+    if "/" in core and _PATH_EXT.search(core) and all(len(seg) < 40 for seg in core.split("/")):
+        return token
+    return _DATA
+
+
+def _chunk_runs(text: str) -> str:
+    """3+ consecutive base64/hex-looking tokens of 8+ chars are data split into chunks."""
+    tokens = text.split(" ")
+    out, i = [], 0
+    while i < len(tokens):
+        j = i
+        while j < len(tokens) and _ENCODED_TOKEN.match(tokens[j].rstrip(".,;:")):
+            j += 1
+        run = [t.rstrip(".,;:") for t in tokens[i:j]]
+        if len(run) >= 3 and (any(_encoded_shape(t) for t in run) or all(_HEX_TOKEN.match(t) for t in run)):
+            out.append(_DATA)
+            i = j
+            continue
+        out.append(tokens[i])
+        i += 1
+    return " ".join(out)
 _MARK = "[code omitted]"
 _DATA = "[data omitted]"
 
@@ -668,18 +719,28 @@ def _safe_line(text: str, limit: int = 300) -> str:
             dropped = True
             continue
         kept.append(line.strip())
-    out = " ".join(kept)
-    out = _BLOB.sub(_DATA, out)
+    out = _re.sub(r"\s+", " ", " ".join(kept)).strip()   # runs split across lines join here
+    out = _BLOB.sub(_blob_token, out)
+    out = _chunk_runs(out)
+    # URLs that survived the blob rule are links, not code: shield them from the inline patterns.
+    shielded = []
+
+    def _shield(match):
+        shielded.append(match.group(0))
+        return f"\x00{len(shielded) - 1}\x00"
+
+    out = _re.sub(r"https?://[^\s<>`]+?(?=[.,;:!?)\]'\"]*(?:\s|$))", _shield, out)
     for pattern in _INLINE_CODE:
         out = pattern.sub(_MARK, out)
+    out = _re.sub(r"\x00(\d+)\x00", lambda m: shielded[int(m.group(1))], out)
     if dropped:
         out = (out + " " + _MARK).strip()
     out = _re.sub(r"(?:\[code omitted\]\s*){2,}", _MARK + " ", out)
     out = _re.sub(r"\s+", " ", out).strip()
     if len(out) > limit:
         out = out[: limit - 1].rstrip() + "…"
-        # A cut must not leave a partial marker or a fresh blob.
-        out = _BLOB.sub(_DATA, out)
+        # A cut must not leave a partial marker, a fresh blob or a chunk run.
+        out = _chunk_runs(_BLOB.sub(_blob_token, out))
     return out
 
 

@@ -964,3 +964,112 @@ def test_an_empty_cleaned_reason_falls_back_to_what_failed():
     assert web.split("## Failure reason")[1].split("##")[0].strip() == "Build failed: browser check did not pass."
     empty = _inject_failed("W", "error", "")
     assert "Build failed: browser check did not pass." in empty
+
+
+# Chunked encodings and the long-token exemption (QA retest 690a949) -----------------------------
+
+def _b64_chunks(text: str, size: int = 30) -> str:
+    import base64
+
+    blob = base64.b64encode(text.encode()).decode()
+    return " ".join(blob[i:i + size] for i in range(0, len(blob), size))
+
+
+def _hex_chunks(text: str, size: int = 32) -> str:
+    import binascii
+
+    blob = binascii.hexlify(text.encode()).decode()
+    return " ".join(blob[i:i + size] for i in range(0, len(blob), size))
+
+
+def _no_decodable_source(report: str) -> None:
+    import base64
+    import binascii
+    import re as _re
+
+    for marker in ("<!doctype", "def add", "return left", "__main__"):
+        assert marker not in report.lower()
+    joined = "".join(_re.findall(r"[A-Za-z0-9+/=]{8,}", report))
+    for start in range(4):
+        try:
+            decoded = base64.b64decode(joined[start:][: (len(joined) - start) // 4 * 4]).decode("utf8", "ignore")
+        except Exception:
+            decoded = ""
+        assert "doctype" not in decoded and "def add" not in decoded
+    hexes = "".join(_re.findall(r"[0-9a-fA-F]{8,}", report))
+    try:
+        assert b"def add" not in binascii.unhexlify(hexes[: len(hexes) // 2 * 2])
+    except binascii.Error:
+        pass
+
+
+_PROGRAM_SOURCE = "def add(left, right):\n    return left + right\n\nif __name__ == '__main__':\n    print(add(4, 7))\n"
+
+
+def test_chunked_base64_in_the_reason_is_omitted():
+    from tests.test_web_artifact import FILES
+
+    report = _inject_failed("W", "error", "Payload: " + _b64_chunks(FILES["index.html"]))
+    assert "Payload: [data omitted]" in report
+    _no_decodable_source(report)
+
+
+def test_chunked_base64_in_a_blocker_split_across_lines_is_omitted():
+    chunks = _b64_chunks(_PROGRAM_SOURCE, 20).split(" ")
+    value = "Bundle " + " ".join(chunks[:3]) + "\n" + " ".join(chunks[3:])
+    report = _inject_failed("P", "blocker", value)
+    assert "- Bundle [data omitted]" in report
+    _no_decodable_source(report)
+
+
+def test_hex_in_32_char_chunks_is_omitted():
+    report = _inject_failed("P", "blocker", "Bundle " + _hex_chunks(_PROGRAM_SOURCE))
+    assert "- Bundle [data omitted]" in report
+    _no_decodable_source(report)
+
+
+def test_chunk_rule_runs_after_truncation_too():
+    from app.main import _safe_line
+
+    out = _safe_line(("word " * 55) + _b64_chunks(_PROGRAM_SOURCE, 12), limit=300)
+    assert len(out) <= 300
+    _no_decodable_source(out)
+
+
+def test_prose_words_never_look_like_chunks():
+    from app.main import _safe_line
+
+    for text in ("Necessary validation requirements incomplete for Database configuration.",
+                 "Customer information persisted correctly between sessions afterwards.",
+                 "deadline12 is not data on its own"):
+        assert _safe_line(text) == text
+
+
+def test_urls_and_paths_are_kept():
+    from app.main import _safe_line
+
+    url = "https://docs.example.com/guides/browser-checks/troubleshooting-launch-failures.html"
+    assert _safe_line(f"See {url} for help.") == f"See {url} for help."
+    path = "/home/box/.cache/ms-playwright/chromium-1243/chrome-linux/headless_shell.log"
+    assert _safe_line(f"Error: executable doesn't exist at {path}.") == f"Error: executable doesn't exist at {path}."
+    query = "https://example.com/search?q=browser+launch&page=2"
+    assert _safe_line(f"Read {query} first") == f"Read {query} first"
+
+
+def test_a_url_hiding_base64_in_its_query_or_fragment_or_path_loses_only_that_part():
+    import base64
+    from app.main import _safe_line
+    from tests.test_web_artifact import FILES
+
+    blob = base64.b64encode(FILES["index.html"].encode()).decode()[:150]
+    assert _safe_line(f"Link https://example.com/x?data={blob} done") == "Link https://example.com/x?[data omitted] done"
+    assert _safe_line(f"Link https://example.com/x#{blob} done") == "Link https://example.com/x#[data omitted] done"
+    assert _safe_line(f"Link https://example.com/{blob[:60]}/page.html done") == "Link https://example.com/[data omitted]/page.html done"
+    assert blob[:20] not in _safe_line(f"https://example.com/?a={blob[:40]}&b=1")
+
+
+def test_qa_realistic_blockers_unchanged_except_the_two_accepted():
+    from app.main import _safe_line
+
+    changed = {m: _safe_line(m) for m in _QA_REALISTIC_BLOCKERS if _safe_line(m) != m}
+    assert changed == _EXPECTED_CHANGES, changed
