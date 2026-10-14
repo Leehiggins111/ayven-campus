@@ -284,6 +284,10 @@ def build_web_artifact(objective: str, kind: str, complete) -> tuple[str, dict]:
             evidence.update(passed=False, status="failed", error="Brief review or disabled-script mutation check failed")
             feedback = json.dumps({"review": review, "mutation": mutant})[:5000]
     except Exception as exc:
+        from ..metering import BudgetExceeded
+
+        if isinstance(exc, BudgetExceeded):
+            raise
         evidence = {"passed": False, "status": "error", "error": f"{type(exc).__name__}: {exc}"[:1200]}
     evidence["elapsed_s"] = round(time.monotonic() - started, 3)
     meta = dict(meta or {})

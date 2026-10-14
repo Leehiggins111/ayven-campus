@@ -110,6 +110,62 @@ def _emit(role: str, text: str, tokens: int, meta: dict, raw: str | None = None)
 
 
 def complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, model: str | None = None):
+    """Every workforce model call. Metered against the current job: cap pre-check, ledger, replay cache."""
+    from .metering import metered_call
+
+    def call():
+        return _complete_role(role, system, user, max_tokens=max_tokens, schema=schema, prefill=prefill, stop=stop,
+                              expand_unfinished=expand_unfinished, ollama_format=ollama_format, model=model)
+
+    extra = [prefill or "", list(stop or []), bool(expand_unfinished), str(ollama_format or ""), model or "",
+             str(getattr(schema, "__name__", "") or "")]
+    return metered_call(role, system, user, max_tokens, call, extra)
+
+
+try:
+    import httpx as _httpx
+
+    _ORIGINAL_POST = _httpx.post
+except Exception:  # pragma: no cover
+    _ORIGINAL_POST = None
+
+
+def _post(url: str, *, json=None, headers=None, timeout: float = 90, follow_redirects: bool = True):
+    """httpx.post with a total deadline, not just a per-read timeout: a slow drip cannot hold a call open."""
+    import httpx
+
+    from .metering import ModelCallTimeout, call_deadline
+
+    if httpx.post is not _ORIGINAL_POST:  # a test double replaced httpx.post: keep the old call shape
+        kwargs = {"json": json, "timeout": timeout}
+        if headers is not None:
+            kwargs["headers"] = headers
+        if follow_redirects is False:
+            kwargs["follow_redirects"] = False
+        return httpx.post(url, **kwargs)
+
+    deadline = call_deadline()
+    stop_at = time.monotonic() + deadline
+    per_read = min(float(timeout), deadline)
+    with httpx.Client(timeout=per_read, follow_redirects=follow_redirects) as client:
+        try:
+            with client.stream("POST", url, json=json, headers=headers) as response:
+                chunks = []
+                for chunk in response.iter_bytes():
+                    chunks.append(chunk)
+                    if time.monotonic() > stop_at:
+                        raise ModelCallTimeout(deadline)
+                if time.monotonic() > stop_at:
+                    raise ModelCallTimeout(deadline)
+                return httpx.Response(response.status_code, headers=response.headers, content=b"".join(chunks),
+                                      request=response.request)
+        except httpx.TimeoutException:
+            if time.monotonic() > stop_at - 0.05:
+                raise ModelCallTimeout(deadline)
+            raise
+
+
+def _complete_role(role: str, system: str, user: str, max_tokens: int = 500, schema=None, prefill: str = "", stop=None, expand_unfinished: bool = True, ollama_format=None, model: str | None = None):
     started = time.time()
     model = (model or "").strip() or role_model(role)
     meta = {"role": role.upper(), "model": model, "backend": "stub", "elapsed_s": 0.0, "provider": "ayven"}
@@ -314,14 +370,14 @@ def _openai_compat(base, key, model, system, user, max_tokens, schema=None, pref
             import json
             body["response_format"] = {"type": "json_object"}
             body["messages"][0]["content"] += "\nReturn JSON matching this schema: " + json.dumps(schema.model_json_schema())
-    r = httpx.post(
+    r = _post(
         f"{base.rstrip('/')}/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
         json=body,
         timeout=timeout,
     )
     if r.status_code == 400 and any(key_name in body for key_name in ("guided_json", "grammar", "response_format")):
-        r = httpx.post(
+        r = _post(
             f"{base.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
             json=local_request_body(base, {k: body[k] for k in ("model", "messages", "max_tokens", "temperature") if k in body}),
@@ -399,7 +455,7 @@ def _ollama_native(base: str, model: str, messages: list[dict], max_tokens: int,
             body = ollama_chat_body(model, system, user, predict, prefill=prefill, stop=stop, ollama_format=ollama_format)
         started = time.time()
         try:
-            response = httpx.post(url, json=body, timeout=timeout)
+            response = _post(url, json=body, timeout=timeout)
         except httpx.TimeoutException:
             note_eval_call({
                 "model": model,
@@ -484,7 +540,7 @@ def _ollama_chat(base, model, system, user, max_tokens, schema=None):
             "options": {"num_predict": max_tokens, "temperature": 0.2}}
     if schema is not None:
         body["format"] = schema.model_json_schema()
-    response = httpx.post(endpoint, json=body, timeout=120, follow_redirects=False)
+    response = _post(endpoint, json=body, timeout=120, follow_redirects=False)
     response.raise_for_status()
     data = response.json()
     if not data.get("done") or data.get("done_reason") == "length":

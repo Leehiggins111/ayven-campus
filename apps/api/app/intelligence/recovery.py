@@ -92,6 +92,10 @@ def run_retries(fn, *, stage: str = "stage", max_attempts: int | None = None, pr
             failed = isinstance(result, dict) and result.get("ok") is False
             last = str(result.get("error") or "failed") if failed else ""
         except Exception as exc:
+            from ..metering import BudgetExceeded
+
+            if isinstance(exc, BudgetExceeded):
+                raise  # a budget stop is terminal: never retried
             failed = True
             result = None
             last = f"{type(exc).__name__}: {exc}"

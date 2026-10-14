@@ -45,7 +45,7 @@ NEXT = {
     FailureType.TESTS_FAILED: "Retry the job; if it fails again, make the brief's expected behaviour more specific.",
     FailureType.BROWSER_CHECK_FAILED: "Retry once the browser check can run; if the app itself failed, adjust the brief.",
     FailureType.REVIEW_REJECTED: "Adjust the brief or the missing criteria, then retry the job.",
-    FailureType.MALFORMED_REVIEW: "Retry the job; the review step should recover on a fresh run.",
+    FailureType.MALFORMED_REVIEW: "Retry the job. If the review fails again, check the review model returns JSON, or switch the supervisor model.",
     FailureType.STEP_ERROR: "Retry the job; if it fails at the same step again, report it.",
     FailureType.MODEL_ERROR: "Check the model server is running, then retry the job.",
     FailureType.BUDGET_EXCEEDED: "Raise this job's budget cap, then retry the job.",
@@ -227,8 +227,18 @@ def missing_criteria(text: str, criteria: list) -> str:
     return f"missing {shown}" + (f"; +{more} more" if more > 0 else "")
 
 
-def _line(ftype: FailureType, detail: str) -> str:
-    return WORDING[ftype] + (f" ({detail})" if detail else "")
+MODEL_TIMEOUT_WORDING = "Stopped: a model call timed out."
+
+_IMPERATIVE = ("raise", "retry", "check", "read", "adjust", "fix", "answer", "approve", "add", "remove", "give",
+               "confirm", "stop", "set", "switch", "simplify", "reply", "choose", "update", "rerun", "re-run")
+
+
+def _line(ftype: FailureType, detail: str, text: str = "") -> str:
+    wording = WORDING[ftype]
+    if ftype is FailureType.TIMEOUT and "model call timed out" in (text or "").lower():
+        wording = MODEL_TIMEOUT_WORDING
+        detail = ""
+    return wording + (f" ({detail})" if detail else "")
 
 
 def build(*, task_class: str, error: str, blockers: list[dict], evidence: dict, title: str, brief: str,
@@ -263,13 +273,14 @@ def build(*, task_class: str, error: str, blockers: list[dict], evidence: dict, 
     else:
         reason_type = FailureType.OTHER
     reason_text = error if error_type is reason_type else next((t for f, t, _ in typed if f is reason_type), error)
-    reason = _line(reason_type, _detail(reason_type, reason_text, evidence, goal))
+    reason = _line(reason_type, _detail(reason_type, reason_text, evidence, goal), reason_text)
     next_step = NEXT[reason_type]
     for ftype, _text, needed in typed:
         if ftype is reason_type and needed:
             # Our own needed_from_lee wording, when it passes the allowlist.
             needed = plain_detail(needed, 120)
-            if needed:
+            # Only an instruction to Lee is used; a noun phrase such as 'A valid delivery review' is not actionable.
+            if needed and needed.split(" ", 1)[0].lower().rstrip(",.:") in _IMPERATIVE:
                 next_step = needed
             break
 
@@ -278,17 +289,24 @@ def build(*, task_class: str, error: str, blockers: list[dict], evidence: dict, 
         if ftype in seen:
             continue
         seen.add(ftype)
-        shown.append(_line(ftype, _detail(ftype, text, evidence, goal)))
+        shown.append(_line(ftype, _detail(ftype, text, evidence, goal), text))
     shown = shown[:MAX_BLOCKERS]
     extra = len(typed) - len(shown)  # every blocker not shown, same type or not
 
     checks = []
-    if is_program:
+    build_ran = reason_type in (FailureType.TESTS_FAILED, FailureType.BROWSER_CHECK_FAILED)
+    if is_program and not software and not build_ran:
+        checks.append("Tests: not run")
+    elif is_program and software:
         passed = software.get("passed") is True
         checks.append(f"Tests: {'PASSED' if passed else 'FAILED'}")
         if not passed and "exit_code" in software:
             checks.append("Test " + exit_code_text(software.get("exit_code")).replace("exit code ", "exit code: "))
-    if is_web:
+    if is_web and not web and not build_ran:
+        if not is_program:
+            checks.append("Tests: not run")
+        checks.append("Browser check: not run")
+    elif is_web and (web or build_ran):
         passed = web.get("passed") is True and web.get("status") == "ok"
         status = str(web.get("status") or "not run").lower()
         status = status if status in _BROWSER_STATUS or status == "ok" else "failed"

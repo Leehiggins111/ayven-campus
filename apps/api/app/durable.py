@@ -14,6 +14,7 @@ from pathlib import Path
 
 from dbos import DBOS, SetWorkflowID
 from .db import connect, db_path, stage_transaction
+from .metering import forget_job, raise_if_stopped, scoped
 
 _started = False
 _lock = threading.Lock()
@@ -208,6 +209,7 @@ def atomic_stage(job_id: str, stage: str, action):
 
 
 @DBOS.step()
+@scoped
 def prepare_project(project_id: str, owner: str = "", fence: int = 0) -> dict:
     """Plan and research outside the write lock. The receipt is a short commit."""
     saved = saved_stage(project_id, 'prepare')
@@ -235,6 +237,7 @@ def prepare_project(project_id: str, owner: str = "", fence: int = 0) -> dict:
         if parent:
             programme.resume_id = parent
         programme.prepare_all()
+        raise_if_stopped(project_id)
         if lost.is_set():
             from .intelligence.run_token import StaleWrite
             raise StaleWrite('lease lost during prepare')
@@ -250,6 +253,7 @@ def prepare_project(project_id: str, owner: str = "", fence: int = 0) -> dict:
 
 
 @DBOS.step()
+@scoped
 def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence: int = 0) -> dict:
     """Call the model first. The write transaction starts only when the reply is stored."""
     saved = saved_stage(project_id, role)
@@ -270,9 +274,7 @@ def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence
                 # builder (spec, tests, code, sandbox or browser check), not the generic prompt.
                 # A failed build is a valid FAILED deliverable, not a model-call failure.
                 text, meta = builder(programme, prompt['id'])
-                from .intelligence.execution import BUDGET_STOPS, BudgetExceeded
-                if project_id in BUDGET_STOPS:
-                    raise BudgetExceeded(BUDGET_STOPS[project_id])
+                raise_if_stopped(project_id)
                 calls.append((prompt['id'], text, meta))
                 build_research = dict(programme.research)
                 continue
@@ -288,6 +290,7 @@ def execute_role(project_id: str, role: str, state: dict, owner: str = "", fence
         # The delivery review and its repair call are model calls too. They run here,
         # before the stage write opens, never inside atomic_stage.
         precheck = programme.delivery_calls() if role == 'MANAGER' else None
+        raise_if_stopped(project_id)
         if lost.is_set():
             from .intelligence.run_token import StaleWrite
             raise StaleWrite('lease lost during the model call')
@@ -321,6 +324,7 @@ def _build_turn(task_class: str):
 
 
 @DBOS.step()
+@scoped
 def finish_project(project_id: str, owner: str = "", fence: int = 0) -> str:
     token = _hold(project_id, owner, fence)
     try:
@@ -331,7 +335,9 @@ def finish_project(project_id: str, owner: str = "", fence: int = 0) -> str:
             row = conn.execute('SELECT status FROM projects WHERE id=?', (project_id,)).fetchone()
             conn.execute('UPDATE tasks SET status=? WHERE id=?', (row['status'], f'engine:{project_id}'))
             return row['status']
-        return atomic_stage(project_id, 'finish', action)
+        status = atomic_stage(project_id, 'finish', action)
+        forget_job(project_id)
+        return status
     finally:
         _drop(token)
 
@@ -367,9 +373,12 @@ def fail_project(project_id: str, stage: str, cause: str, owner: str = "", fence
 
 
 def _fail_project(project_id: str, stage: str, cause: str) -> None:
-    reason = rejection_reason(stage, cause)
-    from .intelligence.execution import BUDGET_STOPS
-    BUDGET_STOPS.pop(project_id, None)  # a retried job with a raised cap starts clean
+    timed_out = cause.startswith("ModelCallTimeout") or "model call timed out" in cause.lower()
+    if timed_out:
+        reason = f"Stopped during {stage or 'job'}: model call timed out. Nothing was sent."
+    else:
+        reason = rejection_reason(stage, cause)
+    forget_job(project_id)  # a retried job with a raised cap or time limit starts clean
 
     def action():
         from .goals import add_blocker
@@ -377,7 +386,7 @@ def _fail_project(project_id: str, stage: str, cause: str) -> None:
         if cause.startswith("BudgetExceeded"):
             add_blocker(project_id, "cap", f"Stopped: {cause.split(': ', 1)[-1]}.",
                         "Raise this job's budget cap, then retry the job.")
-        elif "timeout" in cause.lower():
+        elif timed_out or "timeout" in cause.lower():
             add_blocker(project_id, "timeout", reason, "Retry the job; if it times out again, simplify the brief or raise the time limit.")
         else:
             add_blocker(project_id, "error", reason, "Read the cause, fix it, then retry the job.")
@@ -390,6 +399,16 @@ def _fail_project(project_id: str, stage: str, cause: str) -> None:
         for row in conn.execute('SELECT id FROM work_packages WHERE project_id=? AND parent_id IS NULL', (project_id,)).fetchall():
             log_transition(row['id'], 'FAILED', reason)
             update_package(row['id'], status='rejected', campus_stage='FAILED', stage='exception', error=reason)
+        # The job is over: no other package of it stays in progress.
+        for row in conn.execute(
+            "SELECT id FROM work_packages WHERE project_id=? AND parent_id IS NOT NULL AND "
+            "COALESCE(workflow_state,'DRAFT') NOT IN ('COMPLETED','FAILED','UNRESOLVED')", (project_id,)
+        ).fetchall():
+            try:
+                log_transition(row['id'], 'FAILED', 'Cancelled: the job failed.')
+            except Exception:
+                pass
+            update_package(row['id'], status='rejected', campus_stage='FAILED', error='Cancelled: the job failed.')
         # Nothing was delivered, so each acceptance criterion is not_met, never an empty list.
         from .goals import evaluate_criteria
         evaluate_criteria(project_id, '')

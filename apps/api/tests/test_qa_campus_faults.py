@@ -1137,3 +1137,261 @@ print("OK")
 '''
     # A pricier GPU rate so the very first reservation would pass the £0.01 cap.
     _run_script(script, _http_env(tmp_path, "budget", AYVEN_GPU_USD_PER_HOUR="20"))
+
+
+# --- r547: one metered client, call deadlines, restart replay -------------------------
+
+_COUNTING_GEN = r'''
+import json, os
+CALLS = os.environ["GEN_CALLS"]
+def gen(role, system, user, max_tokens):
+    with open(CALLS, "a") as fh:
+        fh.write(role + "|" + system[:40].replace("\n", " ") + "\n")
+    if system.startswith("Plan the requested deliverable"):
+        return json.dumps({"title": "Dog grooming price sheet", "output_kind": "document",
+                           "requirements": ["A price for a full groom", "The cancellation policy", "Payment terms"],
+                           "needs_current_sources": False, "clarification_question": ""}), 30, {"backend": "mock"}
+    if system.startswith("Check the delivered work"):
+        return "this is not json {{{", 5, {"backend": "mock"}
+    if role == "MANAGER":
+        return "SYNTHESISE\nRationale: done", 3, {"backend": "mock"}
+    if role == "SUPERVISOR":
+        return "ACCEPT\nNothing was sent.", 2, {"backend": "mock"}
+    return ("# Dog grooming price sheet\n\nFull groom price: £25 per dog.\n"
+            "Cancellation policy: 24 hours notice.\nPayment terms: pay by card on collection.\n"), 40, {"backend": "mock"}
+'''
+
+
+def _ledger_rows(db: str, pid: str) -> list:
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute("SELECT role, committed FROM spend_ledger WHERE job_id=?", (pid,)).fetchall()
+    conn.close()
+    return rows
+
+
+def test_every_model_call_of_a_bad_review_job_is_in_the_ledger(tmp_path):
+    calls = tmp_path / "calls.txt"
+    script = r'''
+import time
+from fastapi.testclient import TestClient
+from app.main import app
+from app.models import set_role_generator
+''' + _COUNTING_GEN + r'''
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Write a dog grooming price sheet for a small salon in Oban. Publish nothing.",
+        "acceptance_criteria": ["Full groom price is £25", "Covers payment terms", "Mentions the cancellation policy"],
+        "job_cap_gbp": 1.0}, headers=auth)
+    assert r.status_code == 200, r.text
+    pid = r.json()["project_id"]
+    for _ in range(1200):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    open(CALLS + ".pid", "w").write(pid)
+print("OK")
+'''
+    env = _http_env(tmp_path, "ledger", GEN_CALLS=str(calls), AYVEN_RETRY_BACKOFF_S="0")
+    _run_script(script, env)
+    pid = (tmp_path / "calls.txt.pid").read_text()
+    made = [l for l in calls.read_text().splitlines() if l]
+    reviews = [l for l in made if "Check the delivered work" in l]
+    assert len(reviews) >= 2, made  # the bad review was retried
+    assert any("Plan the requested deliverable" in l for l in made), made
+    rows = _ledger_rows(env["AYVEN_DB"], pid)
+    assert len(rows) == len(made), (len(rows), len(made), made)
+    assert all(committed == 1 for _, committed in rows), rows
+
+
+def _drip_server(delay: float = 0.2, count: int = 600):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Drip(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("content-length", 0)))
+            self.server.hits += 1
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            import time as _t
+            for _ in range(count):
+                try:
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                except Exception:
+                    return
+                _t.sleep(delay)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Drip)
+    server.daemon_threads = True
+    server.hits = 0
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_a_slow_drip_call_is_cut_off_at_its_total_deadline(monkeypatch):
+    import time
+
+    from app import models
+    from app.metering import ModelCallTimeout
+
+    server = _drip_server()
+    try:
+        monkeypatch.setenv("AYVEN_TIMEOUT_MODEL", "1.5")
+        monkeypatch.setenv("AYVEN_LLM_TIMEOUT_S", "3")  # per read: the drip alone would never trip it
+        started = time.monotonic()
+        with pytest.raises(ModelCallTimeout, match="model call timed out"):
+            models._openai_compat(f"http://127.0.0.1:{server.server_address[1]}/v1", "k", "m", "s", "u", 10)
+        assert time.monotonic() - started < 4
+    finally:
+        server.shutdown()
+
+
+def test_a_slow_drip_job_over_http_fails_with_model_call_timed_out(tmp_path):
+    script = r'''
+import io, time, zipfile, sys
+sys.path.insert(0, "tests")
+from test_qa_campus_faults import _drip_server
+server = _drip_server()
+import os
+os.environ["AYVEN_LOCAL_LLM_BASE_URL"] = f"http://127.0.0.1:{server.server_address[1]}/v1"
+from fastapi.testclient import TestClient
+from app.main import app
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+criteria = ["Adds 1 and 9"]
+started = time.monotonic()
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Write a small Python program that adds 1 and 9 and prints the sum.",
+                                        "acceptance_criteria": criteria}, headers=auth)
+    assert r.status_code == 200, r.text
+    pid = r.json()["project_id"]
+    for _ in range(1200):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    assert time.monotonic() - started < 60, time.monotonic() - started
+    assert s["status"] == "rejected" and s["workflow_state"] == "FAILED", s
+    assert s["approval"] is None, s
+    from app.db import connect
+    conn = connect()
+    blockers = [dict(b) for b in conn.execute("SELECT kind, reason FROM blockers WHERE project_id=? AND status='open'", (pid,)).fetchall()]
+    open_children = conn.execute("SELECT COUNT(*) FROM work_packages WHERE project_id=? AND COALESCE(workflow_state,'DRAFT') NOT IN ('COMPLETED','FAILED','UNRESOLVED')", (pid,)).fetchone()[0]
+    rows = conn.execute("SELECT COUNT(*) FROM spend_ledger WHERE job_id=?", (pid,)).fetchone()[0]
+    conn.close()
+    assert any(b["kind"] == "timeout" and "model call timed out" in b["reason"] for b in blockers), blockers
+    assert open_children == 0
+    assert rows == server.hits, (rows, server.hits)  # every timed-out call was metered
+    z = client.get(f"/work-packages/{s['package_id']}/bundle.zip", headers=auth)
+    report = zipfile.ZipFile(io.BytesIO(z.content)).read("report.md").decode()
+    reason = report.split("## Failure reason", 1)[1].split("##", 1)[0]
+    assert "model call timed out" in reason, report
+    assert "Tests: FAILED" not in report, report
+server.shutdown()
+print("OK")
+'''
+    _run_script(script, _http_env(tmp_path, "drip", AYVEN_TIMEOUT_MODEL="1", AYVEN_LLM_TIMEOUT_S="1",
+                                  AYVEN_RETRY_BACKOFF_S="0"), timeout=200)
+
+
+def test_a_budget_stop_is_terminal_not_retried_and_reads_cleanly(tmp_path):
+    calls = tmp_path / "calls.txt"
+    script = r'''
+import io, time, zipfile
+from fastapi.testclient import TestClient
+from app.main import app
+from app.models import set_role_generator
+''' + _COUNTING_GEN + r'''
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Write a small Python program that adds 4 and 7 and prints the sum.",
+        "acceptance_criteria": ["Adds 4 and 7"], "job_cap_gbp": 0.01}, headers=auth)
+    pid = r.json()["project_id"]
+    for _ in range(1200):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    assert s["workflow_state"] == "FAILED", s
+    from app.db import connect
+    conn = connect()
+    blockers = [r["reason"] for r in conn.execute("SELECT reason FROM blockers WHERE project_id=?", (pid,)).fetchall()]
+    error = conn.execute("SELECT error FROM work_packages WHERE id=?", (s["package_id"],)).fetchone()[0]
+    conn.close()
+    assert not any("failed after" in b for b in blockers), blockers  # never retried
+    assert "BudgetExceeded: BudgetExceeded" not in error and "BudgetExceeded" in error, error
+    report = zipfile.ZipFile(io.BytesIO(client.get(f"/work-packages/{s['package_id']}/bundle.zip", headers=auth).content)).read("report.md").decode()
+    assert "Tests: FAILED" not in report and "- Tests: not run" in report, report
+print("OK")
+'''
+    _run_script(script, _http_env(tmp_path, "budgetstop", GEN_CALLS=str(calls), AYVEN_GPU_USD_PER_HOUR="20"))
+    assert not calls.exists() or calls.read_text().strip() == ""  # the cap was checked before any call
+
+
+def test_a_crash_restart_replays_completed_calls_instead_of_recharging(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    api = Path(__file__).resolve().parents[1]
+    calls = tmp_path / "calls.txt"
+    env = {**os.environ, "PYTHONPATH": str(api), "AYVEN_DURABLE": "1", "AYVEN_ENV": "local",
+           "AYVEN_DB": str(tmp_path / "restart.sqlite"), "AYVEN_LLM_STUB": "1", "AYVEN_RESEARCH_MODE": "fixtures",
+           "AYVEN_USE_QWEN_AGENT": "0", "AYVEN_ALLOW_ESCALATION": "0", "AYVEN_CRASH_STAGE": "EMPLOYEE",
+           "AYVEN_CRASH_BARRIER": str(tmp_path / "barrier"), "GEN_CALLS": str(calls)}
+    for key in ("AYVEN_LOCAL_LLM_BASE_URL", "AYVEN_LLM_API_KEY", "AYVEN_WORKFLOW_DATABASE_URL", "AYVEN_THREAD_STUB"):
+        env.pop(key, None)
+    common = _COUNTING_GEN + r'''
+from app.models import set_role_generator
+set_role_generator(gen)
+from app.db import connect
+from app import durable
+'''
+    crash = common + r'''
+from app.goals import open_goal
+conn = connect()
+conn.execute("INSERT INTO projects(id,title,objective,status,result,created_at) VALUES(?,?,?,?,?,?)",
+             ("restart-job", "Price sheet", "Write a dog grooming price sheet for a salon in Ayr.", "running", None, "2026-10-14"))
+conn.commit()
+conn.close()
+open_goal("restart-job", ["Full groom price is £25"], job_cap_gbp=1.0)
+durable.enqueue_project("restart-job").get_result()
+'''
+    first = subprocess.run([sys.executable, "-c", crash], cwd=str(api), env=env, capture_output=True, text=True, timeout=120)
+    assert first.returncode == 23, first.stderr[-3000:]
+    before = [l for l in calls.read_text().splitlines() if l]
+    employee_before = [l for l in before if l.startswith("EMPLOYEE|")]
+    assert employee_before, before
+    resume_env = {k: v for k, v in env.items() if k not in ("AYVEN_CRASH_STAGE", "AYVEN_CRASH_BARRIER")}
+    resume = common + r'''
+durable.initialize()
+from dbos import DBOS
+print("STATUS", DBOS.retrieve_workflow("project:restart-job").get_result())
+durable.shutdown()
+'''
+    second = subprocess.run([sys.executable, "-c", resume], cwd=str(api), env=resume_env, capture_output=True, text=True, timeout=120)
+    assert second.returncode == 0 or "STATUS" in second.stdout, second.stderr[-3000:]
+    after = [l for l in calls.read_text().splitlines() if l][len(before):]
+    # The EMPLOYEE calls finished before the crash: replayed from the cache, not called again.
+    assert not [l for l in after if l.startswith("EMPLOYEE|")], after
+    rows = _ledger_rows(env["AYVEN_DB"], "restart-job")
+    assert len(rows) == len(before) + len(after), (len(rows), before, after)
+
+
+def test_bad_review_what_next_is_an_instruction_not_a_noun_phrase():
+    from app import failure_report as fr
+
+    report = _built(error="delivery-review failed after 3 attempts. Last error: malformed_review.",
+                    blockers=[{"kind": "error", "reason": "Review: Invalid review | Missing: x", "needed_from_lee": "A valid delivery review"}])
+    assert _section(report, "What next") == fr.NEXT[fr.FailureType.MALFORMED_REVIEW]
+    assert _section(report, "What next").startswith("Retry the job")
