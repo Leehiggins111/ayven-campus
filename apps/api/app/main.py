@@ -514,10 +514,17 @@ def resolve(aid: str, body: ApprovalIn):
 
     ensure_schema()
     conn = connect()
-    row = conn.execute("SELECT project_id FROM approvals WHERE id=?", (aid,)).fetchone()
+    row = conn.execute("SELECT project_id, status FROM approvals WHERE id=?", (aid,)).fetchone()
     if not row:
         conn.close()
         raise HTTPException(404)
+    if row["status"] != "pending":
+        # Already resolved. Read before writing: a repeat is a no-op and a flip is
+        # refused, and neither touches the reason, the intervention log or the state.
+        conn.close()
+        if row["status"] != body.decision:
+            raise HTTPException(409, f"This approval was already {row['status']}; it can't be changed to {body.decision}.")
+        return {"ok": True, "resumed": [], "unchanged": True}
     conn.execute(
         "UPDATE approvals SET reason=? WHERE id=?",
         (body.reason.strip(), aid),
@@ -609,12 +616,44 @@ def milo_status(project_id: str):
         raise HTTPException(404)
 
 
+def _failed_package_report(package_id: str) -> bytes | None:
+    """report.md for a FAILED package: failure reason and blockers first, then the report.
+
+    None when the package is not FAILED. A FAILED package with no report and no
+    reason gets a 404 from the caller.
+    """
+    rows = _rows("SELECT project_id, workflow_state, findings, error FROM work_packages WHERE id=?", (package_id,))
+    if not rows or (rows[0]["workflow_state"] or "") != "FAILED":
+        return None
+    row = rows[0]
+    from .goals import list_blockers
+
+    blockers = [b["reason"] for b in list_blockers(package_id=package_id)]
+    findings = (row["findings"] or "").strip()
+    if not findings:
+        raise HTTPException(404, "This job didn't produce a report.")
+    lines = ["# FAILED: this job did not pass its checks", "", "Nothing was delivered for approval and no source files are included.", ""]
+    if row["error"]:
+        lines += ["## Failure reason", "", str(row["error"]).strip(), ""]
+    if blockers:
+        lines += ["## Blockers", ""] + [f"- {reason}" for reason in blockers] + [""]
+    lines += ["## Report", "", findings, ""]
+    return "\n".join(lines).encode("utf-8")
+
+
 @app.get("/work-packages/{package_id}/bundle.zip")
 def download_bundle(package_id: str):
     import io
     import zipfile
     from .blobs import list_files, load_bytes
 
+    failed = _failed_package_report(package_id)
+    if failed is not None:
+        # A FAILED package ships only the report that explains the failure. Never source files.
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("report.md", failed)
+        return Response(content=buffer.getvalue(), media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="bundle.zip"'})
     files = list_files(package_id)
     if not files:
         raise HTTPException(404, "This job didn't produce any files.")
@@ -682,6 +721,10 @@ def accept_package(package_id: str):
         final = (after[0]["workflow_state"] if after else "") or ""
         return {**result, "approval_id": pending[0]["id"], "workflow_state": final,
                 "status": "completed" if final == "COMPLETED" else final.lower()}
+    project = _rows("SELECT status FROM projects WHERE id=?", (project_id,))
+    if state == "COMPLETED" and project and project[0]["status"] == "complete":
+        # Already accepted or approved: a true no-op, nothing is logged or changed.
+        return {"ok": True, "status": "completed", "workflow_state": state, "unchanged": True}
     if state != "COMPLETED":
         raise HTTPException(
             409,

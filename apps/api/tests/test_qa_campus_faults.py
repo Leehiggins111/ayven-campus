@@ -436,9 +436,12 @@ def failed_job_checks(client, auth, pid, criteria):
     assert any(b.startswith("Build failed") for b in blockers), blockers
     assert s["criteria_results"] == [{"criterion": c, "status": "not_met"} for c in criteria], s["criteria_results"]
     z = client.get(f"/work-packages/{s['package_id']}/bundle.zip", headers=auth)
-    if z.status_code == 200:
-        names = zipfile.ZipFile(io.BytesIO(z.content)).namelist()
-        assert not any(n.endswith((".py", ".js", ".html", ".css")) for n in names), names
+    assert z.status_code == 200, z.text
+    archive = zipfile.ZipFile(io.BytesIO(z.content))
+    assert archive.namelist() == ["report.md"], archive.namelist()
+    report = archive.read("report.md").decode()
+    assert report.startswith("# FAILED"), report[:300]
+    assert report.index("Build failed") < report.index("## Report"), report[:800]
     accept = client.post(f"/work-packages/{s['package_id']}/accept", headers=auth)
     assert accept.status_code == 409, accept.text
     return s
@@ -509,3 +512,120 @@ with TestClient(app) as client:
 print("OK")
 '''
     _run_script(script, _http_env(tmp_path, "accept"))
+
+
+
+# Audit trail: refused or repeated decisions write nothing; accept twice is a no-op; failed zip --------
+
+_AUDIT_JOB = _HTTP_PROGRAM_JOB.split("set_role_generator(gen)")[0] + r"""
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+from app.db import connect
+
+def audit(pid, aid):
+    conn = connect()
+    reason = conn.execute("SELECT reason, status FROM approvals WHERE id=?", (aid,)).fetchone()
+    count = conn.execute("SELECT COUNT(*) FROM spend_ledger WHERE job_id=? AND kind='intervention'", (pid,)).fetchone()[0]
+    pkg = conn.execute("SELECT workflow_state FROM work_packages WHERE project_id=? AND parent_id IS NULL", (pid,)).fetchone()[0]
+    goal = conn.execute("SELECT status, updated_at FROM goal_contracts WHERE project_id=?", (pid,)).fetchone()
+    project = conn.execute("SELECT status FROM projects WHERE id=?", (pid,)).fetchone()[0]
+    conn.close()
+    return (reason["reason"], reason["status"], count, pkg, tuple(goal) if goal else None, project)
+
+with TestClient(app) as client:
+    r = client.post("/milo/jobs", json={"objective": "Write a small Python program that adds 4 and 7 and prints the sum.", "acceptance_criteria": ["Adds 4 and 7"]}, headers=auth)
+    pid = r.json()["project_id"]
+    for _ in range(300):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    assert s["workflow_state"] == "AWAITING_APPROVAL", s
+    aid = s["approval"]["id"]
+    ok = client.post(f"/approvals/{aid}/resolve", json={"decision": "approved", "reason": "Looks right"}, headers=auth)
+    assert ok.status_code == 200, ok.text
+    before = audit(pid, aid)
+    assert before[0] == "Looks right" and before[1] == "approved" and before[3] == "COMPLETED", before
+
+    # Refused flip: 409 and nothing written.
+    flip = client.post(f"/approvals/{aid}/resolve", json={"decision": "rejected", "reason": "Changed my mind"}, headers=auth)
+    assert flip.status_code == 409, flip.text
+    assert audit(pid, aid) == before, (audit(pid, aid), before)
+
+    # Repeat approve with a different reason: no-op, original reason kept.
+    again = client.post(f"/approvals/{aid}/resolve", json={"decision": "approved", "reason": "second note"}, headers=auth)
+    assert again.status_code == 200 and again.json().get("unchanged") is True, again.text
+    assert audit(pid, aid) == before, (audit(pid, aid), before)
+
+    # Accept twice on the completed package: true no-op both times.
+    for _ in range(2):
+        acc = client.post(f"/work-packages/{s['package_id']}/accept", headers=auth)
+        assert acc.status_code == 200 and acc.json()["workflow_state"] == "COMPLETED", acc.text
+        assert audit(pid, aid) == before, (audit(pid, aid), before)
+print("OK")
+"""
+
+
+def test_refused_or_repeated_decisions_and_double_accept_write_nothing(tmp_path):
+    _run_script(_AUDIT_JOB, _http_env(tmp_path, "audit"))
+
+
+def test_accept_twice_logs_one_intervention(tmp_path):
+    script = _HTTP_PROGRAM_JOB.split("set_role_generator(gen)")[0] + r"""
+set_role_generator(gen)
+auth = {"Authorization": "Bearer private-api-key-with-at-least-32-characters"}
+from app.db import connect
+with TestClient(app) as client:
+    pid = client.post("/milo/jobs", json={"objective": "Write a small Python program that adds 4 and 7 and prints the sum."}, headers=auth).json()["project_id"]
+    for _ in range(300):
+        s = client.get("/milo/jobs/" + pid, headers=auth).json()
+        if s["status"] not in ("running", "queued"):
+            break
+        time.sleep(0.1)
+    for _ in range(2):
+        assert client.post(f"/work-packages/{s['package_id']}/accept", headers=auth).status_code == 200
+    conn = connect()
+    rows = conn.execute("SELECT reason FROM spend_ledger WHERE job_id=? AND kind='intervention'", (pid,)).fetchall()
+    conn.close()
+    assert [r[0] for r in rows] == ["Lee accepted the result"], rows
+print("OK")
+"""
+    _run_script(script, _http_env(tmp_path, "accept2"))
+
+
+def test_a_failed_package_zip_has_only_the_report_with_the_reason_first():
+    from app.blobs import save_bytes
+    from app.goals import add_blocker
+    from app.intelligence.store import update_package as store_update
+    from app.intelligence.workflow import log_transition
+
+    project_id = _project("Write a program.")
+    parent = insert_package(
+        project_id=project_id, task_id="fz", title="Research programme", objective="Write a program.",
+        origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="failed",
+    )
+    store_update(parent, findings="# Software deliverable\nTests: FAILED\nRejected: AssertionError\nNothing was sent.\n",
+                 error="Build failed: the program's tests did not pass. AssertionError")
+    log_transition(parent, "FAILED", "build failed")
+    add_blocker(project_id, "error", "Build failed: the program's tests did not pass. AssertionError", "Fix it", package_id=parent)
+    save_bytes(parent, "main.py", b"def add(a, b):\n    return a\n", "program")  # a stray stored source must never ship
+    response = TestClient(app).get(f"/work-packages/{parent}/bundle.zip")
+    assert response.status_code == 200, response.text
+    archive = zipfile.ZipFile(io.BytesIO(response.content))
+    assert archive.namelist() == ["report.md"]
+    report = archive.read("report.md").decode()
+    assert report.startswith("# FAILED")
+    assert report.index("## Failure reason") < report.index("## Blockers") < report.index("## Report")
+    assert "Tests: FAILED" in report and "return a" not in report
+
+
+def test_a_failed_package_without_a_report_is_404():
+    from app.intelligence.workflow import log_transition
+
+    project_id = _project("Nothing.")
+    parent = insert_package(
+        project_id=project_id, task_id="fz2", title="Research programme", objective="Nothing.",
+        origin="milo", agent_id="research-mgr", tier="MANAGER", model_role="MANAGER", stage="results", status="failed",
+    )
+    log_transition(parent, "FAILED", "planning failed")
+    assert TestClient(app).get(f"/work-packages/{parent}/bundle.zip").status_code == 404
