@@ -307,6 +307,15 @@ def set_task_status(task_id: str, status: str) -> None:
 
 def handover(project_id: str, task_id: str, from_role: str, to_role: str, criteria: list[str]) -> dict:
     ensure_schema()
+    conn = connect()
+    # The same open blocker is written once. A second review pass reports it again; it is not a new blocker.
+    existing = conn.execute(
+        "SELECT * FROM blockers WHERE project_id=? AND package_id=? AND kind=? AND reason=? AND status='open'",
+        (project_id, package_id, kind, reason),
+    ).fetchone()
+    conn.close()
+    if existing:
+        return dict(existing)
     row = {
         "id": str(uuid.uuid4()),
         "project_id": project_id,
@@ -342,6 +351,15 @@ def list_handovers(project_id: str) -> list[dict]:
 
 def record_qa(project_id: str, task_id: str, verdict: str, findings: list[dict], attempt: int) -> dict:
     ensure_schema()
+    conn = connect()
+    # The same open blocker is written once. A second review pass reports it again; it is not a new blocker.
+    existing = conn.execute(
+        "SELECT * FROM blockers WHERE project_id=? AND package_id=? AND kind=? AND reason=? AND status='open'",
+        (project_id, package_id, kind, reason),
+    ).fetchone()
+    conn.close()
+    if existing:
+        return dict(existing)
     row = {
         "id": str(uuid.uuid4()),
         "project_id": project_id,
@@ -378,6 +396,15 @@ def list_qa(project_id: str) -> list[dict]:
 
 def add_blocker(project_id: str, kind: str, reason: str, needed_from_lee: str, package_id: str = "") -> dict:
     ensure_schema()
+    conn = connect()
+    # The same open blocker is written once. A second review pass reports it again; it is not a new blocker.
+    existing = conn.execute(
+        "SELECT * FROM blockers WHERE project_id=? AND package_id=? AND kind=? AND reason=? AND status='open'",
+        (project_id, package_id, kind, reason),
+    ).fetchone()
+    conn.close()
+    if existing:
+        return dict(existing)
     row = {
         "id": str(uuid.uuid4()),
         "project_id": project_id,
@@ -507,6 +534,20 @@ _CRITERIA_STOP = {
     "their", "this", "to", "with", "within", "without",
 }
 
+# Instruction verbs describe how to check a criterion, not what the deliverable
+# must say. "Mentions the cancellation policy" is checked on "cancellation policy".
+_CRITERIA_INSTRUCTION_VERBS = {
+    "mention", "mentions", "mentioned", "mentioning", "cover", "covers", "covered", "covering",
+    "contain", "contains", "contained", "containing", "including", "included",
+    "state", "states", "stated", "stating", "describe", "describes", "described", "describing",
+    "explain", "explains", "explained", "explaining", "list", "lists", "listed", "listing",
+    "show", "shows", "shown", "showing", "provide", "provides", "provided", "providing",
+    "give", "gives", "given", "giving", "address", "addresses", "addressed", "addressing",
+    "outline", "outlines", "outlined", "outlining", "specify", "specifies", "specified", "specifying",
+    "detail", "details", "detailed", "detailing", "set", "sets", "out", "clearly", "also",
+}
+_CRITERIA_STOP |= _CRITERIA_INSTRUCTION_VERBS
+
 
 def _tokens(text: str) -> list[str]:
     """Whole tokens. '£25' and '£250' are different tokens; trailing punctuation is dropped."""
@@ -549,6 +590,11 @@ def evaluate_criteria(project_id: str, report: str) -> list[dict]:
     if not criteria:
         return []
     text = (report or "").lower()
+    if not text.strip():
+        # Nothing was delivered (for example the job failed at planning): every criterion is not met.
+        results = [{"criterion": criterion, "status": "not_met"} for criterion in criteria]
+        save_criteria(project_id, results)
+        return results
     present = set(_tokens(report))
     results = []
     for criterion in criteria:
@@ -567,6 +613,7 @@ def evaluate_criteria(project_id: str, report: str) -> list[dict]:
 
 def criteria_for(project_id: str) -> list[dict]:
     ensure_schema()
+    _criteria_for_finished_job(project_id)
     conn = connect()
     rows = conn.execute(
         "SELECT criterion, status FROM criteria_results WHERE project_id=? ORDER BY created_at",
@@ -574,6 +621,20 @@ def criteria_for(project_id: str) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def _criteria_for_finished_job(project_id: str) -> None:
+    """A job that ended without being scored (it failed at planning, before any
+    package was finalised) reports every criterion as not_met, never an empty list."""
+    conn = connect()
+    scored = conn.execute("SELECT 1 FROM criteria_results WHERE project_id=? LIMIT 1", (project_id,)).fetchone()
+    project = conn.execute("SELECT status, result FROM projects WHERE id=?", (project_id,)).fetchone()
+    conn.close()
+    if scored or not project or project["status"] not in ("rejected", "unresolved", "complete", "failed"):
+        return
+    if (get_goal(project_id) or {}).get("acceptance_criteria"):
+        # A rejected job's result is the failure reason, not a deliverable.
+        evaluate_criteria(project_id, "" if project["status"] == "rejected" else (project["result"] or ""))
 
 
 def completion_allowed(project_id: str, deliverable_names: list[str], checks_passed: bool) -> tuple[bool, str]:

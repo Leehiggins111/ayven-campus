@@ -30,7 +30,19 @@ def _sentences(text: str) -> list[str]:
 
 
 def _norm_money(raw: str) -> str:
-    return raw.replace(",", "")
+    """'25.00' is '25', '1,000' is '1000', '2.50' is '2.5', so equal amounts compare equal."""
+    whole, _, fraction = raw.replace(",", "").partition(".")
+    whole = whole.lstrip("0") or "0"
+    fraction = fraction.rstrip("0")
+    return whole + ("." + fraction if fraction else "")
+
+
+_FIGURE = re.compile(r"(?<![\d.,])\d[\d,]*(?:\.\d+)?(?![\d])")
+
+
+def _corpus_figures(corpus: str) -> set[str]:
+    """Every whole figure in the corpus, normalised. '£250' gives '250', never '25'."""
+    return {_norm_money(raw.rstrip(",")) for raw in _FIGURE.findall(corpus or "")}
 
 
 def _specifics_unsupported(body: str, corpus: str) -> bool:
@@ -41,8 +53,12 @@ def _specifics_unsupported(body: str, corpus: str) -> bool:
     for email in _EMAIL.findall(body):
         if email.lower() not in lowered:
             return True
+    figures = None
     for amount in _MONEY.findall(body):
-        if _norm_money(amount) not in corpus.replace(",", "") and amount not in corpus:
+        # Whole-figure match: '£25' is not backed by '£250', and '£25.00' is backed by '£25'.
+        if figures is None:
+            figures = _corpus_figures(corpus)
+        if _norm_money(amount.rstrip(",")) not in figures:
             return True
     compact = re.sub(r"\s+", "", corpus)
     for percent in _PERCENT.findall(body):

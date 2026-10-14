@@ -355,6 +355,9 @@ def _fail_project(project_id: str, stage: str, cause: str) -> None:
         for row in conn.execute('SELECT id FROM work_packages WHERE project_id=? AND parent_id IS NULL', (project_id,)).fetchall():
             log_transition(row['id'], 'FAILED', reason)
             update_package(row['id'], status='rejected', campus_stage='FAILED', stage='exception', error=reason)
+        # Nothing was delivered, so each acceptance criterion is not_met, never an empty list.
+        from .goals import evaluate_criteria
+        evaluate_criteria(project_id, '')
         return None
     atomic_stage(project_id, 'failed', action)
 

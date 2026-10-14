@@ -162,6 +162,19 @@ def job_status(project_id: str) -> dict:
         "mode": (project["run_mode"] or "").strip() or "UNVERIFIED",
         "constraints": job_constraints(project_id),
         "criteria_results": _criteria(project_id),
+        **_budget(project_id),
+    }
+
+
+def _budget(project_id: str) -> dict:
+    """The job's spending cap, as stored, so the status shows what Lee set."""
+    from .goals import get_goal
+
+    goal = get_goal(project_id) or {}
+    return {
+        "job_cap_gbp": goal.get("job_cap_gbp"),
+        "job_cap_usd": goal.get("job_cap_usd"),
+        "spent_gbp": goal.get("spent_gbp"),
     }
 
 

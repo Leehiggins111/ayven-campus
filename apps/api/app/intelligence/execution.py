@@ -558,12 +558,28 @@ class Programme:
             for item in self.research.get("evidence") or []
         )
         deterministic = self.objective or ""
+        # Lee's acceptance criteria are part of the brief: a figure he set there
+        # (for example "Full groom price: £25") is supplied, not an unsupported fact.
+        criteria = self._acceptance_criteria()
+        if criteria:
+            deterministic = f"{deterministic}\n" + "\n".join(criteria)
         if self.quote:
             door = self.quote["scenarios"]["labour_per_door"]["total_ex_vat"]
             job = self.quote["scenarios"]["labour_per_job"]["total_ex_vat"]
             prices = " ".join(str(value) for value in (self.quote.get("prices") or {}).values())
-            deterministic = f"{door} {job} {self.quote['per_door_ex_delivery']} {self.quote['labour_unit']} {self.quote['vat']} {prices} {self.objective}"
+            deterministic = f"{door} {job} {self.quote['per_door_ex_delivery']} {self.quote['labour_unit']} {self.quote['vat']} {prices} {deterministic}"
         return evidence, deterministic
+
+    def _acceptance_criteria(self) -> list[str]:
+        if not self.project_id:
+            return []
+        try:
+            from ..goals import get_goal
+
+            goal = get_goal(self.project_id) or {}
+        except Exception:
+            return []
+        return [str(item) for item in goal.get("acceptance_criteria") or [] if str(item).strip()]
 
     def _bind_employee(self, package_id: str, text: str, meta: dict) -> None:
         child = next(item for item in self.children if item["id"] == package_id)
