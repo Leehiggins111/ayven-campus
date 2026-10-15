@@ -207,7 +207,8 @@ def _journey_approve(client, auth, report, snapshot):
     ctx: dict = {}
     PROGRAM["source"] = GOOD_PROGRAM
     brief = {"objective": "Write a small Python program that adds 4 and 7 and prints the sum.",
-             "acceptance_criteria": ["Adds 4 and 7"], "job_cap_gbp": 1.25}
+             # The first check is met by the program; the second names a figure it never states.
+             "acceptance_criteria": ["Adds 4 and 7", "Quotes £25 per visit"], "job_cap_gbp": 1.25}
     key = "acceptance-approve-" + uuid.uuid4().hex
 
     def submit():
@@ -233,14 +234,17 @@ def _journey_approve(client, auth, report, snapshot):
 
     def evidence():
         rows = ctx["status"]["criteria_evidence"]
-        assert rows and all(row["evaluated"] for row in rows), rows
-        assert rows[0]["status"] == "not_met" and rows[0]["evidence"]["missing"] == ["adds"], rows
+        assert len(rows) == 2 and all(row["evaluated"] for row in rows), rows
+        assert rows[0]["status"] == "met" and rows[0]["evidence"]["missing"] == [], rows
+        assert rows[1]["status"] == "not_met" and "£25" in rows[1]["evidence"]["missing"], rows
         return {"criteria_evidence": rows}
 
     def gate():
         approval = ctx["status"]["approval"]
         refused = client.post(f"/approvals/{approval['id']}/resolve", json={"decision": "approved"}, headers=auth)
         assert refused.status_code == 409, refused.text
+        unmet = [row["criterion"] for row in refused.json()["detail"]["unmet_criteria"]]
+        assert unmet == ["Quotes £25 per visit"], unmet
         still = client.get(f"/milo/jobs/{ctx['job']['project_id']}", headers=auth).json()
         assert still["workflow_state"] == "AWAITING_APPROVAL", still
         return {"refused": refused.json()["detail"]["message"]}
@@ -248,7 +252,7 @@ def _journey_approve(client, auth, report, snapshot):
     def override():
         approval = ctx["status"]["approval"]
         ok = client.post(f"/approvals/{approval['id']}/resolve",
-                         json={"decision": "approved", "reason": "The test proves add(4, 7) == 11.", "accept_unmet_criteria": True},
+                         json={"decision": "approved", "reason": "Pricing is out of scope for this program.", "accept_unmet_criteria": True},
                          headers=auth)
         assert ok.status_code == 200, ok.text
         status = _wait(client, auth, ctx["job"]["project_id"], lambda s: s.get("status") == "complete")
