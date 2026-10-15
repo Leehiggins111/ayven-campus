@@ -79,7 +79,11 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
           HF_HOME: /home/runner/.cache/huggingface
           AYVEN_ACCEPTANCE_REPORT: ${{ github.workspace }}/acceptance-report/simulated.json
-        run: python -m pytest apps/api/tests -q --tb=short
+        run: python -m pytest apps/api/tests -q --tb=short --junitxml=junit.xml
+
+      - name: Report failing tests as annotations
+        if: failure()
+        run: python scripts/ci/junit_annotations.py junit.xml
 
       - name: Keep the acceptance harness report
         if: always()
