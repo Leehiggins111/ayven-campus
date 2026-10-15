@@ -10,8 +10,8 @@ No secret values are in this file.
 | Repository | Leehiggins111/ayven-campus |
 | Branch | `claude/campus-workflow-acceptance` |
 | Based on | `cursor/ayven-workforce-fe56` at `cd207e24b139d85d278748f4c3971d8421b7e403` |
-| Commits | see `git log cd207e2..claude/campus-workflow-acceptance` (CI_COMMITS) |
-| CI | CI_RESULT |
+| Commits | `2d486d1` (workflow, UI, harness), `e550882` (draft handoff), `068e7a9` (CI failure annotations), `f22c694` (test corrections), plus this handoff update |
+| CI | **Passed** at `f22c694`: GitHub Actions run 38823658387, job 116725934170 (full `apps/api/tests` suite including the harness). Earlier runs 38821296111 and 38822494678 failed; the causes are recorded below. The pass count is not visible to me: job logs and artifacts are stored where my workspace cannot download them |
 | Deployed? | **No.** Nothing here was deployed. `ayven-workforce` still runs whatever revision `ayven-workforce-00001-zw4` contains. |
 
 ## Evidence classes used below
@@ -51,7 +51,11 @@ SIMULATED mode runs Campus in child processes on a temporary database with a det
 
 HOSTED mode (`--hosted URL`) is separate evidence: read-only by default (`/health`, unauthenticated access refused, optional `--job ID`); `--allow-writes` adds only a budget probe that is refused before anything is created. It needs `AYVEN_ACCEPTANCE_KEY`.
 
-Results: HARNESS_RESULT
+Results (CI run 38823658387, SIMULATED evidence): `test_acceptance_journey` passed. That test fails on any failed or skipped step and requires the restart and new-instance phases to be present, so all five journeys and both re-check phases passed. The JSON report is CI artifact `acceptance-report` (id 12015075595).
+
+What failed on the way (kept for honesty):
+- Run 38821296111 / 38822494678: my edits to two existing tests assumed "Adds 4 and 7" was unmet. In the real job the report repeats the brief, so it is met; the plain approval returned 200. Edits reverted.
+- The harness's first approval journey used the same criterion and so could not exercise the gate; it now adds "Quotes £25 per visit", which the program never states.
 
 ## Hosted evidence (read-only, 15 Oct 2026)
 
