@@ -174,6 +174,7 @@ function CampusNow() {
       <div><b>Manager</b> {view.manager || "—"}</div>
       <div data-testid="glance-needs"><b>Needs you</b> {view.needs_you ? "Yes" : "No"} · <b>Clarification</b> {view.needs_clarification ? "Yes" : "No"}</div>
       <div data-testid="glance-finished"><b>Finished</b> {view.finished ? "Yes" : "No"} · <b>Time</b> {view.elapsed || "unknown"} · <b>Cost</b> {view.cost || "unknown"}</div>
+      {view.outcome && <div data-testid="glance-outcome"><b>Outcome</b> {view.outcome.label}</div>}
     </div>
   );
 }
@@ -233,25 +234,84 @@ function EvidencePanel() {
   );
 }
 
+function OutcomeBadge({ outcome }) {
+  if (!outcome) return null;
+  return (
+    <div className="outcome" data-testid="outcome" data-state={outcome.state} data-simulated={outcome.simulated ? "1" : "0"}>
+      <b data-testid="outcome-label">{outcome.label}</b>
+      {outcome.simulated && <span className="sim" data-testid="simulated-badge">SIMULATED — not real work</span>}
+      {outcome.reason && <div className="muted" data-testid="outcome-reason">{outcome.reason}</div>}
+      {outcome.next_action && <div className="muted">{outcome.next_action}</div>}
+    </div>
+  );
+}
+
+function resultHeading(view) {
+  const state = (view.outcome || {}).state;
+  if (view.rejected || state === "REJECTED") return "Rejected — not a deliverable";
+  if (view.unresolved) return "Unresolved — not a deliverable";
+  if (state === "FAILED") return "Failed — not a deliverable";
+  if (state === "BLOCKED") return "Blocked — not accepted";
+  if (state === "NEEDS_APPROVAL" || view.needs_you) return "Draft for review — not accepted yet";
+  if (state === "COMPLETED") return "Final result";
+  return "Result so far — not finished";
+}
+
+function Downloads({ view }) {
+  const outcome = view.outcome || {};
+  const base = "/work-packages/" + view.package_id;
+  const names = (view.files || []).map((f) => f.name);
+  if (outcome.diagnostic_only) {
+    return (
+      <div data-testid="downloads">
+        <a data-testid="download-diagnostic" href={base + "/bundle.zip"}>Download the diagnostic report (not a deliverable)</a>
+      </div>
+    );
+  }
+  if (!outcome.accepted_deliverable && !outcome.draft_for_review) {
+    return <div className="muted" data-testid="downloads">Nothing to download until the job finishes.</div>;
+  }
+  const draft = outcome.draft_for_review;
+  return (
+    <div data-testid="downloads">
+      <a data-testid="download-deliverable" href={base + "/deliverable.md"}>{draft ? "Download the draft for review" : "Download the deliverable"}</a>
+      {names.includes("main.py") && <>{" "}<a data-testid="download-main" href={base + "/files/main.py"}>main.py</a></>}
+      {names.includes("test_main.py") && <>{" "}<a data-testid="download-test" href={base + "/files/test_main.py"}>test_main.py</a></>}
+      {names.length > 0 && <>{" "}<a data-testid="download-bundle" href={base + "/bundle.zip"}>{draft ? "All draft files (.zip)" : "All files (.zip)"}</a></>}
+    </div>
+  );
+}
+
+function CriteriaList({ rows }) {
+  if (!rows || !rows.length) return null;
+  return (
+    <div data-testid="criteria">
+      <b>Acceptance checks</b>
+      {rows.map((row, index) => (
+        <div key={index} data-testid="criterion" data-status={row.status}>
+          {row.status === "met" ? "Met" : row.status === "not_met" ? "Not met" : "Needs a person"} — {row.criterion}
+          {row.evidence && row.evidence.missing && row.evidence.missing.length > 0 && (
+            <span className="muted"> (missing: {row.evidence.missing.join(", ")})</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ResultPanel() {
   const view = useCampus((s) => s.campus_view) || {};
   const result = view.result;
   if (!result) return null;
   return (
     <div className="result" data-testid="final-result">
-      <strong>{view.rejected ? "Rejected" : view.unresolved ? "Unresolved" : view.needs_you ? "Deliverable" : "Final result"}</strong>
+      <strong>{resultHeading(view)}</strong>
+      <OutcomeBadge outcome={view.outcome} />
       <div data-testid="result-summary">{result.summary}</div>
-      <div><b>Deliverable</b> {result.deliverable || "—"}</div>
+      <div><b>{view.outcome && view.outcome.accepted_deliverable ? "Deliverable" : "Draft"}</b> {result.deliverable || "—"}</div>
       <div><b>Findings</b> {result.findings || "—"}</div>
-      {view.package_id && (
-        <div>
-          <a data-testid="download-deliverable" href={"/work-packages/" + view.package_id + "/deliverable.md"}>Download the deliverable</a>
-          {" "}
-          <a data-testid="download-main" href={"/work-packages/" + view.package_id + "/files/main.py"}>main.py</a>
-          {" "}
-          <a data-testid="download-test" href={"/work-packages/" + view.package_id + "/files/test_main.py"}>test_main.py</a>
-        </div>
-      )}
+      <CriteriaList rows={view.criteria_evidence} />
+      {view.package_id && <Downloads view={view} />}
       <div><b>Gaps</b> {(result.gaps || []).join("; ") || "none recorded"}</div>
       <div><b>Confidence</b> {result.confidence === 0 || result.confidence ? String(result.confidence) : "unknown"} · <b>Evidence</b> {result.evidence_status || "—"}</div>
       <div><b>Manager</b> {result.manager || "—"} · <b>Time</b> {result.time || "unknown"} · <b>Cost</b> {result.cost || "unknown"}</div>
@@ -363,45 +423,156 @@ function NeedsYou() {
   const view = useCampus((s) => s.campus_view) || {};
   const card = view.approval;
   const [reason, setReason] = useState("");
+  const [override, setOverride] = useState(false);
+  const [error, setError] = useState("");
   if (!view.needs_you || !card) return null;
+  const unmet = (view.criteria_evidence || []).filter((row) => row.status === "not_met");
   const decide = (decision) => {
     const text = reason.trim();
-    if (decision === "rejected" && !text) return;
+    setError("");
+    if (decision === "rejected" && !text) { setError("Add a reason so Ayven knows what to change."); return; }
+    if (decision === "approved" && unmet.length && !override) {
+      setError(`${unmet.length} acceptance check${unmet.length === 1 ? " is" : "s are"} not met. Reject it, or tick the box and say why you accept it anyway.`);
+      return;
+    }
+    if (decision === "approved" && unmet.length && !text) { setError("Say why you accept a result with an unmet check."); return; }
+    const body = decision === "rejected" ? { decision, reason: text }
+      : unmet.length ? { decision, reason: text, accept_unmet_criteria: true } : { decision };
     fetch(`/approvals/${card.id}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(decision === "rejected" ? { decision, reason: text } : { decision }),
-    }).then(() => useCampus.hydrate());
+      body: JSON.stringify(body),
+    }).then(async (response) => {
+      if (!response.ok) setError(await errorText(response));
+      useCampus.hydrate();
+    }).catch(() => setError("Campus could not be reached. Nothing was decided."));
   };
   return (
     <div className="needs-you" data-testid="needs-you">
       <strong>NEEDS YOU</strong>
+      <OutcomeBadge outcome={view.outcome} />
       <p>{card.what}</p>
       <p><b>Why</b> {card.why}</p>
       <p><b>If approved</b> {card.if_approved}</p>
       <p><b>If rejected</b> {card.if_rejected}</p>
       {(card.evidence || []).map((item, index) => <p key={index} className="muted">{item.source} {item.note}</p>)}
-      <textarea data-testid="reject-reason" value={reason} placeholder="Reason for a rejection" onChange={(e) => setReason(e.target.value)} />
+      <CriteriaList rows={view.criteria_evidence} />
+      {view.package_id && <a data-testid="download-draft" href={"/work-packages/" + view.package_id + "/deliverable.md"}>Read the draft</a>}
+      <textarea data-testid="reject-reason" value={reason} placeholder={unmet.length ? "Reason (needed to reject, or to accept with an unmet check)" : "Reason for a rejection"} onChange={(e) => setReason(e.target.value)} />
+      {unmet.length > 0 && (
+        <label data-testid="accept-unmet">
+          <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
+          {" "}Accept although {unmet.length} check{unmet.length === 1 ? " is" : "s are"} not met
+        </label>
+      )}
+      {error && <div className="error" data-testid="decision-error" role="alert">{error}</div>}
       <button data-testid="approve" onClick={() => decide("approved")}>Approve</button>
       <button className="ghost" data-testid="reject" onClick={() => decide("rejected")}>Reject</button>
     </div>
   );
 }
 
+async function errorText(response) {
+  try {
+    const body = await response.json();
+    const detail = body && body.detail;
+    if (typeof detail === "string") return detail;
+    if (detail && detail.message) return detail.message;
+    if (Array.isArray(detail) && detail.length) return detail.map((item) => item.msg || String(item)).join("; ");
+  } catch (_) {}
+  return `Campus refused this (HTTP ${response.status}). Nothing was changed.`;
+}
+
 function NeedsClarification() {
   const view = useCampus((s) => s.campus_view) || {};
   const [answer, setAnswer] = useState("");
+  const [error, setError] = useState("");
   if (!view.needs_clarification || !view.package_id) return null;
+  const submit = () => {
+    setError("");
+    if (!answer.trim()) { setError("Type an answer first."); return; }
+    fetch(`/work-packages/${view.package_id}/clarification`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answer }),
+    }).then(async (response) => {
+      if (!response.ok) { setError(await errorText(response)); return; }
+      useCampus.selectPackage(view.package_id);
+    }).catch(() => setError("Campus could not be reached. Your answer was not sent."));
+  };
   return (
     <div className="needs-clarify" data-testid="needs-clarification">
       <strong>NEEDS CLARIFICATION</strong>
       <p data-testid="clarify-question">{view.question}</p>
       <textarea data-testid="clarify-input" value={answer} onChange={(e) => setAnswer(e.target.value)} />
-      <button data-testid="clarify-submit" onClick={() => fetch(`/work-packages/${view.package_id}/clarification`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ answer }),
-      }).then(() => useCampus.selectPackage(view.package_id))}>Answer</button>
+      {error && <div className="error" data-testid="clarify-error" role="alert">{error}</div>}
+      <button data-testid="clarify-submit" onClick={submit}>Answer</button>
+    </div>
+  );
+}
+
+const DRAFT_KEY = "ayven-campus-brief-draft";
+
+function loadDraft() {
+  try { return JSON.parse(window.localStorage.getItem(DRAFT_KEY) || "null"); } catch (_) { return null; }
+}
+
+function saveDraft(draft) {
+  try {
+    if (draft) window.localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+    else window.localStorage.removeItem(DRAFT_KEY);
+  } catch (_) {}
+}
+
+// The brief Lee submits: objective, acceptance criteria and a budget in the currency he chose.
+// The budget is sent as entered. Campus keeps it or refuses it with a reason; it never shrinks it.
+function BriefForm({ initial, onChange }) {
+  const saved = loadDraft() || {};
+  const [objective, setObjective] = useState(saved.objective || initial || "");
+  const [criteria, setCriteria] = useState(saved.criteria || "");
+  const [amount, setAmount] = useState(saved.amount || "");
+  const [currency, setCurrency] = useState(saved.currency || "GBP");
+  const [status, setStatus] = useState({ kind: "", text: "" });
+  useEffect(() => { saveDraft({ objective, criteria, amount, currency }); }, [objective, criteria, amount, currency]);
+  const submit = () => {
+    setStatus({ kind: "", text: "" });
+    if (!objective.trim()) { setStatus({ kind: "error", text: "Write the objective first." }); return; }
+    const body = {
+      objective: objective.trim(),
+      acceptance_criteria: criteria.split("\n").map((line) => line.trim()).filter(Boolean),
+    };
+    if (amount.trim()) {
+      const value = Number(amount);
+      if (!Number.isFinite(value) || value <= 0) { setStatus({ kind: "error", text: "The budget must be a number above 0." }); return; }
+      if (currency === "USD") body.budget_usd = value; else body.job_cap_gbp = value;
+    }
+    fetch("/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(async (response) => {
+        if (!response.ok) { setStatus({ kind: "error", text: await errorText(response) }); return; }
+        const job = await response.json();
+        setStatus({ kind: "ok", text: job.duplicate ? "That brief is already running." : `Submitted (${job.mode || "mode unknown"}).` });
+        setObjective(""); setCriteria(""); setAmount(""); onChange && onChange("");
+        saveDraft(null);
+        useCampus.hydrate();
+      })
+      .catch(() => setStatus({ kind: "error", text: "Campus could not be reached. The brief was not sent." }));
+  };
+  return (
+    <div data-testid="brief-form">
+      <textarea data-testid="objective" value={objective} placeholder="What should Ayven do?" onChange={(e) => { setObjective(e.target.value); onChange && onChange(e.target.value); }} />
+      <textarea data-testid="criteria-input" value={criteria} placeholder="Acceptance checks, one per line (optional)" onChange={(e) => setCriteria(e.target.value)} />
+      <div className="row">
+        <input data-testid="budget-amount" inputMode="decimal" value={amount} placeholder="Budget (optional)" onChange={(e) => setAmount(e.target.value)} />
+        <select data-testid="budget-currency" value={currency} onChange={(e) => setCurrency(e.target.value)}>
+          <option value="GBP">£ GBP</option>
+          <option value="USD">$ USD</option>
+        </select>
+      </div>
+      {status.text && <div className={status.kind === "error" ? "error" : "muted"} data-testid={status.kind === "error" ? "brief-error" : "brief-status"} role={status.kind === "error" ? "alert" : undefined}>{status.text}</div>}
+      <div className="row">
+        <button data-testid="ask-milo" onClick={submit}>Ask Milo</button>
+        <button className="ghost" onClick={() => useCampus.focusCampus()}>Campus view</button>
+      </div>
     </div>
   );
 }
@@ -440,11 +611,7 @@ function App() {
         <div className="panel top">
           <div className="brand">AYVEN CAMPUS</div>
           <div className="muted">Headquarters · live company state</div>
-          <textarea data-testid="objective" value={text} onChange={(e) => setText(e.target.value)} />
-          <div className="row">
-            <button data-testid="ask-milo" onClick={() => fetch("/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ objective: text }) }).then(() => useCampus.hydrate())}>Ask Milo</button>
-            <button className="ghost" onClick={() => useCampus.focusCampus()}>Campus view</button>
-          </div>
+          <BriefForm initial={text} onChange={setText} />
           <CampusNow />
         </div>
         <div className="panel right">

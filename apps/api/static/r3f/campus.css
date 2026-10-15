@@ -37,3 +37,11 @@ textarea { width: 100%; min-height: 68px; background: #0c1a14; color: #e8f0ea; b
 .repair { margin-top: 8px; border: 1px solid #c4a056; border-radius: 10px; padding: 8px; font-size: 12px; }
 .evidence, .result { margin-top: 8px; font-size: 12px; line-height: 1.4; }
 .evidence div, .result div { margin-top: 4px; }
+.outcome { margin-top: 6px; padding: 6px 8px; border-radius: 8px; border: 1px solid #2a4a38; }
+.outcome[data-state="COMPLETED"] { border-color: #1d6b45; }
+.outcome[data-state="NEEDS_APPROVAL"], .outcome[data-state="NEEDS_CLARIFICATION"] { border-color: #c4a056; }
+.outcome[data-state="FAILED"], .outcome[data-state="REJECTED"], .outcome[data-state="BLOCKED"] { border-color: #ff5a3d; }
+.sim { margin-left: 8px; font-size: 11px; letter-spacing: .06em; padding: 2px 6px; border-radius: 999px; background: #3a2a6b; color: #e8e0ff; }
+.error { margin-top: 6px; color: #ffb4a8; font-size: 12px; }
+input, select { font: inherit; background: #0c1a14; color: #e8f0ea; border: 1px solid #2a4a38; border-radius: 8px; padding: 6px 8px; margin-right: 6px; }
+label { display: block; margin-top: 6px; font-size: 12px; }

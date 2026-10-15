@@ -79,6 +79,14 @@ class ObjectiveIn(BaseModel):
 class ApprovalIn(BaseModel):
     decision: str
     reason: str = ""
+    # Approving a result with an unmet acceptance criterion is refused unless Lee
+    # says so explicitly, with a reason. The override is recorded on the approval.
+    accept_unmet_criteria: bool = False
+
+
+class AcceptIn(BaseModel):
+    accept_unmet_criteria: bool = False
+    reason: str = ""
 
 class BudgetIn(BaseModel):
     monthly_cap_gbp: float
@@ -114,6 +122,19 @@ def health():
     }
     if not durability["durable"]:
         durability["persistence_state"] = "not_durable"
+    # The job engine's own tables (DBOS) stay on this instance's disk unless a workflow
+    # database is configured. Jobs restart from checkpoints in the app database, but an
+    # instance-local workflow store is reported here, not hidden behind "durable".
+    from .durable import _workflow_database_url
+
+    workflow_url = _workflow_database_url()
+    workflow_local = workflow_url.startswith("sqlite:")
+    durability["workflow_store"] = "instance_local_sqlite" if workflow_local else "configured"
+    durability["workflow_store_durable"] = not workflow_local
+    durability["durability_caveats"] = (
+        ["Workflow engine tables are on instance-local disk. A new instance resumes jobs from app-database checkpoints; this is not yet proven on the hosted service."]
+        if workflow_local else []
+    )
     if storage["durable"]:
         # Config alone is not proof: a durable database that does not answer is degraded.
         from . import db as _db
@@ -234,6 +255,11 @@ def _campus_view(package_id: str = "") -> dict:
     view["blockers"] = list_blockers(package_id=pid) if pid else []
     view["files"] = list_files(pid) if pid else []
     view["criteria_results"] = criteria_for(project_id) if project_id else []
+    from .goals import criteria_evidence
+    from .outcome import outcome_for
+
+    view["criteria_evidence"] = criteria_evidence(project_id) if project_id else []
+    view["outcome"] = outcome_for(project_id=project_id, package_id=pid) if (project_id or pid) else None
     if goal:
         view["cost_gbp"] = goal["spent_gbp"]
         view["job_cap_gbp"] = goal["job_cap_gbp"]
@@ -263,16 +289,26 @@ def _intelligence_state() -> dict:
 
 @app.get("/work-packages/{package_id}/deliverable.md")
 def download_deliverable(package_id: str):
-    """The stored plan or program, the same text Campus shows, as a file."""
+    """The stored plan or program, the same text Campus shows, as a file.
+
+    Only an accepted result downloads unlabelled. A draft, a rejected or failed
+    result, or a simulated one starts with a banner saying what it is, and its
+    file name says so too. Rejected work is never served as a deliverable.
+    """
+    from .outcome import banner, download_name, headers, outcome_for
+
     packages = _rows("SELECT id, findings FROM work_packages WHERE id=?", (package_id,))
     if not packages:
         raise HTTPException(404)
-    body = packages[0].get("findings") or ""
-    filename = f"{package_id[:8]}-deliverable.md"
+    result = outcome_for(package_id=package_id)
+    body = banner(result) + (packages[0].get("findings") or "")
+    filename = download_name(package_id[:8], result, f"{package_id[:8]}-deliverable", "md")
+    if result["state"] in ("REJECTED", "FAILED", "BLOCKED"):
+        filename = download_name(package_id[:8], result, f"{package_id[:8]}-diagnostic", "md")
     return Response(
         content=body,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"', **headers(result)},
     )
 
 
@@ -280,6 +316,7 @@ def download_deliverable(package_id: str):
 def download_program_file(package_id: str, name: str):
     """A program file whose tests passed. A rejected reply has no file to download."""
     from .intelligence.software import stored_files
+    from .outcome import headers, outcome_for
 
     import re
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", name):
@@ -287,13 +324,17 @@ def download_program_file(package_id: str, name: str):
     packages = _rows("SELECT id, findings FROM work_packages WHERE id=?", (package_id,))
     if not packages:
         raise HTTPException(404)
+    result = outcome_for(package_id=package_id)
+    if result["state"] not in ("COMPLETED", "NEEDS_APPROVAL"):
+        # Source from a rejected, failed, blocked or unfinished job is not handed out as a deliverable.
+        raise HTTPException(409, f"This job is {result['state']}. Its files are not a deliverable. {result['next_action']}")
     source = stored_files(packages[0].get("findings") or "").get(name)
     if not source:
         raise HTTPException(404)
     return Response(
         content=source,
         media_type="text/x-python; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        headers={"Content-Disposition": f'attachment; filename="{name}"', **headers(result)},
     )
 
 
@@ -404,15 +445,34 @@ def _attach_goal(project_id: str, body: ObjectiveIn, duplicate: bool) -> None:
     )
 
 
+def _admit_budget(body: ObjectiveIn, idempotency_key: str) -> None:
+    """Refuse a budget before the job exists: unsupported, or more than this month has left.
+
+    A replay of a job that already exists is not a new spend, so it is let through
+    to return that job. Nothing is clamped or converted to fit.
+    """
+    from .goals import check_budget
+    from .intelligence.budget import month_allows_new_job
+
+    cap_usd = check_budget(body.job_cap_gbp, body.budget_usd)
+    if idempotency_key:
+        import uuid as _uuid
+
+        existing = _rows("SELECT id FROM projects WHERE id=?", (str(_uuid.uuid5(_uuid.NAMESPACE_URL, "ayven-project:" + idempotency_key)),))
+        if existing:
+            return
+    allowed, why = month_allows_new_job(cap_usd)
+    if not allowed:
+        raise ValueError(f"{why} The job was not created and its budget was not changed.")
+
+
 @app.post("/projects")
 def create_project(body: ObjectiveIn, request: Request):
     from .milo_handoff import submit_job
     key = request.headers.get("Idempotency-Key", "").strip()
     try:
-        from .goals import check_budget
-
         # Refuse an unsupported budget before the job exists. It is never clamped.
-        check_budget(body.job_cap_gbp, body.budget_usd)
+        _admit_budget(body, key)
         result = submit_job(body.objective, key, body.title, constraints=body.constraints)
         _attach_goal(result["project_id"], body, bool(result.get("duplicate")))
         if not result.get("duplicate"):
@@ -494,13 +554,17 @@ def get_budget():
 
 @app.put("/budget")
 def put_budget(body: BudgetIn):
-    from .intelligence.budget import gbp, set_monthly_cap_usd, usd_from_gbp
+    import math
 
+    from .intelligence.budget import set_monthly_cap_usd, usd_from_gbp
+
+    if not math.isfinite(float(body.monthly_cap_gbp)) or body.monthly_cap_gbp <= 0:
+        raise HTTPException(400, "Set a monthly budget above £0. The budget was not changed.")
     try:
-        view = set_monthly_cap_usd(usd_from_gbp(body.monthly_cap_gbp))
+        # The pound amount Lee set is kept exactly. Enforcement uses its dollar conversion.
+        view = set_monthly_cap_usd(usd_from_gbp(body.monthly_cap_gbp), sent_gbp=float(body.monthly_cap_gbp))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    view["monthly_cap_gbp"] = gbp(view["monthly_cap_usd"])
     return view
 
 
@@ -525,9 +589,26 @@ def resolve(aid: str, body: ApprovalIn):
         if row["status"] != body.decision:
             raise HTTPException(409, f"This approval was already {row['status']}; it can't be changed to {body.decision}.")
         return {"ok": True, "resumed": [], "unchanged": True}
+    override = False
+    if body.decision == "approved" and row["project_id"]:
+        from .goals import criteria_evidence
+
+        unmet = [item for item in criteria_evidence(row["project_id"]) if item["status"] == "not_met"]
+        if unmet and not body.accept_unmet_criteria:
+            conn.close()
+            raise HTTPException(409, {
+                "message": (f"{len(unmet)} acceptance criterion is not met" if len(unmet) == 1
+                            else f"{len(unmet)} acceptance criteria are not met")
+                + ". Nothing was approved. Reject it with a reason, or approve with accept_unmet_criteria and a reason.",
+                "unmet_criteria": unmet,
+            })
+        if unmet and not body.reason.strip():
+            conn.close()
+            raise HTTPException(400, "Say why you are accepting a result with an unmet acceptance criterion.")
+        override = bool(unmet)
     conn.execute(
-        "UPDATE approvals SET reason=? WHERE id=?",
-        (body.reason.strip(), aid),
+        "UPDATE approvals SET reason=?, accepted_unmet=? WHERE id=?",
+        (body.reason.strip(), 1 if override else 0, aid),
     )
     conn.commit()
     conn.close()
@@ -589,10 +670,8 @@ def milo_submit(body: ObjectiveIn, request: Request, idempotency_key: str = ""):
     if header_key and idempotency_key and header_key != idempotency_key:
         raise HTTPException(400, "Idempotency keys disagree")
     try:
-        from .goals import check_budget
-
         # Refuse an unsupported budget before the job exists. It is never clamped.
-        check_budget(body.job_cap_gbp, body.budget_usd)
+        _admit_budget(body, header_key or idempotency_key)
         result = submit_job(
             body.objective,
             header_key or idempotency_key,
@@ -655,13 +734,21 @@ def download_bundle(package_id: str):
     import zipfile
     from .blobs import list_files, load_bytes
 
+    from .outcome import download_name, headers, outcome_for
+
+    result = outcome_for(package_id=package_id)
     failed = _failed_package_report(package_id)
     if failed is not None:
         # A FAILED package ships only the report that explains the failure. Never source files.
+        if result["state"] == "REJECTED":
+            # Lee's rejection is not a step failure; the report says which it was.
+            failed = (f"# REJECTED. NOT A DELIVERABLE.\n\n{result['reason']}\n\n").encode("utf-8") + failed
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
             archive.writestr("report.md", failed)
-        return Response(content=buffer.getvalue(), media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="bundle.zip"'})
+        name = download_name(package_id[:8], result, "bundle", "zip")
+        return Response(content=buffer.getvalue(), media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"', **headers(result)})
     files = list_files(package_id)
     if not files:
         raise HTTPException(404, "This job didn't produce any files.")
@@ -672,7 +759,15 @@ def download_bundle(package_id: str):
             if content is None:
                 raise HTTPException(404, "This file isn't available any more.")
             archive.writestr(item["name"], content)
-    return Response(content=buffer.getvalue(), media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="bundle.zip"'})
+        if result["state"] not in ("COMPLETED", "NEEDS_APPROVAL"):
+            # Files from a blocked or unfinished job travel with a note saying they are not accepted.
+            archive.writestr(
+                "NOT-ACCEPTED.txt",
+                f"{result['label']}. These files are not an accepted deliverable.\n{result['reason']}\n{result['next_action']}\n",
+            )
+    name = download_name(package_id[:8], result, "bundle", "zip")
+    return Response(content=buffer.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', **headers(result)})
 
 
 @app.post("/work-packages/{package_id}/stop")
@@ -701,7 +796,7 @@ def patch_package(package_id: str, body: CapIn):
 
 
 @app.post("/work-packages/{package_id}/accept")
-def accept_package(package_id: str):
+def accept_package(package_id: str, body: AcceptIn | None = None):
     """Lee accepts a result.
 
     Approval rows are the gate a package waits on, so accepting a package that is
@@ -723,7 +818,10 @@ def accept_package(package_id: str):
         (project_id,),
     )
     if pending:
-        result = resolve(pending[0]["id"], ApprovalIn(decision="approved"))
+        body = body or AcceptIn()
+        result = resolve(pending[0]["id"], ApprovalIn(
+            decision="approved", reason=body.reason, accept_unmet_criteria=body.accept_unmet_criteria,
+        ))
         record_intervention(project_id, "Lee accepted the result")
         after = _rows("SELECT workflow_state FROM work_packages WHERE id=?", (package_id,))
         final = (after[0]["workflow_state"] if after else "") or ""
@@ -759,7 +857,14 @@ def rework_package(package_id: str, body: ReworkIn):
     from .intelligence.budget import record_intervention
 
     record_intervention(rows[0]["project_id"], body.reason.strip())
-    return add_blocker(rows[0]["project_id"], "rework", body.reason.strip(), "Ayven will rework it using your reason.", package_id)
+    # Campus records the request. It does not re-run work on its own yet, so it says so
+    # instead of promising a rework that never starts.
+    blocker = add_blocker(
+        rows[0]["project_id"], "rework", body.reason.strip(),
+        "Rework is recorded but does not start automatically yet. Resubmit the brief with this reason.",
+        package_id,
+    )
+    return {**blocker, "rework_started": False}
 
 
 @app.get("/admin/backup")

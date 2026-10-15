@@ -277,7 +277,16 @@ with TestClient(app) as client:
     assert names == ["main.py", "report.md", "test_main.py"], names
     approval = s["approval"]
     assert approval, s
-    r = client.post(f"/approvals/{approval['id']}/resolve", json={"decision": "approved", "reason": ""}, headers=auth)
+    # "Adds 4 and 7" is not met by the deterministic check (the report never says "adds"),
+    # so a plain approval is refused and names the unmet criterion with its evidence.
+    refused = client.post(f"/approvals/{approval['id']}/resolve", json={"decision": "approved", "reason": ""}, headers=auth)
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert [c["criterion"] for c in detail["unmet_criteria"]] == ["Adds 4 and 7"], detail
+    assert detail["unmet_criteria"][0]["evidence"]["missing"] == ["adds"], detail
+    r = client.post(f"/approvals/{approval['id']}/resolve",
+                    json={"decision": "approved", "reason": "The tests prove it adds 4 and 7.", "accept_unmet_criteria": True},
+                    headers=auth)
     assert r.status_code == 200, r.text
     for _ in range(300):
         s = client.get("/milo/jobs/" + pid, headers=auth).json()
@@ -558,7 +567,7 @@ with TestClient(app) as client:
         time.sleep(0.1)
     assert s["workflow_state"] == "AWAITING_APPROVAL", s
     aid = s["approval"]["id"]
-    ok = client.post(f"/approvals/{aid}/resolve", json={"decision": "approved", "reason": "Looks right"}, headers=auth)
+    ok = client.post(f"/approvals/{aid}/resolve", json={"decision": "approved", "reason": "Looks right", "accept_unmet_criteria": True}, headers=auth)
     assert ok.status_code == 200, ok.text
     before = audit(pid, aid)
     assert before[0] == "Looks right" and before[1] == "approved" and before[3] == "COMPLETED", before

@@ -121,9 +121,16 @@ def ensure_schema(conn=None) -> None:
         )"""
     )
     _add(conn, "goal_contracts", "job_cap_gbp", "REAL")
+    # The budget exactly as Lee sent it: amount and currency. Never converted for storage.
+    _add(conn, "goal_contracts", "job_cap_amount_sent", "REAL")
+    _add(conn, "goal_contracts", "job_cap_currency_sent", "TEXT")
+    # How each acceptance criterion was checked: terms, what was found, what was missing.
+    _add(conn, "criteria_results", "evidence_json", "TEXT")
     _add(conn, "approvals", "reason", "TEXT")
     _add(conn, "approvals", "consequences", "TEXT")
     _add(conn, "approvals", "irreversible_effects", "TEXT")
+    # 1 when Lee approved a result whose acceptance criteria were not all met.
+    _add(conn, "approvals", "accepted_unmet", "INTEGER")
     conn.commit()
     if own:
         conn.close()
@@ -195,6 +202,12 @@ def open_goal(
     ensure_schema()
     cap = check_budget(job_cap_gbp, budget_usd)
     cap_gbp = float(job_cap_gbp) if job_cap_gbp is not None else None
+    if job_cap_gbp is not None:
+        sent_amount, sent_currency = float(job_cap_gbp), "GBP"
+    elif budget_usd is not None:
+        sent_amount, sent_currency = float(budget_usd), "USD"
+    else:
+        sent_amount, sent_currency = None, None
     allowed, why = month_allows_new_job(cap)
     if not allowed:
         raise ValueError(why)
@@ -203,8 +216,9 @@ def open_goal(
     conn = connect()
     conn.execute(
         """INSERT INTO goal_contracts(
-            project_id, acceptance_criteria, deadline, job_cap_usd, job_cap_gbp, allow_paid_fallback, allow_publish, status, created_at, updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            project_id, acceptance_criteria, deadline, job_cap_usd, job_cap_gbp, allow_paid_fallback, allow_publish, status, created_at, updated_at,
+            job_cap_amount_sent, job_cap_currency_sent
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(project_id) DO UPDATE SET
             acceptance_criteria=excluded.acceptance_criteria,
             deadline=excluded.deadline,
@@ -212,8 +226,11 @@ def open_goal(
             job_cap_gbp=excluded.job_cap_gbp,
             allow_paid_fallback=excluded.allow_paid_fallback,
             allow_publish=excluded.allow_publish,
-            updated_at=excluded.updated_at""",
-        (project_id, json.dumps(clean), deadline, cap, cap_gbp, int(allow_paid_fallback), int(allow_publish), "running", now, now),
+            updated_at=excluded.updated_at,
+            job_cap_amount_sent=excluded.job_cap_amount_sent,
+            job_cap_currency_sent=excluded.job_cap_currency_sent""",
+        (project_id, json.dumps(clean), deadline, cap, cap_gbp, int(allow_paid_fallback), int(allow_publish), "running", now, now,
+         sent_amount, sent_currency),
     )
     conn.commit()
     conn.close()
@@ -230,9 +247,18 @@ def get_goal(project_id: str) -> dict | None:
         return None
     item = dict(row)
     item["acceptance_criteria"] = json.loads(item["acceptance_criteria"] or "[]")
-    # The pound budget Lee sent is shown exactly. Only a USD-only cap is converted for display.
-    item["job_cap_gbp"] = item["job_cap_gbp"] if item.get("job_cap_gbp") is not None else gbp(item["job_cap_usd"])
-    item["job_cap_currency"] = "GBP"
+    # The budget Lee sent keeps its amount and currency. A pound budget is shown exactly.
+    # A dollar budget stays in dollars: its pound figure is labelled as a conversion.
+    sent_currency = item.get("job_cap_currency_sent")
+    sent_amount = item.get("job_cap_amount_sent")
+    if sent_currency is None and item.get("job_cap_gbp") is not None:
+        sent_currency, sent_amount = "GBP", item["job_cap_gbp"]  # rows written before the sent columns
+    converted = item.get("job_cap_gbp") is None
+    item["job_cap_gbp"] = item["job_cap_gbp"] if not converted else gbp(item["job_cap_usd"])
+    item["job_cap_currency"] = sent_currency or "GBP"
+    item["job_cap_amount"] = sent_amount if sent_amount is not None else item["job_cap_gbp"]
+    item["job_cap_gbp_is_conversion"] = bool(converted)
+    item["job_cap_source"] = "sent" if sent_currency else "server_default"
     item["spent_usd"] = job_spent_usd(project_id)
     item["spent_gbp"] = gbp(item["spent_usd"])
     item["allow_paid_fallback"] = bool(item["allow_paid_fallback"])
@@ -502,9 +528,11 @@ def save_criteria(project_id: str, results: list[dict]) -> None:
     conn.execute("DELETE FROM criteria_results WHERE project_id=?", (project_id,))
     now = _now()
     for item in results:
+        evidence = item.get("evidence")
         conn.execute(
-            "INSERT INTO criteria_results(id, project_id, criterion, status, created_at) VALUES(?,?,?,?,?)",
-            (str(uuid.uuid4()), project_id, item["criterion"], item["status"], now),
+            "INSERT INTO criteria_results(id, project_id, criterion, status, created_at, evidence_json) VALUES(?,?,?,?,?,?)",
+            (str(uuid.uuid4()), project_id, item["criterion"], item["status"], now,
+             json.dumps(evidence, sort_keys=True) if evidence is not None else None),
         )
     conn.commit()
     conn.close()
@@ -571,26 +599,67 @@ def evaluate_criteria(project_id: str, report: str) -> list[dict]:
     criteria = (goal or {}).get("acceptance_criteria") or []
     if not criteria:
         return []
+    import hashlib
+
     text = (report or "").lower()
+    checked_at = _now()
+    digest = hashlib.sha256((report or "").encode("utf-8")).hexdigest()
+    method = "whole-token coverage: met when >=70% of terms and every figure appear in the delivered report"
     if not text.strip():
         # Nothing was delivered (for example the job failed at planning): every criterion is not met.
-        results = [{"criterion": criterion, "status": "not_met"} for criterion in criteria]
-        save_criteria(project_id, results)
-        return results
+        stored = [{"criterion": criterion, "status": "not_met", "evidence": {
+            "method": method, "checked_at": checked_at, "report_sha256": digest, "report_chars": 0,
+            "terms": _criterion_terms(criterion), "found": [], "missing": _criterion_terms(criterion),
+            "coverage": 0.0, "note": "Nothing was delivered, so nothing could meet this criterion.",
+        }} for criterion in criteria]
+        save_criteria(project_id, stored)
+        return [{"criterion": item["criterion"], "status": item["status"]} for item in stored]
     present = set(_tokens(report))
-    results = []
+    stored = []
     for criterion in criteria:
         terms = _criterion_terms(criterion)
+        found_terms = [term for term in terms if term in present]
+        missing = [term for term in terms if term not in present]
+        coverage = round(len(found_terms) / len(terms), 3) if terms else 0.0
         if not terms:
             status = "unverified"
+            note = "No checkable term: a person must judge this criterion."
         else:
-            found = sum(1 for term in terms if term in present)
             # A figure such as £25 or 3 must appear exactly; near-miss figures are not a match.
             figures = all(term in present for term in terms if any(ch.isdigit() for ch in term))
-            status = "met" if text.strip() and figures and found / len(terms) >= 0.7 else "not_met"
-        results.append({"criterion": criterion, "status": status})
-    save_criteria(project_id, results)
-    return results
+            status = "met" if text.strip() and figures and coverage >= 0.7 else "not_met"
+            note = "" if status == "met" else ("A figure is missing." if not figures else "Too few terms appear.")
+        stored.append({"criterion": criterion, "status": status, "evidence": {
+            "method": method, "checked_at": checked_at, "report_sha256": digest, "report_chars": len(report or ""),
+            "terms": terms, "found": found_terms, "missing": missing, "coverage": coverage, "note": note,
+        }})
+    save_criteria(project_id, stored)
+    return [{"criterion": item["criterion"], "status": item["status"]} for item in stored]
+
+
+def criteria_evidence(project_id: str) -> list[dict]:
+    """Each stored criterion result with the evidence it was decided on. Rows written
+    before evidence was recorded say so instead of inventing it."""
+    ensure_schema()
+    conn = connect()
+    rows = conn.execute(
+        "SELECT criterion, status, created_at, evidence_json FROM criteria_results WHERE project_id=? ORDER BY created_at",
+        (project_id,),
+    ).fetchall()
+    conn.close()
+    out = []
+    for row in rows:
+        try:
+            evidence = json.loads(row["evidence_json"]) if row["evidence_json"] else None
+        except (TypeError, ValueError):
+            evidence = None
+        out.append({
+            "criterion": row["criterion"],
+            "status": row["status"],
+            "evaluated": evidence is not None,
+            "evidence": evidence or {"note": "Recorded before evidence was kept. Re-evaluate to see the terms."},
+        })
+    return out
 
 
 def criteria_for(project_id: str) -> list[dict]:

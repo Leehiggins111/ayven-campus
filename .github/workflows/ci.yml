@@ -7,6 +7,7 @@ on:
       - main
       - "cursor/**"
       - "codex/**"
+      - "claude/**"
 
 jobs:
   non-gpu:
@@ -77,4 +78,13 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/apps/api
           HF_HOME: /home/runner/.cache/huggingface
+          AYVEN_ACCEPTANCE_REPORT: ${{ github.workspace }}/acceptance-report/simulated.json
         run: python -m pytest apps/api/tests -q --tb=short
+
+      - name: Keep the acceptance harness report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-report
+          path: acceptance-report/
+          if-no-files-found: warn

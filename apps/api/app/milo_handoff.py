@@ -145,6 +145,10 @@ def job_status(project_id: str) -> dict:
         web_ready = verified_web(package.get("findings") or "", research)
     except (ValueError, TypeError, AttributeError):
         web_ready = False
+    from .goals import criteria_evidence
+    from .outcome import outcome_for, result_text
+
+    outcome = outcome_for(project_id=project_id)
     return {
         "project_id": project_id,
         "status": project["status"],
@@ -153,7 +157,10 @@ def job_status(project_id: str) -> dict:
         "question": package.get("clarification_question") or "",
         "waiting_for_lee": package.get("workflow_state") in {"AWAITING_CLARIFICATION", "AWAITING_APPROVAL"},
         "approval": dict(approval) if approval else None,
-        "result": package.get("findings") or project["result"],
+        # Rejected, failed or blocked work carries its label, so it is never shown as a deliverable.
+        "result": result_text(outcome, package.get("findings") or project["result"] or ""),
+        "outcome": outcome,
+        "criteria_evidence": criteria_evidence(project_id),
         "engine": "ayven-local",
         "research_mode": research.get("mode") if isinstance(research, dict) else "unknown",
         "web_artifact_verified": web_ready,

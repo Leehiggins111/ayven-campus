@@ -103,6 +103,15 @@ def ensure_schema(conn=None) -> None:
             updated_at TEXT NOT NULL
         )"""
     )
+    # The pound amount Lee set, kept exactly. NULL for a cap set in dollars.
+    names = set()
+    for row in conn.execute("PRAGMA table_info(budget_settings)").fetchall():
+        try:
+            names.add(row["name"])
+        except Exception:
+            names.add(row[1])
+    if "monthly_cap_gbp_sent" not in names:
+        conn.execute("ALTER TABLE budget_settings ADD COLUMN monthly_cap_gbp_sent REAL")
     conn.commit()
     if own:
         conn.close()
@@ -127,15 +136,16 @@ def month_resets_at() -> str:
     return datetime(year, month, 1, tzinfo=LONDON).isoformat()
 
 
-def set_monthly_cap_usd(amount: float) -> dict:
+def set_monthly_cap_usd(amount: float, sent_gbp: float | None = None) -> dict:
     if amount <= 0:
         raise ValueError("Monthly cap must be above 0")
     ensure_schema()
     conn = connect()
     conn.execute(
-        "INSERT INTO budget_settings(id, monthly_cap_usd, updated_at) VALUES('monthly', ?, ?) "
-        "ON CONFLICT(id) DO UPDATE SET monthly_cap_usd=excluded.monthly_cap_usd, updated_at=excluded.updated_at",
-        (float(amount), _now()),
+        "INSERT INTO budget_settings(id, monthly_cap_usd, updated_at, monthly_cap_gbp_sent) VALUES('monthly', ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET monthly_cap_usd=excluded.monthly_cap_usd, updated_at=excluded.updated_at, "
+        "monthly_cap_gbp_sent=excluded.monthly_cap_gbp_sent",
+        (float(amount), _now(), sent_gbp),
     )
     conn.commit()
     conn.close()
@@ -189,13 +199,27 @@ def job_spent_usd(job_id: str, attempt_gt: int | None = None) -> float:
     return round(float(row["spent"] or 0), 6)
 
 
+def _sent_monthly_gbp() -> float | None:
+    ensure_schema()
+    conn = connect()
+    row = conn.execute("SELECT monthly_cap_gbp_sent FROM budget_settings WHERE id='monthly'").fetchone()
+    conn.close()
+    if row and row["monthly_cap_gbp_sent"] is not None:
+        return float(row["monthly_cap_gbp_sent"])
+    return None
+
+
 def budget_view() -> dict:
     cap = configured_monthly_usd()
     spent = month_spent_usd()
     remaining = round(cap - spent, 6)
+    sent = _sent_monthly_gbp()
     return {
         "monthly_cap_usd": cap,
-        "monthly_cap_gbp": gbp(cap),
+        # Shown exactly as Lee set it in pounds; only a dollar-set cap is converted for display.
+        "monthly_cap_gbp": sent if sent is not None else gbp(cap),
+        "monthly_cap_currency": "GBP" if sent is not None else "USD",
+        "monthly_cap_gbp_is_conversion": sent is None,
         "month_spent_usd": spent,
         "month_spent_gbp": gbp(spent),
         "month_remaining_usd": remaining,
