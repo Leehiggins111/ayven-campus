@@ -178,7 +178,8 @@ def result(order_id:str,body:ResultIn,request:Request):
         result_data={"verdict":body.verdict,"execution_mode":body.execution_mode,"evidence":body.evidence,
             "defects":body.defects,"artifacts":[{"name":n,"sha256":h} for n,_,h in artifacts]}
         c.execute("UPDATE workbench_orders SET state=?,result_json=?,result_digest=?,lease_until=0 WHERE id=?",
-            ("awaiting_approval" if body.verdict=="PASS" else "failed",json.dumps(result_data),\n             hashlib.sha256(json.dumps(result_data,sort_keys=True).encode()).hexdigest(),order_id))
+            ("awaiting_approval" if body.verdict=="PASS" else "failed",json.dumps(result_data),
+             hashlib.sha256(json.dumps(result_data,sort_keys=True).encode()).hexdigest(),order_id))
         c.commit()
         return {"ok":True,"state":"awaiting_approval" if body.verdict=="PASS" else "failed",
                 "owner_accepted":False}
