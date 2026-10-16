@@ -28,7 +28,7 @@ def ensure_tables(c):
         project_alias TEXT NOT NULL, criteria_json TEXT NOT NULL, constraints_json TEXT NOT NULL,
         budget_gbp REAL NOT NULL, state TEXT NOT NULL DEFAULT 'queued',
         worker TEXT, lease_until INTEGER NOT NULL DEFAULT 0, fence INTEGER NOT NULL DEFAULT 0,
-        attempts INTEGER NOT NULL DEFAULT 0, result_json TEXT, result_digest TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0, result_json TEXT, request_digest TEXT NOT NULL, result_digest TEXT,
         created_at INTEGER NOT NULL)""")
     c.execute("""CREATE TABLE IF NOT EXISTS workbench_artifacts (
         order_id TEXT NOT NULL, name TEXT NOT NULL, content BLOB NOT NULL, sha256 TEXT NOT NULL,
@@ -83,7 +83,7 @@ def enqueue(body: ExecutionIn, request: Request):
         ensure_tables(c)
         existing = c.execute("SELECT * FROM workbench_orders WHERE id=?", (key,)).fetchone()
         if existing:
-            if existing["result_digest"] != fingerprint and existing["state"] == "queued":
+            if existing["request_digest"] != fingerprint:
                 raise HTTPException(409, "Idempotency key payload mismatch")
             # Fingerprint is held in result_digest until completion; preserve comparison after completion separately.
             if existing["state"] != "queued":
@@ -97,7 +97,7 @@ def enqueue(body: ExecutionIn, request: Request):
         c.execute("BEGIN IMMEDIATE")
         ensure_tables(c)
         c.execute("""INSERT INTO workbench_orders
-          (id,project_id,objective,project_alias,criteria_json,constraints_json,budget_gbp,state,result_digest,created_at)
+          (id,project_id,objective,project_alias,criteria_json,constraints_json,budget_gbp,state,request_digest,created_at)
           VALUES(?,?,?,?,?,?,?,'queued',?,?)""",
           (key,result["project_id"],body.objective,body.project_alias,json.dumps(body.acceptance_criteria),
            json.dumps(body.constraints),body.job_cap_gbp,fingerprint,int(time.time())))
@@ -177,9 +177,67 @@ def result(order_id:str,body:ResultIn,request:Request):
             c.execute("INSERT INTO workbench_artifacts VALUES(?,?,?,?)",(order_id,name,raw,digest))
         result_data={"verdict":body.verdict,"execution_mode":body.execution_mode,"evidence":body.evidence,
             "defects":body.defects,"artifacts":[{"name":n,"sha256":h} for n,_,h in artifacts]}
-        c.execute("UPDATE workbench_orders SET state=?,result_json=?,lease_until=0 WHERE id=?",
-            ("awaiting_approval" if body.verdict=="PASS" else "failed",json.dumps(result_data),order_id))
+        c.execute("UPDATE workbench_orders SET state=?,result_json=?,result_digest=?,lease_until=0 WHERE id=?",
+            ("awaiting_approval" if body.verdict=="PASS" else "failed",json.dumps(result_data),\n             hashlib.sha256(json.dumps(result_data,sort_keys=True).encode()).hexdigest(),order_id))
         c.commit()
         return {"ok":True,"state":"awaiting_approval" if body.verdict=="PASS" else "failed",
                 "owner_accepted":False}
+    finally:c.close()
+
+@router.get("/milo/executions/{order_id}")
+def execution_status(order_id:str):
+    c=connect()
+    try:
+        ensure_tables(c)
+        r=c.execute("SELECT * FROM workbench_orders WHERE id=?",(order_id,)).fetchone()
+        if not r: raise HTTPException(404,"Unknown execution")
+        return {"order_id":order_id,"project_id":r["project_id"],"state":r["state"],
+            "result":json.loads(r["result_json"]) if r["result_json"] else None,
+            "owner_accepted":r["state"]=="completed"}
+    finally:c.close()
+
+class DecisionIn(BaseModel):
+    decision: str
+    reason: str = ""
+
+@router.post("/milo/executions/{order_id}/decision")
+def owner_decision(order_id:str,body:DecisionIn):
+    if body.decision not in ("accept","reject"):
+        raise HTTPException(400,"Expected accept or reject")
+    if body.decision=="reject" and not body.reason.strip():
+        raise HTTPException(400,"Rejection reason required")
+    c=connect()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        ensure_tables(c)
+        r=c.execute("SELECT * FROM workbench_orders WHERE id=?",(order_id,)).fetchone()
+        if not r: raise HTTPException(404,"Unknown execution")
+        if r["state"]!="awaiting_approval":
+            raise HTTPException(409,"Execution not awaiting approval")
+        report=json.loads(r["result_json"] or "{}")
+        if report.get("verdict")!="PASS":
+            raise HTTPException(409,"Only QA PASS may be accepted")
+        if body.decision=="accept" and report.get("execution_mode")!="REAL":
+            raise HTTPException(409,"Simulated work cannot be accepted as a real deliverable")
+        c.execute("UPDATE workbench_orders SET state=? WHERE id=?",
+            ("completed" if body.decision=="accept" else "rejected",order_id))
+        c.commit()
+        return {"state":"completed" if body.decision=="accept" else "rejected"}
+    finally:c.close()
+
+@router.get("/milo/executions/{order_id}/artifacts/{name}")
+def download_artifact(order_id:str,name:str):
+    from fastapi.responses import Response
+    c=connect()
+    try:
+        ensure_tables(c)
+        r=c.execute("SELECT state FROM workbench_orders WHERE id=?",(order_id,)).fetchone()
+        if not r: raise HTTPException(404,"Unknown execution")
+        if r["state"]!="completed":
+            raise HTTPException(409,"Owner acceptance required")
+        a=c.execute("SELECT content,sha256 FROM workbench_artifacts WHERE order_id=? AND name=?",
+            (order_id,name)).fetchone()
+        if not a: raise HTTPException(404,"Unknown artifact")
+        return Response(content=a["content"],media_type="application/octet-stream",
+            headers={"X-Content-SHA256":a["sha256"],"Cache-Control":"no-store"})
     finally:c.close()
