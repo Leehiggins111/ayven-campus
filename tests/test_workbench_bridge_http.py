@@ -115,5 +115,32 @@ class BridgeHTTP(unittest.TestCase):
         self.assertEqual(status.json()["status"], "running")
         self.assertEqual(status.json()["execution"]["order_id"], claimed["order_id"])
 
+    def test_simulated_journey_survives_connection_restart(self):
+        submission=self.enqueue(key="restart-journey")
+        self.assertEqual(submission.status_code,200,submission.text)
+        project_id=submission.json()["project_id"]
+        job=self.client.post("/internal/workbench/claim",headers=self.worker,json={"worker_id":"qa-worker"}).json()["job"]
+        self.assertEqual(job["project_id"],project_id)
+        content="print('verified fixture')\\n"
+        result={"worker_id":"qa-worker","fence":job["fence"],"verdict":"PASS",
+                "execution_mode":"SIMULATED","evidence":["deterministic fixture completed"],
+                "defects":[],"artifacts":[{"name":"fixture.py","content":content,
+                "sha256":hashlib.sha256(content.encode()).hexdigest()}]}
+        reply=self.client.post("/internal/workbench/"+job["order_id"]+"/result",headers=self.worker,json=result)
+        self.assertEqual(reply.status_code,200,reply.text)
+        reset_connection_state()
+        state=self.client.get("/milo/jobs/"+project_id,headers=self.owner)
+        self.assertEqual(state.status_code,200,state.text)
+        self.assertEqual(state.json()["status"],"waiting")
+        self.assertEqual(state.json()["mode"],"SIMULATED")
+        self.assertEqual(self.client.post("/milo/executions/"+job["order_id"]+"/decision",
+            headers=self.owner,json={"decision":"accept"}).status_code,409)
+        self.assertEqual(self.client.get("/milo/executions/"+job["order_id"]+
+            "/artifacts/fixture.py",headers=self.owner).status_code,409)
+        rejected=self.client.post("/milo/executions/"+job["order_id"]+"/decision",
+            headers=self.owner,json={"decision":"reject","reason":"Simulation is not a deliverable"})
+        self.assertEqual(rejected.status_code,200,rejected.text)
+        self.assertEqual(self.client.get("/milo/jobs/"+project_id,headers=self.owner).json()["status"],"rejected")
+
 if __name__=="__main__":
     unittest.main()
