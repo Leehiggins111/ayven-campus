@@ -86,10 +86,8 @@ def enqueue(body: ExecutionIn, request: Request):
             if existing["request_digest"] != fingerprint:
                 raise HTTPException(409, "Idempotency key payload mismatch")
             # Fingerprint is held in result_digest until completion; preserve comparison after completion separately.
-            if existing["state"] != "queued":
-                raise HTTPException(409, "Existing execution already started; use its original job id")
             c.commit()
-            return {"project_id": existing["project_id"], "order_id": key, "duplicate": True}
+            return {"project_id": existing["project_id"], "order_id": key, "duplicate": True, "state": existing["state"]}
         c.rollback()
         result = submit_job(body.objective, key, constraints=body.constraints)
         _attach_goal(result["project_id"], objective, bool(result.get("duplicate")))
@@ -114,6 +112,11 @@ def claim(body: ClaimIn, request: Request):
         c.execute("BEGIN IMMEDIATE")
         ensure_tables(c)
         now=int(time.time())
+        # Expired final attempts must become terminal, not remain running forever.
+        c.execute("""UPDATE workbench_orders SET state='failed',lease_until=0,
+            result_json=? WHERE state='running' AND lease_until < ? AND attempts >= 3""",
+            (json.dumps({"verdict":"BLOCKED","execution_mode":"UNKNOWN","evidence":[],
+             "defects":["Worker lease expired after maximum attempts"],"artifacts":[]}),now))
         r=c.execute("""SELECT * FROM workbench_orders WHERE state='queued'
           OR (state='running' AND lease_until < ? AND attempts < 3)
           ORDER BY created_at LIMIT 1""",(now,)).fetchone()
