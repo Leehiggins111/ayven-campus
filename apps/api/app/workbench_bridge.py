@@ -175,6 +175,17 @@ def result(order_id:str,body:ResultIn,request:Request):
     try:
         c.execute("BEGIN IMMEDIATE")
         ensure_tables(c)
+        prior=c.execute("SELECT state,worker,fence,result_digest FROM workbench_orders WHERE id=?",(order_id,)).fetchone()
+        if prior and prior["state"] in ("awaiting_approval","completed","rejected","failed"):
+            candidate={"verdict":body.verdict,"execution_mode":body.execution_mode,
+                "evidence":body.evidence,"defects":body.defects,
+                "artifacts":[{"name":n,"sha256":h} for n,_,h in artifacts]}
+            digest=hashlib.sha256(json.dumps(candidate,sort_keys=True).encode()).hexdigest()
+            if prior["worker"]==body.worker_id and prior["fence"]==body.fence and prior["result_digest"]==digest:
+                c.commit()
+                return {"ok":True,"duplicate":True,"state":prior["state"],
+                        "owner_accepted":prior["state"]=="completed"}
+            raise HTTPException(409,"Result already finalized or mismatched")
         r=locked(c,order_id,body)
         for name,raw,digest in artifacts:
             c.execute("INSERT INTO workbench_artifacts VALUES(?,?,?,?)",(order_id,name,raw,digest))
