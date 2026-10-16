@@ -160,6 +160,31 @@ def job_status(project_id: str) -> dict:
                          "result": json.loads(er["result_json"]) if er["result_json"] else None}
     finally:
         ec.close()
+    if execution:
+        # Workbench orders have their own approval lifecycle. Do not project
+        # a still-running Campus project as a successful completed deliverable.
+        er_state = execution["state"]
+        report = execution["result"] or {}
+        safe_status = {
+            "queued": "queued", "running": "running",
+            "awaiting_approval": "waiting", "completed": "completed",
+            "rejected": "rejected", "failed": "rejected",
+        }.get(er_state, "blocked")
+        return {
+            "project_id": project_id, "execution": execution,
+            "status": safe_status, "package_id": None,
+            "workflow_state": "AWAITING_APPROVAL" if er_state == "awaiting_approval" else er_state.upper(),
+            "question": "", "waiting_for_lee": er_state == "awaiting_approval",
+            "approval": {"status": "pending", "summary": "Workbench result awaits owner decision"} if er_state == "awaiting_approval" else None,
+            "result": report.get("defects", []) if er_state in ("failed", "rejected") else report.get("evidence", []),
+            "outcome": {"verdict": report.get("verdict", "UNVERIFIED"), "execution_mode": report.get("execution_mode", "UNVERIFIED")},
+            "criteria_evidence": [], "engine": "workbench",
+            "research_mode": "unknown", "web_artifact_verified": False,
+            "artifacts": [{"name": a["name"], "sha256": a["sha256"]} for a in report.get("artifacts", [])] if er_state == "completed" else [],
+            "recovery": {"state": er_state}, "mode": report.get("execution_mode", "PENDING_REAL"),
+            "constraints": job_constraints(project_id), "criteria_results": _criteria(project_id),
+            **_budget(project_id),
+        }
     return {
         "project_id": project_id,
         "execution": execution,
