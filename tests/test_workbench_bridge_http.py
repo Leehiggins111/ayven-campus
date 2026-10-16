@@ -71,7 +71,9 @@ class BridgeHTTP(unittest.TestCase):
         self.assertEqual(self.client.post("/milo/executions/"+order+"/decision",
             headers=self.owner,json={"decision":"accept"}).status_code,200)
         self.assertEqual(self.client.get(download,headers=self.owner).content,b"print('hello')\n")
-        self.assertEqual(self.client.post(path,headers=self.worker,json=body).status_code,409)
+        self.assertEqual(self.client.post(path,headers=self.worker,json=body).status_code,200)
+        self.assertTrue(self.client.post(path,headers=self.worker,json=body).json()["duplicate"])
+        self.assertEqual(self.client.post(path,headers=self.worker,json={**body,"evidence":["different"]}).status_code,409)
 
     def test_hash_mismatch(self):
         self.assertEqual(self.enqueue().status_code,200)
