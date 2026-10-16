@@ -127,7 +127,10 @@ def initialize() -> None:
     from .intelligence.leases import claim, expire_dead_owner
 
     conn = connect()
-    rows = conn.execute("SELECT p.id FROM projects p WHERE p.status='running' AND (EXISTS(SELECT 1 FROM tasks t WHERE t.id='engine:'||p.id) OR NOT EXISTS(SELECT 1 FROM work_packages w WHERE w.project_id=p.id))").fetchall()
+    from .workbench_bridge import ensure_tables
+    ensure_tables(conn)
+    conn.commit()
+    rows = conn.execute("SELECT p.id FROM projects p WHERE p.status='running' AND NOT EXISTS (SELECT 1 FROM workbench_orders wo WHERE wo.project_id=p.id) AND (EXISTS(SELECT 1 FROM tasks t WHERE t.id='engine:'||p.id) OR NOT EXISTS(SELECT 1 FROM work_packages w WHERE w.project_id=p.id))").fetchall()
     conn.close()
     for row in rows:
         workflow_id = f"project:{row['id']}"
