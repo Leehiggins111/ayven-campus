@@ -149,8 +149,20 @@ def job_status(project_id: str) -> dict:
     from .outcome import outcome_for, result_text
 
     outcome = outcome_for(project_id=project_id)
+    execution = None
+    from .workbench_bridge import ensure_tables
+    ec = connect()
+    try:
+        ensure_tables(ec)
+        er = ec.execute("SELECT id,state,result_json FROM workbench_orders WHERE project_id=?", (project_id,)).fetchone()
+        if er:
+            execution = {"order_id": er["id"], "state": er["state"],
+                         "result": json.loads(er["result_json"]) if er["result_json"] else None}
+    finally:
+        ec.close()
     return {
         "project_id": project_id,
+        "execution": execution,
         "status": project["status"],
         "package_id": package.get("id"),
         "workflow_state": package.get("workflow_state"),
