@@ -99,5 +99,19 @@ class BridgeHTTP(unittest.TestCase):
         self.assertTrue(again.json()["duplicate"])
         self.assertEqual(again.json()["state"], "running")
 
+    def test_workbench_state_projects_to_milo(self):
+        submission = self.enqueue()
+        self.assertEqual(submission.status_code, 200, submission.text)
+        project_id = submission.json()["project_id"]
+        status = self.client.get("/milo/jobs/"+project_id, headers=self.owner)
+        self.assertEqual(status.status_code, 200, status.text)
+        self.assertEqual(status.json()["status"], "queued")
+        self.assertEqual(status.json()["engine"], "workbench")
+        self.assertEqual(status.json()["mode"], "PENDING_REAL")
+        claimed = self.client.post("/internal/workbench/claim", headers=self.worker, json={"worker_id":"a"}).json()["job"]
+        status = self.client.get("/milo/jobs/"+project_id, headers=self.owner)
+        self.assertEqual(status.json()["status"], "running")
+        self.assertEqual(status.json()["execution"]["order_id"], claimed["order_id"])
+
 if __name__=="__main__":
     unittest.main()
