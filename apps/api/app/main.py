@@ -28,6 +28,8 @@ origins = [x.strip() for x in os.environ.get("AYVEN_CORS_ORIGINS", "").split(","
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
 from .milo_bridge import router as milo_router
 app.include_router(milo_router)
+from .workbench_bridge import router as workbench_router
+app.include_router(workbench_router)
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
 
 def _campus_index() -> Path:
