@@ -49,6 +49,11 @@ def authorized(request: Request) -> bool:
 
 
 async def boundary(request: Request, call_next):
+    if request.url.path.startswith('/internal/workbench/'):
+        from .workbench_bridge import worker_authorized
+        if not worker_authorized(request):
+            return JSONResponse({'detail': 'Worker credential required'}, status_code=401)
+        return await call_next(request)
     if request.url.path in ('/health', '/health/ready', '/login', '/session') or authorized(request):
         return await call_next(request)
     if request.method == 'GET' and 'text/html' in request.headers.get('accept', ''):
