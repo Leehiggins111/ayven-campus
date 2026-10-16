@@ -94,7 +94,14 @@ def enqueue(body: ExecutionIn, request: Request):
             return {"project_id": existing["project_id"], "order_id": key, "duplicate": True, "state": existing["state"]}
         c.rollback()
         result = submit_job(body.objective, key, constraints=body.constraints)
-        _attach_goal(result["project_id"], objective, bool(result.get("duplicate")))
+        if body.job_cap_gbp > 0:
+            _attach_goal(result["project_id"], objective, bool(result.get("duplicate")))
+        elif not result.get("duplicate"):
+            # The generic goal contract assumes a paid budget. Keep zero-cost
+            # Workbench criteria in workbench_orders and split tasks separately.
+            from .goals import split_goal
+            split_goal(result["project_id"], body.objective,
+                       list(body.acceptance_criteria), constraints=list(body.constraints))
         c = connect()
         c.execute("BEGIN IMMEDIATE")
         ensure_tables(c)
