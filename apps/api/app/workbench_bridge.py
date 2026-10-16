@@ -73,7 +73,11 @@ def enqueue(body: ExecutionIn, request: Request):
     from .main import _admit_budget, ObjectiveIn, _attach_goal
     objective = ObjectiveIn(objective=body.objective, acceptance_criteria=body.acceptance_criteria,
         constraints=body.constraints, job_cap_gbp=body.job_cap_gbp)
-    _admit_budget(objective, key)
+    # A zero-cap Workbench order uses the local, no-paid-API execution path.
+    # Campus budget admission requires a strictly positive cap, so do not
+    # submit zero-cost jobs to that paid-budget validator.
+    if body.job_cap_gbp > 0:
+        _admit_budget(objective, key)
     payload = body.model_dump() if hasattr(body, "model_dump") else body.dict()
     fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     from .milo_handoff import submit_job
