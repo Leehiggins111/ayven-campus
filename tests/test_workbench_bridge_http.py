@@ -91,5 +91,13 @@ class BridgeHTTP(unittest.TestCase):
         self.assertEqual(self.client.post("/milo/executions/"+job["order_id"]+"/decision",
             headers=self.owner,json={"decision":"accept"}).status_code,409)
 
+    def test_duplicate_after_claim(self):
+        self.assertEqual(self.enqueue().status_code, 200)
+        self.client.post("/internal/workbench/claim", headers=self.worker, json={"worker_id":"a"})
+        again = self.enqueue()
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertTrue(again.json()["duplicate"])
+        self.assertEqual(again.json()["state"], "running")
+
 if __name__=="__main__":
     unittest.main()
