@@ -176,7 +176,7 @@ def job_status(project_id: str) -> dict:
             "workflow_state": "AWAITING_APPROVAL" if er_state == "awaiting_approval" else er_state.upper(),
             "question": "", "waiting_for_lee": er_state == "awaiting_approval",
             "approval": {"status": "pending", "summary": "Workbench result awaits owner decision"} if er_state == "awaiting_approval" else None,
-            "result": report.get("defects", []) if er_state in ("failed", "rejected") else report.get("evidence", []),
+            "result": "; ".join(report.get("defects", [])) if er_state in ("failed", "rejected") else "; ".join(report.get("evidence", [])),
             "outcome": {"verdict": report.get("verdict", "UNVERIFIED"), "execution_mode": report.get("execution_mode", "UNVERIFIED")},
             "criteria_evidence": [], "engine": "workbench",
             "research_mode": "unknown", "web_artifact_verified": False,
