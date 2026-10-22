@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from .db import connect
 from .workbench_scope import ScopeError, normalize as normalize_scope, verify_patch
+from .workbench_evidence import test_evidence_problems
 
 router = APIRouter()
 MAX_ARTIFACT = 256 * 1024
@@ -203,7 +204,7 @@ def result(order_id:str,body:ResultIn,request:Request):
         c.execute("BEGIN IMMEDIATE")
         ensure_tables(c)
         prior=c.execute("SELECT state,worker,fence,result_digest FROM workbench_orders WHERE id=?",(order_id,)).fetchone()
-        if prior and prior["state"] in ("awaiting_approval","completed","rejected","failed"):
+        if prior and prior["state"] in ("awaiting_approval","completed","rejected","failed","simulated"):
             candidate={"verdict":body.verdict,"execution_mode":body.execution_mode,
                 "evidence":body.evidence,"defects":body.defects,
                 "artifacts":[{"name":n,"sha256":h} for n,_,h in artifacts]}
@@ -218,17 +219,26 @@ def result(order_id:str,body:ResultIn,request:Request):
             c.execute("INSERT INTO workbench_artifacts VALUES(?,?,?,?)",(order_id,name,raw,digest))
         submitted={"verdict":body.verdict,"execution_mode":body.execution_mode,"evidence":body.evidence,
             "defects":body.defects,"artifacts":[{"name":n,"sha256":h} for n,_,h in artifacts]}
-        result_data=dict(submitted, scope_verified=False)
+        result_data=dict(submitted, scope_verified=False, tests_verified=False)
         if body.verdict=="PASS":
-            # C3: Campus checks the patch itself; the worker's PASS is not trusted for scope.
+            # The worker's PASS is a claim. Campus checks the patch's scope (C3) and that the Workbench's own
+            # test run passed on exactly this patch, from the complete log, before anyone may approve it.
             allowed=json.loads(r["allowed_json"]) if r["allowed_json"] else None
-            problems=verify_patch(allowed,{n:raw for n,raw,_ in artifacts})
-            if problems:
+            files={n:raw for n,raw,_ in artifacts}
+            scope=verify_patch(allowed,files)
+            tests=test_evidence_problems(files)
+            if scope or tests:
                 result_data.update(verdict="FAIL",worker_verdict="PASS",campus_rejected=True,
-                                   defects=["Campus scope check: "+p for p in problems])
-            else:
-                result_data["scope_verified"]=True
-        state="awaiting_approval" if result_data["verdict"]=="PASS" else "failed"
+                                   defects=["Campus scope check: "+p for p in scope]+
+                                           ["Campus test-evidence check: "+p for p in tests])
+            result_data.update(scope_verified=not scope,tests_verified=not tests)
+        if result_data["verdict"]!="PASS":
+            state="failed"
+        elif body.execution_mode!="REAL":
+            # Simulated or sample work is recorded and shown, but it never waits for, or accepts, approval.
+            state="simulated"
+        else:
+            state="awaiting_approval"
         # The digest is of what the worker sent, so an identical replay stays idempotent after a downgrade.
         c.execute("UPDATE workbench_orders SET state=?,result_json=?,result_digest=?,lease_until=0 WHERE id=?",
             (state,json.dumps(result_data),
@@ -266,6 +276,8 @@ def owner_decision(order_id:str,body:DecisionIn):
         ensure_tables(c)
         r=c.execute("SELECT * FROM workbench_orders WHERE id=?",(order_id,)).fetchone()
         if not r: raise HTTPException(404,"Unknown execution")
+        if r["state"]=="simulated":
+            raise HTTPException(409,"Simulated or sample work cannot be approved or rejected; it is a record only")
         if r["state"]!="awaiting_approval":
             raise HTTPException(409,"Execution not awaiting approval")
         report=json.loads(r["result_json"] or "{}")
@@ -276,6 +288,9 @@ def owner_decision(order_id:str,body:DecisionIn):
         if body.decision=="accept" and report.get("scope_verified") is not True:
             # Includes results recorded before C3: their changed files were never checked by Campus.
             raise HTTPException(409,"Campus has not verified which files this result changed; it cannot be accepted")
+        if body.decision=="accept" and report.get("tests_verified") is not True:
+            # Includes results recorded before this check: their tests were only claimed by the worker.
+            raise HTTPException(409,"Campus has not verified the test run for this result; it cannot be accepted")
         c.execute("UPDATE workbench_orders SET state=? WHERE id=?",
             ("completed" if body.decision=="accept" else "rejected",order_id))
         c.commit()

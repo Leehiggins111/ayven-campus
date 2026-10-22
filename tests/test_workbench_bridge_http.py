@@ -1,5 +1,6 @@
 """Experimental Campus bridge HTTP contract tests; requires FastAPI TestClient."""
 import hashlib
+import json
 import os
 import tempfile
 import unittest
@@ -12,6 +13,20 @@ from apps.api.app.db import connect, init_db, reset_connection_state
 
 OWNER = "o" * 40
 WORKER = "w" * 40
+
+
+def evidence_for(patch, tests=2, log=None, **record):
+    """The Workbench server's test-run record and complete log for this exact patch (see workbench_evidence)."""
+    log = log if log is not None else ("test_x (test_calc.T.test_x) ... ok\n\n" + "-" * 70 +
+                                       "\nRan %d tests in 0.004s\n\nOK\n" % tests)
+    raw = log.encode()
+    data = {"command": "python3 -m unittest discover -v", "exit_code": 0, "tests_ran": tests, "status": "OK",
+            "failures": [], "log_sha256": hashlib.sha256(raw).hexdigest(), "log_bytes": len(raw),
+            "patch_sha256": hashlib.sha256(patch["content"].encode() + b"\0").hexdigest(), "untracked": []}
+    data.update(record)
+    text = json.dumps(data)
+    return [{"name": "qa-run.json", "content": text, "sha256": hashlib.sha256(text.encode()).hexdigest()},
+            {"name": "qa-test.log", "content": log, "sha256": hashlib.sha256(raw).hexdigest()}]
 
 class BridgeHTTP(unittest.TestCase):
     def setUp(self):
@@ -69,7 +84,8 @@ class BridgeHTTP(unittest.TestCase):
         body={"worker_id":"a","fence":job["fence"],"verdict":"PASS","execution_mode":"REAL",
               "evidence":["3 tests passed"],"defects":[],"artifacts":[self.patch_artifact("hello.py"),
                   {"name":"hello.py","content":"print('hello')\n",
-                   "sha256":hashlib.sha256(b"print('hello')\n").hexdigest()}]}
+                   "sha256":hashlib.sha256(b"print('hello')\n").hexdigest()},
+                  *evidence_for(self.patch_artifact("hello.py"))]}
         self.assertEqual(self.client.post(path,headers=self.worker,json={**body,"fence":999}).status_code,409)
         self.assertEqual(self.client.post(path,headers=self.worker,json=body).status_code,200)
         download="/milo/executions/"+order+"/artifacts/hello.py"
@@ -96,7 +112,8 @@ class BridgeHTTP(unittest.TestCase):
         self.assertEqual(self.client.post("/internal/workbench/"+job["order_id"]+"/result",headers=self.worker,
             json={"worker_id":"a","fence":job["fence"],"verdict":"PASS",
                   "execution_mode":"SIMULATED","evidence":["fixture"],
-                  "artifacts":[self.patch_artifact("hello.py")]}).status_code,200)
+                  "artifacts":[self.patch_artifact("hello.py"),
+                               *evidence_for(self.patch_artifact("hello.py"))]}).status_code,200)
         self.assertEqual(self.client.post("/milo/executions/"+job["order_id"]+"/decision",
             headers=self.owner,json={"decision":"accept"}).status_code,409)
 
@@ -132,13 +149,15 @@ class BridgeHTTP(unittest.TestCase):
         result={"worker_id":"qa-worker","fence":job["fence"],"verdict":"PASS",
                 "execution_mode":"SIMULATED","evidence":["deterministic fixture completed"],
                 "defects":[],"artifacts":[self.patch_artifact("fixture.py"),{"name":"fixture.py","content":content,
-                "sha256":hashlib.sha256(content.encode()).hexdigest()}]}
+                "sha256":hashlib.sha256(content.encode()).hexdigest()},*evidence_for(self.patch_artifact("fixture.py"))]}
         reply=self.client.post("/internal/workbench/"+job["order_id"]+"/result",headers=self.worker,json=result)
         self.assertEqual(reply.status_code,200,reply.text)
         reset_connection_state()
         state=self.client.get("/milo/jobs/"+project_id,headers=self.owner)
         self.assertEqual(state.status_code,200,state.text)
-        self.assertEqual(state.json()["status"],"waiting")
+        self.assertEqual(state.json()["status"],"simulated")
+        self.assertFalse(state.json()["waiting_for_lee"])
+        self.assertIsNone(state.json()["approval"])
         self.assertEqual(state.json()["mode"],"SIMULATED")
         self.assertEqual(self.client.post("/milo/executions/"+job["order_id"]+"/decision",
             headers=self.owner,json={"decision":"accept"}).status_code,409)
@@ -146,8 +165,8 @@ class BridgeHTTP(unittest.TestCase):
             "/artifacts/fixture.py",headers=self.owner).status_code,409)
         rejected=self.client.post("/milo/executions/"+job["order_id"]+"/decision",
             headers=self.owner,json={"decision":"reject","reason":"Simulation is not a deliverable"})
-        self.assertEqual(rejected.status_code,200,rejected.text)
-        self.assertEqual(self.client.get("/milo/jobs/"+project_id,headers=self.owner).json()["status"],"rejected")
+        self.assertEqual(rejected.status_code,409,rejected.text)
+        self.assertEqual(self.client.get("/milo/jobs/"+project_id,headers=self.owner).json()["status"],"simulated")
 
 if __name__=="__main__":
     unittest.main()

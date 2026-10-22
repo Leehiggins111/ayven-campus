@@ -168,7 +168,7 @@ def job_status(project_id: str) -> dict:
         safe_status = {
             "queued": "queued", "running": "running",
             "awaiting_approval": "waiting", "completed": "completed",
-            "rejected": "rejected", "failed": "rejected",
+            "rejected": "rejected", "failed": "rejected", "simulated": "simulated",
         }.get(er_state, "blocked")
         return {
             "project_id": project_id, "execution": execution,

@@ -18,3 +18,11 @@ The full handoff (environment inventory, evidence inventories, owner decisions, 
 - Full suite: 498 passed vs 486 on base, with an identical set of 19 environment failures and 1 collection error.
 
 **Open owner decision:** how build orders treat tests when no test file is authorised (see the full handoff, section 6.2).
+
+**Q&T security blockers (22 Oct 2026; full table in the Milo handoff, section 9):**
+- A PASS now needs `changes.diff`, `qa-run.json` and `qa-test.log`. Campus checks the complete log, the unittest summary, the exit code and the patch digest (`app/workbench_evidence.py`), and acceptance requires `tests_verified`.
+- A SIMULATED PASS becomes `simulated`: never approvable or rejectable, and shown in Milo as `simulated`.
+- Validation git calls have timeouts, and their errors never include the push URL or token.
+- `.gitattributes` keeps `*.sh` LF.
+- New tests: `tests/test_workbench_evidence_http.py`, `tests/test_validation_git.py` and `tests/test_line_endings.py`. 12 of the 14 fail on `69a9247`.
+- Targeted Linux run: 41 passed, 1 skipped.

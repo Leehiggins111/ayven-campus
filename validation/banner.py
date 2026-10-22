@@ -10,7 +10,8 @@ from pathlib import Path
 
 def git_sha(root: Path) -> str:
     try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True, timeout=10,
+                                       stdin=subprocess.DEVNULL).strip()
     except Exception:
         return "unknown"
 

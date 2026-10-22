@@ -28,6 +28,20 @@ def artifact(name, content):
     return {"name": name, "content": content, "sha256": hashlib.sha256(content.encode()).hexdigest()}
 
 
+def evidence_for(patch, tests=2, log=None, **record):
+    """The Workbench server's test-run record and complete log for this exact patch (see workbench_evidence)."""
+    log = log if log is not None else ("test_x (test_calc.T.test_x) ... ok\n\n" + "-" * 70 +
+                                       "\nRan %d tests in 0.004s\n\nOK\n" % tests)
+    raw = log.encode()
+    data = {"command": "python3 -m unittest discover -v", "exit_code": 0, "tests_ran": tests, "status": "OK",
+            "failures": [], "log_sha256": hashlib.sha256(raw).hexdigest(), "log_bytes": len(raw),
+            "patch_sha256": hashlib.sha256(patch["content"].encode() + b"\0").hexdigest(), "untracked": []}
+    data.update(record)
+    text = json.dumps(data)
+    return [{"name": "qa-run.json", "content": text, "sha256": hashlib.sha256(text.encode()).hexdigest()},
+            {"name": "qa-test.log", "content": log, "sha256": hashlib.sha256(raw).hexdigest()}]
+
+
 def patch_for(*paths, body="+x\n"):
     return artifact("changes.diff", "".join(
         "diff --git a/%s b/%s\nindex 1111111..2222222 100644\n--- a/%s\n+++ b/%s\n@@ -1 +1,2 @@\n%s" % (p, p, p, p, body)
@@ -77,7 +91,10 @@ class Orders(Base):
     def claim(self):
         return self.client.post("/internal/workbench/claim", headers=self.worker, json={"worker_id": "w1"}).json()["job"]
 
-    def report(self, job, artifacts, verdict="PASS", mode="REAL"):
+    def report(self, job, artifacts, verdict="PASS", mode="REAL", evidence=True):
+        patches = [a for a in artifacts if a["name"] == "changes.diff"]
+        if verdict == "PASS" and evidence and patches:      # a genuine passing test run of this patch
+            artifacts = artifacts + evidence_for(patches[0])
         return self.client.post("/internal/workbench/%s/result" % job["order_id"], headers=self.worker,
                                 json={"worker_id": "w1", "fence": job["fence"], "verdict": verdict,
                                       "execution_mode": mode, "evidence": ["2 tests passed"],

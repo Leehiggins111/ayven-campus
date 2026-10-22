@@ -162,8 +162,13 @@ def preflight_export() -> dict:
     if values["git_remote"] and values["git_branch"]:
         if not shutil.which("git"):
             return {"ok": False, "verified": False, "reason": "git is not installed", "target": values["git_remote"]}
-        probe_git = subprocess.run(["git", "ls-remote", values["git_remote"]], capture_output=True, text=True)
-        if probe_git.returncode != 0:
+        try:
+            probe_git = subprocess.run(["git", "ls-remote", values["git_remote"]], capture_output=True, text=True,
+                                       timeout=60, stdin=subprocess.DEVNULL,
+                                       env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        except subprocess.TimeoutExpired:
+            probe_git = None
+        if probe_git is None or probe_git.returncode != 0:
             return {"ok": False, "verified": False, "reason": "git remote is not readable before model work", "target": values["git_remote"]}
         return {"ok": True, "verified": False, "target": values["git_remote"], "kind": "git", "reason": "git is secondary; a token can still fail at the end"}
     return {"ok": False, "verified": False, "reason": "No writable export target.", "target": ""}
@@ -279,6 +284,17 @@ def _rclone(run_dir: Path) -> dict:
     return {"status": "VERIFIED", "verified": True, "location": target}
 
 
+def _run_git(args: list, env: dict, timeout: int = 60) -> None:
+    """git with a timeout and no prompts. Errors name only the subcommand: the push URL can carry a token."""
+    try:
+        subprocess.run(["git", *args], check=True, capture_output=True, text=True, timeout=timeout,
+                       stdin=subprocess.DEVNULL, env={**env, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"git {args[2] if args[0] == '-C' else args[0]} timed out after {timeout}s") from None
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"git {args[2] if args[0] == '-C' else args[0]} failed (exit {exc.returncode})") from None
+
+
 def _git(run_dir: Path) -> dict:
     """Push the small artifact bundle and read it back. A local bare repo is a valid remote."""
     remote = destinations()["git_remote"]
@@ -294,8 +310,8 @@ def _git(run_dir: Path) -> dict:
         shutil.rmtree(work)
     work.mkdir(parents=True)
     env = {**os.environ, "GIT_AUTHOR_NAME": "Ayven", "GIT_AUTHOR_EMAIL": "ayven@localhost", "GIT_COMMITTER_NAME": "Ayven", "GIT_COMMITTER_EMAIL": "ayven@localhost"}
-    subprocess.run(["git", "init", str(work)], check=True, capture_output=True, text=True, env=env)
-    subprocess.run(["git", "-C", str(work), "checkout", "-b", branch], check=True, capture_output=True, text=True, env=env)
+    _run_git(["init", str(work)], env)
+    _run_git(["-C", str(work), "checkout", "-b", branch], env)
     bundle = work / run_dir.name
     bundle.mkdir(parents=True, exist_ok=True)
     for path in _small_files(run_dir):
@@ -304,13 +320,13 @@ def _git(run_dir: Path) -> dict:
         target = bundle / path.relative_to(run_dir)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-    subprocess.run(["git", "-C", str(work), "add", run_dir.name], check=True, capture_output=True, text=True, env=env)
-    subprocess.run(["git", "-C", str(work), "commit", "-m", f"Ayven validation {run_dir.name}"], check=True, capture_output=True, text=True, env=env)
-    subprocess.run(["git", "-C", str(work), "push", push_remote, f"HEAD:refs/heads/{branch}"], check=True, capture_output=True, text=True, env=env)
+    _run_git(["-C", str(work), "add", run_dir.name], env)
+    _run_git(["-C", str(work), "commit", "-m", f"Ayven validation {run_dir.name}"], env)
+    _run_git(["-C", str(work), "push", push_remote, f"HEAD:refs/heads/{branch}"], env, timeout=300)
     readback = Path(run_dir) / ".export-readback"
     if readback.exists():
         shutil.rmtree(readback)
-    subprocess.run(["git", "clone", "--branch", branch, remote, str(readback)], check=True, capture_output=True, text=True, env=env)
+    _run_git(["clone", "--branch", branch, remote, str(readback)], env, timeout=300)
     original = (run_dir / "manifest.json").read_text(encoding="utf-8")
     copied = readback / run_dir.name / "manifest.json"
     if not copied.is_file() or copied.read_text(encoding="utf-8") != original:
