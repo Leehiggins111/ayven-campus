@@ -8,6 +8,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from .db import connect
+from .workbench_scope import ScopeError, normalize as normalize_scope, verify_patch
 
 router = APIRouter()
 MAX_ARTIFACT = 256 * 1024
@@ -33,6 +34,10 @@ def ensure_tables(c):
     c.execute("""CREATE TABLE IF NOT EXISTS workbench_artifacts (
         order_id TEXT NOT NULL, name TEXT NOT NULL, content BLOB NOT NULL, sha256 TEXT NOT NULL,
         PRIMARY KEY(order_id,name))""")
+    columns = {row["name"] for row in c.execute("PRAGMA table_info(workbench_orders)").fetchall()}
+    if "allowed_json" not in columns:
+        # Orders created before C3 keep NULL: their scope cannot be verified, so they cannot be accepted.
+        c.execute("ALTER TABLE workbench_orders ADD COLUMN allowed_json TEXT")
 
 class ExecutionIn(BaseModel):
     objective: str = Field(min_length=1, max_length=12000)
@@ -40,6 +45,7 @@ class ExecutionIn(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list, max_length=30)
     constraints: list[str] = Field(default_factory=list, max_length=30)
     job_cap_gbp: float = Field(ge=0, le=10000)
+    allowed_files: list[str] | None = None   # required; validated with the exact-path rules below
 
 class ClaimIn(BaseModel):
     worker_id: str = Field(min_length=1, max_length=100)
@@ -70,6 +76,11 @@ def enqueue(body: ExecutionIn, request: Request):
         raise HTTPException(400, "Idempotency-Key required (max 200 characters)")
     if not body.acceptance_criteria:
         raise HTTPException(400, "Acceptance criteria required")
+    try:
+        allowed = normalize_scope(body.allowed_files)
+    except ScopeError as exc:
+        raise HTTPException(400, str(exc))
+    body.allowed_files = allowed
     from .main import _admit_budget, ObjectiveIn, _attach_goal
     objective = ObjectiveIn(objective=body.objective, acceptance_criteria=body.acceptance_criteria,
         constraints=body.constraints, job_cap_gbp=body.job_cap_gbp)
@@ -106,10 +117,11 @@ def enqueue(body: ExecutionIn, request: Request):
         c.execute("BEGIN IMMEDIATE")
         ensure_tables(c)
         c.execute("""INSERT INTO workbench_orders
-          (id,project_id,objective,project_alias,criteria_json,constraints_json,budget_gbp,state,request_digest,created_at)
-          VALUES(?,?,?,?,?,?,?,'queued',?,?)""",
+          (id,project_id,objective,project_alias,criteria_json,constraints_json,budget_gbp,state,request_digest,
+           created_at,allowed_json)
+          VALUES(?,?,?,?,?,?,?,'queued',?,?,?)""",
           (key,result["project_id"],body.objective,body.project_alias,json.dumps(body.acceptance_criteria),
-           json.dumps(body.constraints),body.job_cap_gbp,fingerprint,int(time.time())))
+           json.dumps(body.constraints),body.job_cap_gbp,fingerprint,int(time.time()),json.dumps(allowed)))
         c.commit()
         return {"project_id":result["project_id"],"order_id":key,"duplicate":False,"mode":"PENDING_REAL"}
     finally:
@@ -141,6 +153,7 @@ def claim(body: ClaimIn, request: Request):
         return {"job":{"order_id":r["id"],"project_id":r["project_id"],"objective":r["objective"],
            "project_alias":r["project_alias"],"acceptance_criteria":json.loads(r["criteria_json"]),
            "constraints":json.loads(r["constraints_json"]),"budget_gbp":r["budget_gbp"],
+           "allowed_files":json.loads(r["allowed_json"]) if r["allowed_json"] else None,
            "fence":fence,"lease_seconds":LEASE_SECONDS}}
     finally:
         c.close()
@@ -168,7 +181,10 @@ def heartbeat(order_id:str,body:LeaseIn,request:Request):
 @router.post("/internal/workbench/{order_id}/result")
 def result(order_id:str,body:ResultIn,request:Request):
     require_worker(request)
-    if body.verdict not in ("PASS","FAIL","BLOCKED") or body.execution_mode not in ("REAL","SIMULATED"):
+    if body.verdict not in ("PASS","FAIL","BLOCKED"):
+        raise HTTPException(400,"Invalid verdict or mode")
+    # NONE means nothing ran (C12): never labelled REAL. Only a PASS must say how it was produced.
+    if body.execution_mode not in (("REAL","SIMULATED") if body.verdict=="PASS" else ("REAL","SIMULATED","NONE")):
         raise HTTPException(400,"Invalid verdict or mode")
     if body.verdict=="PASS" and (not body.evidence or body.defects):
         raise HTTPException(400,"PASS requires evidence and no defects")
@@ -200,14 +216,26 @@ def result(order_id:str,body:ResultIn,request:Request):
         r=locked(c,order_id,body)
         for name,raw,digest in artifacts:
             c.execute("INSERT INTO workbench_artifacts VALUES(?,?,?,?)",(order_id,name,raw,digest))
-        result_data={"verdict":body.verdict,"execution_mode":body.execution_mode,"evidence":body.evidence,
+        submitted={"verdict":body.verdict,"execution_mode":body.execution_mode,"evidence":body.evidence,
             "defects":body.defects,"artifacts":[{"name":n,"sha256":h} for n,_,h in artifacts]}
+        result_data=dict(submitted, scope_verified=False)
+        if body.verdict=="PASS":
+            # C3: Campus checks the patch itself; the worker's PASS is not trusted for scope.
+            allowed=json.loads(r["allowed_json"]) if r["allowed_json"] else None
+            problems=verify_patch(allowed,{n:raw for n,raw,_ in artifacts})
+            if problems:
+                result_data.update(verdict="FAIL",worker_verdict="PASS",campus_rejected=True,
+                                   defects=["Campus scope check: "+p for p in problems])
+            else:
+                result_data["scope_verified"]=True
+        state="awaiting_approval" if result_data["verdict"]=="PASS" else "failed"
+        # The digest is of what the worker sent, so an identical replay stays idempotent after a downgrade.
         c.execute("UPDATE workbench_orders SET state=?,result_json=?,result_digest=?,lease_until=0 WHERE id=?",
-            ("awaiting_approval" if body.verdict=="PASS" else "failed",json.dumps(result_data),
-             hashlib.sha256(json.dumps(result_data,sort_keys=True).encode()).hexdigest(),order_id))
+            (state,json.dumps(result_data),
+             hashlib.sha256(json.dumps(submitted,sort_keys=True).encode()).hexdigest(),order_id))
         c.commit()
-        return {"ok":True,"state":"awaiting_approval" if body.verdict=="PASS" else "failed",
-                "owner_accepted":False}
+        return {"ok":True,"state":state,"owner_accepted":False,
+                "campus_rejected":bool(result_data.get("campus_rejected"))}
     finally:c.close()
 
 @router.get("/milo/executions/{order_id}")
@@ -245,6 +273,9 @@ def owner_decision(order_id:str,body:DecisionIn):
             raise HTTPException(409,"Only QA PASS may be accepted")
         if body.decision=="accept" and report.get("execution_mode")!="REAL":
             raise HTTPException(409,"Simulated work cannot be accepted as a real deliverable")
+        if body.decision=="accept" and report.get("scope_verified") is not True:
+            # Includes results recorded before C3: their changed files were never checked by Campus.
+            raise HTTPException(409,"Campus has not verified which files this result changed; it cannot be accepted")
         c.execute("UPDATE workbench_orders SET state=? WHERE id=?",
             ("completed" if body.decision=="accept" else "rejected",order_id))
         c.commit()

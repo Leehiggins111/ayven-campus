@@ -35,10 +35,16 @@ class BridgeHTTP(unittest.TestCase):
         reset_connection_state()
         self.tmp.cleanup()
 
-    def enqueue(self,key="key-one",objective="Create hello.py"):
+    def enqueue(self,key="key-one",objective="Create hello.py",allowed=("hello.py","fixture.py")):
         return self.client.post("/milo/executions",headers={**self.owner,"Idempotency-Key":key},
             json={"objective":objective,"project_alias":"cloud-demo",
-                  "acceptance_criteria":["file exists"],"job_cap_gbp":0})
+                  "acceptance_criteria":["file exists"],"job_cap_gbp":0,"allowed_files":list(allowed)})
+
+    @staticmethod
+    def patch_artifact(*paths):
+        """C3: a PASS must carry a changes.diff that Campus can check against the allow-list."""
+        diff="".join("diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1 @@\n+x\n"%(p,p,p) for p in paths)
+        return {"name":"changes.diff","content":diff,"sha256":hashlib.sha256(diff.encode()).hexdigest()}
 
     def test_worker_auth_and_claim_once(self):
         r=self.enqueue()
@@ -61,7 +67,7 @@ class BridgeHTTP(unittest.TestCase):
         order=job["order_id"]
         path="/internal/workbench/"+order+"/result"
         body={"worker_id":"a","fence":job["fence"],"verdict":"PASS","execution_mode":"REAL",
-              "evidence":["3 tests passed"],"defects":[],"artifacts":[
+              "evidence":["3 tests passed"],"defects":[],"artifacts":[self.patch_artifact("hello.py"),
                   {"name":"hello.py","content":"print('hello')\n",
                    "sha256":hashlib.sha256(b"print('hello')\n").hexdigest()}]}
         self.assertEqual(self.client.post(path,headers=self.worker,json={**body,"fence":999}).status_code,409)
@@ -89,7 +95,8 @@ class BridgeHTTP(unittest.TestCase):
         job=self.client.post("/internal/workbench/claim",headers=self.worker,json={"worker_id":"a"}).json()["job"]
         self.assertEqual(self.client.post("/internal/workbench/"+job["order_id"]+"/result",headers=self.worker,
             json={"worker_id":"a","fence":job["fence"],"verdict":"PASS",
-                  "execution_mode":"SIMULATED","evidence":["fixture"],"artifacts":[]}).status_code,200)
+                  "execution_mode":"SIMULATED","evidence":["fixture"],
+                  "artifacts":[self.patch_artifact("hello.py")]}).status_code,200)
         self.assertEqual(self.client.post("/milo/executions/"+job["order_id"]+"/decision",
             headers=self.owner,json={"decision":"accept"}).status_code,409)
 
@@ -124,7 +131,7 @@ class BridgeHTTP(unittest.TestCase):
         content="print('verified fixture')\\n"
         result={"worker_id":"qa-worker","fence":job["fence"],"verdict":"PASS",
                 "execution_mode":"SIMULATED","evidence":["deterministic fixture completed"],
-                "defects":[],"artifacts":[{"name":"fixture.py","content":content,
+                "defects":[],"artifacts":[self.patch_artifact("fixture.py"),{"name":"fixture.py","content":content,
                 "sha256":hashlib.sha256(content.encode()).hexdigest()}]}
         reply=self.client.post("/internal/workbench/"+job["order_id"]+"/result",headers=self.worker,json=result)
         self.assertEqual(reply.status_code,200,reply.text)
