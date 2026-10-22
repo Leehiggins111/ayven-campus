@@ -33,7 +33,9 @@ def session_value(now: int) -> str:
 def authorized(request: Request) -> bool:
     key = token()
     if not key:
-        return True  # Local development; public deployment fails startup without a key.
+        # C12: a missing access key fails closed. Keyless access is only for an explicitly declared
+        # local/test/dev run; it no longer depends on the startup check having run first.
+        return local_mode()
     supplied = request.headers.get('authorization', '')
     read_key = os.environ.get('AYVEN_READ_TOKEN', '')
     if read_key and request.method == 'GET' and supplied.startswith('Bearer ') and hmac.compare_digest(supplied[7:].encode(), read_key.encode()):
