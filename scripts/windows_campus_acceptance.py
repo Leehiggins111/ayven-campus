@@ -155,8 +155,9 @@ def submit_job(client: Client, objective: str, title: str):
 
 
 def login(client: Client) -> None:
-    if not KEY:
-        return
+    if len(KEY) < 32:
+        # C12: a missing key must fail the run, never skip authentication and carry on.
+        raise SystemExit("AYVEN_ACCESS_KEY (32+ characters) is required; refusing to run unauthenticated.")
     status, _body = client.post("/login", {"key": KEY}, auth=False)
     if status != 200:
         raise RuntimeError(f"login failed: {status}")

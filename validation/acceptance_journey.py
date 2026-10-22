@@ -471,7 +471,10 @@ def run_hosted(base_url: str, job_id: str = "", allow_writes: bool = False) -> d
     import httpx
 
     key = os.environ.get("AYVEN_ACCEPTANCE_KEY", "")
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    if not key:
+        # C12: hosted evidence without the key would only check public endpoints yet still "pass".
+        raise SystemExit("AYVEN_ACCEPTANCE_KEY is required for --hosted; refusing to report a hosted result without it.")
+    headers = {"Authorization": f"Bearer {key}"}
     report = {"phase": "hosted", "base_url": base_url, "writes_allowed": allow_writes, "steps": []}
     client = httpx.Client(base_url=base_url.rstrip("/"), headers=headers, timeout=30.0)
     j = Journey("hosted service (read-only unless --allow-writes)", report)

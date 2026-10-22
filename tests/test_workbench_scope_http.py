@@ -96,6 +96,22 @@ class AllowList(Orders):
         self.assertIsNone(self.client.post("/internal/workbench/claim", headers=self.worker,
                                            json={"worker_id": "w1"}).json()["job"])
 
+    def test_deceptive_and_case_colliding_allow_lists_are_refused(self):
+        for i, bad in enumerate((["calculаtor.py"],          # Cyrillic 'a' homoglyph
+                                 ["calc​.py"],               # zero-width space
+                                 ["calc‮.py"],               # right-to-left override
+                                 ["café.py"], ["my file.py"],
+                                 ["Calculator.py", "calculator.py"])):
+            r = self.enqueue("deceptive-%d" % i, bad)
+            self.assertEqual(r.status_code, 400, (ascii(bad), r.text))
+
+    def test_patch_paths_that_are_deceptive_or_case_variants_are_rejected(self):
+        for key, path in (("homo", "calculаtor.py"), ("case", "Calculator.py")):
+            self.assertEqual(self.enqueue("patch-" + key, ["calculator.py"]).status_code, 200)
+            job = self.claim()
+            reply = self.report(job, [patch_for("calculator.py", path)])
+            self.assertEqual(reply.json()["state"], "failed", (key, reply.text))
+
     def test_worker_receives_the_allow_list(self):
         self.assertEqual(self.enqueue("k1", ["calculator.py"]).status_code, 200)
         self.assertEqual(self.claim()["allowed_files"], ["calculator.py"])

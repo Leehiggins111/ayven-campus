@@ -9,6 +9,8 @@ import re
 MAX_FILES = 50
 MAX_PATH = 255
 _GLOB = re.compile(r"[*?\[\]{}]")
+# Plain ASCII alphabet only: rejects homoglyphs, zero-width/bidi characters, spaces and controls.
+_SAFE = re.compile(r"[A-Za-z0-9._/-]+")
 _PROHIBITED_NAMES = {".git", ".gitattributes", ".gitmodules"}
 _PROHIBITED_TOP = {".github"}
 PATCH_ARTIFACT = "changes.diff"
@@ -21,7 +23,9 @@ class ScopeError(ValueError):
 def check_path(path):
     if not isinstance(path, str) or not path or len(path) > MAX_PATH:
         raise ScopeError(f"invalid path {path!r}")
-    if any(ord(ch) < 32 for ch in path) or "\\" in path or path.startswith("/") or ":" in path:
+    if not _SAFE.fullmatch(path):
+        raise ScopeError(f'path may use only ASCII letters, digits, ".", "_", "-" and "/": {ascii(path)}')
+    if path.startswith("/"):
         raise ScopeError(f"path must be relative with forward slashes: {path!r}")
     if _GLOB.search(path):
         raise ScopeError(f"globs are not allowed: {path!r}")
@@ -45,6 +49,8 @@ def normalize(entries):
     clean = [check_path(item) for item in entries]
     if len(set(clean)) != len(clean):
         raise ScopeError("allowed_files contains duplicates")
+    if len({p.casefold() for p in clean}) != len(clean):
+        raise ScopeError("allowed_files contains paths that differ only by letter case")
     return sorted(clean)
 
 
@@ -81,5 +87,11 @@ def verify_patch(allowed, artifacts):
     paths, problems = patch_paths(diff)
     if not paths:
         problems.append("Patch changes no files")
-    problems += [f"Unauthorised change: {path}" for path in paths if path not in allowed]
+    folded = {}
+    for path in paths:
+        if not _SAFE.fullmatch(path):
+            problems.append(f"Path is not plain ASCII: {ascii(path)}")
+        folded.setdefault(path.casefold(), []).append(path)
+    problems += [f"Paths differ only by letter case: {', '.join(names)}" for names in folded.values() if len(names) > 1]
+    problems += [f"Unauthorised change: {ascii(path)[1:-1]}" for path in paths if path not in allowed]
     return problems

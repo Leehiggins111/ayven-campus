@@ -32,11 +32,20 @@ jobs:
       AYVEN_MAX_ATTEMPTS: "1"
       AYVEN_OLLAMA_THINK: "0"
       AYVEN_ALLOW_CODE: "1"
-      AYVEN_ACCESS_KEY: campus-windows-gate
       OLLAMA_NO_GPU: "1"
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create a per-run access key
+        shell: pwsh
+        run: |
+          # Never a literal in the repository: a fresh random key for this run only, masked in logs.
+          $bytes = New-Object byte[] 32
+          [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+          $key = -join ($bytes | ForEach-Object { $_.ToString("x2") })
+          Write-Host "::add-mask::$key"
+          Add-Content -Path $env:GITHUB_ENV -Value "AYVEN_ACCESS_KEY=$key"
 
       - uses: actions/setup-python@v5
         with:
