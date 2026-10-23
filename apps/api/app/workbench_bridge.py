@@ -331,6 +331,37 @@ def owner_decision(order_id:str,body:DecisionIn):
         return {"state":"completed" if body.decision=="accept" else "rejected"}
     finally:c.close()
 
+@router.get("/milo/executions/{order_id}/preview/{name}")
+def preview_evidence(order_id: str, name: str):
+    """Authenticated, non-executable preview of the exact patch and trusted QA records.
+    Preview does NOT mean owner acceptance; other deliverables stay locked.
+    """
+    from fastapi.responses import Response
+    if name not in ("changes.diff", "qa-run.json", "qa-test.log"):
+        raise HTTPException(404, "Only read-only QA evidence can be previewed")
+    c = connect()
+    try:
+        ensure_tables(c)
+        r = c.execute("SELECT state,result_json FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Unknown execution")
+        if r["state"] not in ("awaiting_approval", "completed", "rejected", "failed", "simulated"):
+            raise HTTPException(409, "Execution has no final evidence to preview")
+        a = c.execute("SELECT content FROM workbench_artifacts WHERE order_id=? AND name=?",
+                      (order_id, name)).fetchone()
+        if not a:
+            raise HTTPException(404, "Evidence file is unavailable")
+        report = json.loads(r["result_json"] or "{}")
+        verified = (report.get("verdict") == "PASS" and
+                    report.get("scope_verified") is True and report.get("tests_verified") is True)
+        return Response(content=a["content"], media_type="text/plain; charset=utf-8",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                     "X-Ayven-Outcome": r["state"].upper(),
+                     "X-Ayven-Verification": "VERIFIED" if verified else "UNVERIFIED"})
+    finally:
+        c.close()
+
+
 @router.get("/milo/executions/{order_id}/artifacts/{name}")
 def download_artifact(order_id:str,name:str):
     from fastapi.responses import Response
