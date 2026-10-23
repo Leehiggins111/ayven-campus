@@ -248,6 +248,40 @@ def result(order_id:str,body:ResultIn,request:Request):
                 "campus_rejected":bool(result_data.get("campus_rejected"))}
     finally:c.close()
 
+@router.get("/milo/executions")
+def list_executions(limit: int = 50):
+    """Owner-visible durable queue, including interruptions and independent QA verdicts.
+    Source of truth is workbench_orders; no worker-provided artifact content is inlined.
+    """
+    if limit < 1 or limit > 100:
+        raise HTTPException(400, "Limit must be between 1 and 100")
+    c = connect()
+    try:
+        ensure_tables(c)
+        rows = c.execute(
+            "SELECT id,project_id,objective,state,allowed_json,attempts,created_at,result_json "
+            "FROM workbench_orders ORDER BY created_at DESC,id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        result = []
+        for r in rows:
+            verdict = json.loads(r["result_json"]) if r["result_json"] else {}
+            result.append({
+                "order_id": r["id"], "project_id": r["project_id"],
+                "objective": r["objective"], "state": r["state"],
+                "allowed_files": json.loads(r["allowed_json"]) if r["allowed_json"] else None,
+                "attempts": r["attempts"], "created_at": r["created_at"],
+                "verdict": verdict.get("verdict"),
+                "execution_mode": verdict.get("execution_mode"),
+                "scope_verified": verdict.get("scope_verified") is True,
+                "tests_verified": verdict.get("tests_verified") is True,
+                "defects": verdict.get("defects", [])[:10],
+                "artifacts": verdict.get("artifacts", []),
+            })
+        return {"executions": result}
+    finally:
+        c.close()
+
+
 @router.get("/milo/executions/{order_id}")
 def execution_status(order_id:str):
     c=connect()
