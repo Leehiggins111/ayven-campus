@@ -25,7 +25,14 @@ from .workbench_evidence import test_evidence_problems, request_key
 
 router = APIRouter()
 MAX_ARTIFACT = 256 * 1024
-LEASE_SECONDS = 90
+LEASE_SECONDS = 90   # default; AYVEN_WORKBENCH_LEASE_SECONDS (15..600) for local drills
+
+
+def lease_seconds():
+    try:
+        return max(15, min(600, int(os.environ.get("AYVEN_WORKBENCH_LEASE_SECONDS", LEASE_SECONDS))))
+    except ValueError:
+        return LEASE_SECONDS
 MAX_ATTEMPTS = 3
 DEFAULT_MINUTES = 30
 PREVIEWABLE = ("changes.diff", "qa-run.json", "qa-test.log", "baseline-test.log")
@@ -268,7 +275,7 @@ def claim(body: ClaimIn, request: Request):
         fence = r["fence"] + 1
         c.execute("""UPDATE workbench_orders SET state='running',worker=?,fence=?,lease_until=?,attempts=attempts+1,
             started_at=COALESCE(started_at,?),updated_at=? WHERE id=?""",
-            (body.worker_id, fence, now + LEASE_SECONDS, now, now, r["id"]))
+            (body.worker_id, fence, now + lease_seconds(), now, now, r["id"]))
         event(c, r["id"], "claimed", "worker", f"Claimed by {body.worker_id} (attempt {r['attempts'] + 1}, fence {fence})")
         c.commit()
         started = r["started_at"] or now
@@ -276,7 +283,7 @@ def claim(body: ClaimIn, request: Request):
            "project_alias": r["project_alias"], "acceptance_criteria": json.loads(r["criteria_json"]),
            "constraints": json.loads(r["constraints_json"]), "budget_gbp": r["budget_gbp"],
            "allowed_files": json.loads(r["allowed_json"]) if r["allowed_json"] else None,
-           "fence": fence, "lease_seconds": LEASE_SECONDS, "revision": r["revision"] or 0,
+           "fence": fence, "lease_seconds": lease_seconds(), "revision": r["revision"] or 0,
            "revisions": json.loads(r["revisions_json"] or "[]"), "request_key": request_key(r["id"], r["revision"] or 0),
            "max_minutes": r["max_minutes"] or DEFAULT_MINUTES,
            "deadline": started + 60 * (r["max_minutes"] or DEFAULT_MINUTES),
@@ -327,7 +334,7 @@ def heartbeat(order_id: str, body: HeartbeatIn, request: Request):
             if p.stage and (not last or last["text"] != p.stage):
                 event(c, order_id, "progress", "worker", p.stage)
             c.execute("UPDATE workbench_orders SET usage_json=? WHERE id=?", (json.dumps(usage), order_id))
-        c.execute("UPDATE workbench_orders SET lease_until=?,updated_at=? WHERE id=?", (now + LEASE_SECONDS, now, order_id))
+        c.execute("UPDATE workbench_orders SET lease_until=?,updated_at=? WHERE id=?", (now + lease_seconds(), now, order_id))
         c.commit()
         return {"ok": True, "deadline": (r["started_at"] or now) + limit}
     finally:
