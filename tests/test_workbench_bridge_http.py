@@ -10,23 +10,18 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from apps.api.app.main import app
 from apps.api.app.db import connect, init_db, reset_connection_state
+from workbench_signed import KEY as ATTESTATION_KEY, signed_evidence
 
 OWNER = "o" * 40
 WORKER = "w" * 40
 
 
-def evidence_for(patch, tests=2, log=None, **record):
-    """The Workbench server's test-run record and complete log for this exact patch (see workbench_evidence)."""
-    log = log if log is not None else ("test_x (test_calc.T.test_x) ... ok\n\n" + "-" * 70 +
-                                       "\nRan %d tests in 0.004s\n\nOK\n" % tests)
-    raw = log.encode()
-    data = {"command": "python3 -m unittest discover -v", "exit_code": 0, "tests_ran": tests, "status": "OK",
-            "failures": [], "log_sha256": hashlib.sha256(raw).hexdigest(), "log_bytes": len(raw),
-            "patch_sha256": hashlib.sha256(patch["content"].encode() + b"\0").hexdigest(), "untracked": []}
-    data.update(record)
-    text = json.dumps(data)
-    return [{"name": "qa-run.json", "content": text, "sha256": hashlib.sha256(text.encode()).hexdigest()},
-            {"name": "qa-test.log", "content": log, "sha256": hashlib.sha256(raw).hexdigest()}]
+DEFAULT_ALLOWED = ["fixture.py", "hello.py"]
+
+
+def evidence_for(patch, order_id="key-one", allowed=DEFAULT_ALLOWED):
+    """The Workbench's signed verification of this exact patch for this order (see workbench_signed)."""
+    return signed_evidence(patch, order_id, allowed)
 
 class BridgeHTTP(unittest.TestCase):
     def setUp(self):
@@ -34,7 +29,7 @@ class BridgeHTTP(unittest.TestCase):
         self.env = patch.dict(os.environ, {
             "AYVEN_DB": str(Path(self.tmp.name) / "campus.sqlite"),
             "AYVEN_ENV":"local", "AYVEN_API_TOKEN":OWNER,
-            "AYVEN_WORKER_TOKEN":WORKER, "AYVEN_LLM_STUB":"1"
+            "AYVEN_WORKER_TOKEN":WORKER, "AYVEN_LLM_STUB":"1", "AYVEN_ATTESTATION_KEY":ATTESTATION_KEY
         })
         self.env.start()
         reset_connection_state()
@@ -81,7 +76,7 @@ class BridgeHTTP(unittest.TestCase):
         patch = self.patch_artifact("hello.py")
         body = {"worker_id": "a", "fence": claim["fence"], "verdict": "PASS",
                 "execution_mode": "REAL", "evidence": ["unittest passed"],
-                "defects": [], "artifacts": [patch, *evidence_for(patch)]}
+                "defects": [], "artifacts": [patch, *evidence_for(patch, "preview-1")]}
         result = self.client.post("/internal/workbench/preview-1/result",
                                   headers=self.worker, json=body)
         self.assertEqual(result.status_code, 200, result.text)
@@ -200,7 +195,7 @@ class BridgeHTTP(unittest.TestCase):
         result={"worker_id":"qa-worker","fence":job["fence"],"verdict":"PASS",
                 "execution_mode":"SIMULATED","evidence":["deterministic fixture completed"],
                 "defects":[],"artifacts":[self.patch_artifact("fixture.py"),{"name":"fixture.py","content":content,
-                "sha256":hashlib.sha256(content.encode()).hexdigest()},*evidence_for(self.patch_artifact("fixture.py"))]}
+                "sha256":hashlib.sha256(content.encode()).hexdigest()},*evidence_for(self.patch_artifact("fixture.py"), "restart-journey")]}
         reply=self.client.post("/internal/workbench/"+job["order_id"]+"/result",headers=self.worker,json=result)
         self.assertEqual(reply.status_code,200,reply.text)
         reset_connection_state()

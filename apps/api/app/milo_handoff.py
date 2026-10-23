@@ -169,12 +169,14 @@ def job_status(project_id: str) -> dict:
             "queued": "queued", "running": "running",
             "awaiting_approval": "waiting", "completed": "completed",
             "rejected": "rejected", "failed": "rejected", "simulated": "simulated",
+            "cancelled": "cancelled", "needs_clarification": "waiting",
         }.get(er_state, "blocked")
         return {
             "project_id": project_id, "execution": execution,
             "status": safe_status, "package_id": None,
             "workflow_state": "AWAITING_APPROVAL" if er_state == "awaiting_approval" else er_state.upper(),
-            "question": "", "waiting_for_lee": er_state == "awaiting_approval",
+            "question": (report.get("question") or "") if er_state == "needs_clarification" else "",
+            "waiting_for_lee": er_state in ("awaiting_approval", "needs_clarification"),
             "approval": {"status": "pending", "summary": "Workbench result awaits owner decision"} if er_state == "awaiting_approval" else None,
             "result": "; ".join(report.get("defects", [])) if er_state in ("failed", "rejected") else "; ".join(report.get("evidence", [])),
             "outcome": {"verdict": report.get("verdict", "UNVERIFIED"), "execution_mode": report.get("execution_mode", "UNVERIFIED")},

@@ -28,18 +28,9 @@ def artifact(name, content):
     return {"name": name, "content": content, "sha256": hashlib.sha256(content.encode()).hexdigest()}
 
 
-def evidence_for(patch, tests=2, log=None, **record):
-    """The Workbench server's test-run record and complete log for this exact patch (see workbench_evidence)."""
-    log = log if log is not None else ("test_x (test_calc.T.test_x) ... ok\n\n" + "-" * 70 +
-                                       "\nRan %d tests in 0.004s\n\nOK\n" % tests)
-    raw = log.encode()
-    data = {"command": "python3 -m unittest discover -v", "exit_code": 0, "tests_ran": tests, "status": "OK",
-            "failures": [], "log_sha256": hashlib.sha256(raw).hexdigest(), "log_bytes": len(raw),
-            "patch_sha256": hashlib.sha256(patch["content"].encode() + b"\0").hexdigest(), "untracked": []}
-    data.update(record)
-    text = json.dumps(data)
-    return [{"name": "qa-run.json", "content": text, "sha256": hashlib.sha256(text.encode()).hexdigest()},
-            {"name": "qa-test.log", "content": log, "sha256": hashlib.sha256(raw).hexdigest()}]
+def evidence_for(patch, order_id, allowed):
+    """The Workbench's signed verification of this exact patch for this order (see workbench_signed)."""
+    return signed_evidence(patch, order_id, allowed)
 
 
 def patch_for(*paths, body="+x\n"):
@@ -48,13 +39,17 @@ def patch_for(*paths, body="+x\n"):
         for p in paths))
 
 
+from workbench_signed import KEY as ATTESTATION_KEY, signed_evidence  # noqa: E402
+
+
 class Base(unittest.TestCase):
     env_extra = {}
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         env = {"AYVEN_DB": str(Path(self.tmp.name) / "campus.sqlite"), "AYVEN_ENV": "local",
-               "AYVEN_API_TOKEN": OWNER, "AYVEN_WORKER_TOKEN": WORKER, "AYVEN_LLM_STUB": "1"}
+               "AYVEN_API_TOKEN": OWNER, "AYVEN_WORKER_TOKEN": WORKER, "AYVEN_LLM_STUB": "1",
+               "AYVEN_ATTESTATION_KEY": ATTESTATION_KEY}
         env.update({k: v for k, v in self.env_extra.items() if v is not None})
         for k, v in self.env_extra.items():
             if v is None:
@@ -94,7 +89,8 @@ class Orders(Base):
     def report(self, job, artifacts, verdict="PASS", mode="REAL", evidence=True):
         patches = [a for a in artifacts if a["name"] == "changes.diff"]
         if verdict == "PASS" and evidence and patches:      # a genuine passing test run of this patch
-            artifacts = artifacts + evidence_for(patches[0])
+            allowed = self.status(job).get("allowed_files") or []
+            artifacts = artifacts + evidence_for(patches[0], job["order_id"], allowed)
         return self.client.post("/internal/workbench/%s/result" % job["order_id"], headers=self.worker,
                                 json={"worker_id": "w1", "fence": job["fence"], "verdict": verdict,
                                       "execution_mode": mode, "evidence": ["2 tests passed"],
