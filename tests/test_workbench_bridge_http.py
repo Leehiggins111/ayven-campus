@@ -71,6 +71,32 @@ class BridgeHTTP(unittest.TestCase):
         b=self.client.post("/internal/workbench/claim",headers=self.worker,json={"worker_id":"b"})
         self.assertIsNone(b.json()["job"])
 
+    def test_readonly_preview_is_separate_from_unaccepted_deliverable(self):
+        self.assertEqual(self.enqueue(key="preview-1").status_code, 200)
+        queued = self.client.get("/milo/executions/preview-1/preview/changes.diff",
+                                 headers=self.owner)
+        self.assertEqual(queued.status_code, 409)
+        claim = self.client.post("/internal/workbench/claim", headers=self.worker,
+                                 json={"worker_id": "a"}).json()["job"]
+        patch = self.patch_artifact("hello.py")
+        body = {"worker_id": "a", "fence": claim["fence"], "verdict": "PASS",
+                "execution_mode": "REAL", "evidence": ["unittest passed"],
+                "defects": [], "artifacts": [patch, *evidence_for(patch)]}
+        result = self.client.post("/internal/workbench/preview-1/result",
+                                  headers=self.worker, json=body)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()["state"], "awaiting_approval")
+        preview = self.client.get("/milo/executions/preview-1/preview/changes.diff",
+                                  headers=self.owner)
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertEqual(preview.content.decode(), patch["content"])
+        self.assertEqual(preview.headers["X-Ayven-Verification"], "VERIFIED")
+        self.assertEqual(preview.headers["X-Ayven-Outcome"], "AWAITING_APPROVAL")
+        self.assertEqual(self.client.get("/milo/executions/preview-1/preview/hello.py",
+                                         headers=self.owner).status_code, 404)
+        self.assertEqual(self.client.get("/milo/executions/preview-1/artifacts/changes.diff",
+                                         headers=self.owner).status_code, 409)
+
     def test_owner_execution_list_survives_state_changes(self):
         first = self.enqueue(key="list-1", objective="Fix pricing", allowed=("pricing.py",))
         self.assertEqual(first.status_code, 200, first.text)
