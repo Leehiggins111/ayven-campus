@@ -71,6 +71,31 @@ class BridgeHTTP(unittest.TestCase):
         b=self.client.post("/internal/workbench/claim",headers=self.worker,json={"worker_id":"b"})
         self.assertIsNone(b.json()["job"])
 
+    def test_owner_execution_list_survives_state_changes(self):
+        first = self.enqueue(key="list-1", objective="Fix pricing", allowed=("pricing.py",))
+        self.assertEqual(first.status_code, 200, first.text)
+        other = self.enqueue(key="list-2", objective="Fix stock", allowed=("stock.py",))
+        self.assertEqual(other.status_code, 200, other.text)
+        unauthenticated = self.client.get("/milo/executions")
+        self.assertIn(unauthenticated.status_code, (401, 403))
+        listing = self.client.get("/milo/executions?limit=10", headers=self.owner)
+        self.assertEqual(listing.status_code, 200, listing.text)
+        orders = {x["order_id"]: x for x in listing.json()["executions"]}
+        self.assertEqual(set(orders), {"list-1", "list-2"})
+        self.assertEqual(orders["list-1"]["allowed_files"], ["pricing.py"])
+        self.assertEqual(orders["list-1"]["state"], "queued")
+        self.assertFalse(orders["list-1"]["tests_verified"])
+        claim = self.client.post("/internal/workbench/claim",
+                                 headers=self.worker, json={"worker_id": "a"}).json()["job"]
+        updated = self.client.get("/milo/executions", headers=self.owner).json()["executions"]
+        running = next(x for x in updated if x["order_id"] == claim["order_id"])
+        self.assertEqual(running["state"], "running")
+        self.assertEqual(running["attempts"], 1)
+        self.assertEqual(self.client.get("/milo/executions?limit=0",
+                                         headers=self.owner).status_code, 400)
+        self.assertEqual(self.client.get("/milo/executions?limit=101",
+                                         headers=self.owner).status_code, 400)
+
     def test_idempotency_conflict(self):
         self.assertEqual(self.enqueue().status_code,200)
         self.assertTrue(self.enqueue().json()["duplicate"])
