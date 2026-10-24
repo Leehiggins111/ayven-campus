@@ -29,7 +29,7 @@ def record_for(patch, order_id, allowed, revision=0, log=PASS_LOG, base_log=BASE
     outcomes = outcomes or {t: "passed" for t in TESTS}
     return {"schema": SCHEMA, "goal": "g1", "task": "qa1", "order_key": request_key(order_id, revision),
             "base_revision": "a" * 40, "started_at": 1, "finished_at": 2, "runner_sha256": "r" * 64,
-            "allowed_files": sorted(allowed), "verdict": "PASS", "reasons": [], "tamper_findings": [],
+            "allowed_files": sorted(allowed), "verdict": "PASS", "reasons": [], "tamper_findings": [], "removed_symbols": [],
             "changed_files": [{"path": p, "status": "M"} for p in sorted(set(named))],
             "patch_sha256": hashlib.sha256(diff).hexdigest(), "patch_bytes": len(diff),
             "baseline": run(base_log, {t: "failed" for t in TESTS}, 1),

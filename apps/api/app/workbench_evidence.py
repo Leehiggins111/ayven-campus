@@ -88,6 +88,13 @@ def test_evidence_problems(artifacts: dict, *, order_id=None, revision=0, allowe
                         + "; ".join(str(r) for r in (record.get("reasons") or []))[:300])
     if record.get("tamper_findings"):
         problems.append("The change interferes with test execution: " + "; ".join(record["tamper_findings"])[:300])
+    # Regression guard (release 20261024): the signed record must say which pre-existing public symbols the
+    # patch removed, and a PASS may remove none that the order did not explicitly allow.
+    removed = record.get("removed_symbols")
+    if not isinstance(removed, list):
+        problems.append("The verification record does not include the removed-symbol regression check")
+    elif removed:
+        problems.append("Pre-existing code was removed (regression): " + ", ".join(map(str, removed))[:300])
     if order_id is not None and record.get("order_key") != request_key(order_id, revision):
         problems.append("The verification record was made for a different order or revision")
     if allowed is not None and sorted(record.get("allowed_files") or []) != sorted(allowed):

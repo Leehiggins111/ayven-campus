@@ -137,7 +137,12 @@ class BridgeHTTP(unittest.TestCase):
         download="/milo/executions/"+order+"/artifacts/hello.py"
         self.assertEqual(self.client.get(download,headers=self.owner).status_code,409)
         self.assertEqual(self.client.post("/milo/executions/"+order+"/decision",
-            headers=self.owner,json={"decision":"accept"}).status_code,200)
+            headers=self.owner,json={"decision":"accept"}).status_code,400)    # hash pinning: digest required
+        reviewed=self.patch_artifact("hello.py")["sha256"]
+        self.assertEqual(self.client.post("/milo/executions/"+order+"/decision",
+            headers=self.owner,json={"decision":"accept","patch_sha256":"0"*64}).status_code,409)   # not reviewed
+        self.assertEqual(self.client.post("/milo/executions/"+order+"/decision",
+            headers=self.owner,json={"decision":"accept","patch_sha256":reviewed}).status_code,200)
         self.assertEqual(self.client.get(download,headers=self.owner).content,b"print('hello')\n")
         self.assertEqual(self.client.post(path,headers=self.worker,json=body).status_code,200)
         self.assertTrue(self.client.post(path,headers=self.worker,json=body).json()["duplicate"])

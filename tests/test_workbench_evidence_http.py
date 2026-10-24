@@ -38,8 +38,9 @@ class TestEvidence(Orders):
         job, reply, result = self.submit("good", self.good)
         self.assertEqual(reply["state"], "awaiting_approval", result)
         self.assertTrue(result["tests_verified"] and result["scope_verified"])
+        diff_sha = next(a["sha256"] for a in result["artifacts"] if a["name"] == "changes.diff")
         self.assertEqual(self.client.post("/milo/executions/%s/decision" % job["order_id"], headers=self.owner,
-                                          json={"decision": "accept"}).status_code, 200)
+                                          json={"decision": "accept", "patch_sha256": diff_sha}).status_code, 200)
 
     def test_a_bare_pass_claim_is_refused(self):
         self.assert_refused("bare", lambda o: [patch_for("calc.py")], "missing verification evidence")
@@ -104,6 +105,15 @@ class TestEvidence(Orders):
     def test_changed_files_must_match_the_patch(self):
         self.assert_refused("files", lambda o: self.good(o, mutate=lambda r: r.update(changed_files=[])),
                             "do not match the patch")
+
+    def test_removed_pre_existing_symbol_is_refused(self):
+        # Regression from order 40614f98: the model deleted add() while adding multiply(); the tests passed.
+        self.assert_refused("removed", lambda o: self.good(o, mutate=lambda r: r.update(
+            removed_symbols=["calc.py::add"])), "removed")
+
+    def test_record_without_removed_symbol_check_is_refused(self):
+        self.assert_refused("nocheck", lambda o: self.good(o, mutate=lambda r: r.pop("removed_symbols")),
+                            "removed-symbol")
 
     def test_tamper_findings_are_refused(self):
         self.assert_refused("tamper", lambda o: self.good(o, mutate=lambda r: r.update(

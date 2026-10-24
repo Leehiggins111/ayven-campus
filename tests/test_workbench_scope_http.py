@@ -151,8 +151,9 @@ class AllowList(Orders):
         reply = self.report(job, [patch_for("calc.py", "test_calc.py")])
         self.assertEqual(reply.json()["state"], "awaiting_approval", reply.text)
         self.assertTrue(self.status(job)["result"]["scope_verified"])
+        diff_sha = next(a["sha256"] for a in self.status(job)["result"]["artifacts"] if a["name"] == "changes.diff")
         self.assertEqual(self.client.post("/milo/executions/%s/decision" % job["order_id"], headers=self.owner,
-                                          json={"decision": "accept"}).status_code, 200)
+                                          json={"decision": "accept", "patch_sha256": diff_sha}).status_code, 200)
 
     def test_pass_without_a_verifiable_patch_is_not_accepted(self):
         self.assertEqual(self.enqueue("no-patch", ["calc.py"]).status_code, 200)

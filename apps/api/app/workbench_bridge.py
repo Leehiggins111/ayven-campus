@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sqlite3
 import time
 from fastapi import APIRouter, HTTPException, Request
@@ -55,6 +56,8 @@ COLUMNS = {   # added after the first release; NULL/defaults for older rows
     "allowed_json": "TEXT", "revision": "INTEGER NOT NULL DEFAULT 0", "revisions_json": "TEXT NOT NULL DEFAULT '[]'",
     "max_minutes": "INTEGER", "token_cap": "INTEGER", "allow_clarification": "INTEGER NOT NULL DEFAULT 0",
     "started_at": "INTEGER", "usage_json": "TEXT", "question": "TEXT", "updated_at": "INTEGER",
+    # release 20261024: progress (G7) and the exact patch digest the owner accepted (hash pinning, G15)
+    "last_heartbeat_at": "INTEGER", "accepted_patch_sha256": "TEXT",
 }
 
 
@@ -334,7 +337,8 @@ def heartbeat(order_id: str, body: HeartbeatIn, request: Request):
             if p.stage and (not last or last["text"] != p.stage):
                 event(c, order_id, "progress", "worker", p.stage)
             c.execute("UPDATE workbench_orders SET usage_json=? WHERE id=?", (json.dumps(usage), order_id))
-        c.execute("UPDATE workbench_orders SET lease_until=?,updated_at=? WHERE id=?", (now + lease_seconds(), now, order_id))
+        c.execute("UPDATE workbench_orders SET lease_until=?,updated_at=?,last_heartbeat_at=? WHERE id=?",
+                  (now + lease_seconds(), now, now, order_id))
         c.commit()
         return {"ok": True, "deadline": (r["started_at"] or now) + limit}
     finally:
@@ -426,7 +430,25 @@ def result(order_id: str, body: ResultIn, request: Request):
         c.close()
 
 
-def _view(r):
+def _progress(r, c=None):
+    """Genuine progress (G7): only what the worker's heartbeats and Campus's own events recorded."""
+    now = int(time.time())
+    hb = r["last_heartbeat_at"]
+    stage = None
+    if c is not None:
+        last = c.execute("SELECT text,ts FROM workbench_events WHERE order_id=? AND kind='progress' "
+                         "ORDER BY seq DESC LIMIT 1", (r["id"],)).fetchone()
+        stage = dict(last) if last else None
+    usage = json.loads(r["usage_json"]) if r["usage_json"] else {}
+    return {"state": r["state"], "stage": stage["text"] if stage else None,
+            "stage_at": stage["ts"] if stage else None, "tokens": usage.get("tokens"),
+            "worker_id": r["worker"], "attempt": r["attempts"], "fence": r["fence"],
+            "started_at": r["started_at"], "last_heartbeat_at": hb,
+            "heartbeat_age_s": (now - hb) if hb and r["state"] == "running" else None,
+            "lease_remaining_s": max(0, r["lease_until"] - now) if r["state"] == "running" else None}
+
+
+def _view(r, c=None):
     report = json.loads(r["result_json"]) if r["result_json"] else None
     verified = bool(report and report.get("verdict") == "PASS" and report.get("scope_verified") is True
                     and report.get("tests_verified") is True)
@@ -438,7 +460,8 @@ def _view(r):
             "limits": {"max_minutes": r["max_minutes"] or DEFAULT_MINUTES, "token_cap": r["token_cap"],
                        "job_cap_gbp": r["budget_gbp"]},
             "verification": "VERIFIED" if verified else "UNVERIFIED",
-            "result": report, "owner_accepted": r["state"] == "completed"}
+            "result": report, "owner_accepted": r["state"] == "completed",
+            "accepted_patch_sha256": r["accepted_patch_sha256"], "progress": _progress(r, c)}
 
 
 @router.get("/milo/executions")
@@ -463,6 +486,7 @@ def list_executions(limit: int = 50):
                 "scope_verified": verdict.get("scope_verified") is True,
                 "tests_verified": verdict.get("tests_verified") is True,
                 "defects": verdict.get("defects", [])[:10], "artifacts": verdict.get("artifacts", []),
+                "progress": _progress(r, c),
             })
         return {"executions": result}
     finally:
@@ -477,7 +501,7 @@ def execution_status(order_id: str):
         r = c.execute("SELECT * FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
         if not r:
             raise HTTPException(404, "Unknown execution")
-        return _view(r)
+        return _view(r, c)
     finally:
         c.close()
 
@@ -570,6 +594,7 @@ def revise_execution(order_id: str, body: ReviseIn, request: Request):
                           "key": key or None, "at": int(time.time())})
         c.execute("""UPDATE workbench_orders SET state='queued',revision=?,revisions_json=?,result_json=NULL,
             result_digest=NULL,attempts=0,started_at=NULL,question=NULL,worker=NULL,lease_until=0,usage_json=NULL,
+            last_heartbeat_at=NULL,accepted_patch_sha256=NULL,
             updated_at=? WHERE id=?""", (revision, json.dumps(revisions), int(time.time()), order_id))
         event(c, order_id, "revised", "owner", f"{body.kind}: {body.text}", revision)
         c.commit()
@@ -581,6 +606,10 @@ def revise_execution(order_id: str, body: ReviseIn, request: Request):
 class DecisionIn(BaseModel):
     decision: str
     reason: str = ""
+    # The SHA-256 of the exact changes.diff the owner reviewed (X-Content-SHA256 of the preview). Required to
+    # accept: a result that changed after review (rework, new revision, replaced artifact) cannot be accepted.
+    patch_sha256: str = ""
+    revision: int | None = None
 
 
 @router.post("/milo/executions/{order_id}/decision")
@@ -611,9 +640,21 @@ def owner_decision(order_id: str, body: DecisionIn):
         if body.decision == "accept" and report.get("tests_verified") is not True:
             # Includes results recorded before the signed verification: their tests were only claimed.
             raise HTTPException(409, "Campus has not verified the test run for this result; it cannot be accepted")
+        diff = c.execute("SELECT sha256 FROM workbench_artifacts WHERE order_id=? AND name='changes.diff'",
+                         (order_id,)).fetchone()
+        if body.decision == "accept":
+            if not re.fullmatch(r"[0-9a-f]{64}", body.patch_sha256 or ""):
+                raise HTTPException(400, "Accepting needs patch_sha256: the SHA-256 of the exact diff you reviewed")
+            if not diff or diff["sha256"] != body.patch_sha256:
+                raise HTTPException(409, "The reviewed diff is not the current result; review it again before accepting")
+            if body.revision is not None and body.revision != (r["revision"] or 0):
+                raise HTTPException(409, "The reviewed revision is not the current revision")
         state = "completed" if body.decision == "accept" else "rejected"
-        c.execute("UPDATE workbench_orders SET state=?,updated_at=? WHERE id=?", (state, int(time.time()), order_id))
-        event(c, order_id, "decision", "owner", body.decision + (": " + body.reason if body.reason else ""))
+        pinned = body.patch_sha256 if body.decision == "accept" else None
+        c.execute("UPDATE workbench_orders SET state=?,updated_at=?,accepted_patch_sha256=? WHERE id=?",
+                  (state, int(time.time()), pinned, order_id))
+        event(c, order_id, "decision", "owner", body.decision + (f" patch {pinned}" if pinned else "") +
+              (": " + body.reason if body.reason else ""))
         c.commit()
         return {"state": state}
     finally:
@@ -654,7 +695,7 @@ def download_artifact(order_id: str, name: str):
     c = connect()
     try:
         ensure_tables(c)
-        r = c.execute("SELECT state FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
+        r = c.execute("SELECT state,accepted_patch_sha256 FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
         if not r:
             raise HTTPException(404, "Unknown execution")
         if r["state"] != "completed":
@@ -663,6 +704,10 @@ def download_artifact(order_id: str, name: str):
             (order_id, name)).fetchone()
         if not a:
             raise HTTPException(404, "Unknown artifact")
+        if name == "changes.diff" and (not r["accepted_patch_sha256"] or
+                                       hashlib.sha256(a["content"]).hexdigest() != r["accepted_patch_sha256"]):
+            # Only the exact diff the owner accepted is ever released (orders accepted before hash pinning too).
+            raise HTTPException(409, "The stored diff does not match the accepted patch digest")
         return Response(content=a["content"], media_type="application/octet-stream",
             headers={"X-Content-SHA256": a["sha256"], "Cache-Control": "no-store"})
     finally:
