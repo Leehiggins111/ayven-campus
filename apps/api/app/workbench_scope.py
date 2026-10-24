@@ -34,7 +34,10 @@ def check_path(path):
     parts = path.split("/")
     if any(part in ("", ".", "..") for part in parts):
         raise ScopeError(f'path must not contain empty, "." or ".." parts: {path!r}')
-    if _PROHIBITED_NAMES.intersection(parts) or parts[0] in _PROHIBITED_TOP:
+    # Case-insensitive, and ignoring trailing dots (Windows drops them): ".GIT/config", ".Git./hooks/x" and
+    # ".GITMODULES" name the same git control files on case-insensitive or Windows filesystems.
+    folded = [part.casefold().rstrip(".") for part in parts]
+    if _PROHIBITED_NAMES.intersection(folded) or folded[0] in _PROHIBITED_TOP:
         raise ScopeError(f"path is prohibited: {path!r}")
     return path
 
@@ -93,5 +96,10 @@ def verify_patch(allowed, artifacts):
             problems.append(f"Path is not plain ASCII: {ascii(path)}")
         folded.setdefault(path.casefold(), []).append(path)
     problems += [f"Paths differ only by letter case: {', '.join(names)}" for names in folded.values() if len(names) > 1]
+    for path in paths:
+        try:
+            check_path(path)
+        except ScopeError as exc:
+            problems.append(f"Unsafe path in patch: {exc}")
     problems += [f"Unauthorised change: {ascii(path)[1:-1]}" for path in paths if path not in allowed]
     return problems

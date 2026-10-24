@@ -4,12 +4,20 @@ Campus is the authority for an order's lifecycle; see docs/contracts/workbench-e
 
 Who may move an order between states:
   owner  : create (queued), cancel (-> cancelled), revise (failed|rejected|needs_clarification -> queued, new
-           revision), accept / reject (awaiting_approval -> completed | rejected)
+           revision), accept / reject (awaiting_approval -> completed | rejected) of ONE review package (bound by
+           its sha256 and revision), apply (an accepted package -> the apply queue)
   worker : claim (queued -> running, lease + fence), heartbeat (keeps the lease, reports progress), result
            (running -> awaiting_approval | failed | simulated | needs_clarification)
   Campus : lease expiry (running -> queued for a new fence, or failed after MAX_ATTEMPTS), time and token
            limits (running -> failed)
 A worker can only act while it holds the current fence of a live lease; anything else is a 409.
+
+Exact-version approval: when a verified PASS arrives, Campus freezes a review package (base revision, patch
+sha256, allowed files, artifact manifest, acceptance-test digests, coverage, revision) and its sha256. The owner
+decides on that package by hash and revision; a decision on anything else is refused. Accepting produces an
+approval signed with the attestation key (ayven.approval/v1). Applying is a separate owner action: the worker
+claims the apply under its own lease and fence, Workbench checks the approval, the patch bytes and the project's
+base, and applies exactly those bytes once. A rejected result is never applied.
 """
 import hashlib
 import hmac
@@ -17,11 +25,14 @@ import json
 import os
 import sqlite3
 import time
+import uuid
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from .db import connect
 from .workbench_scope import ScopeError, normalize as normalize_scope, verify_patch
-from .workbench_evidence import test_evidence_problems, request_key
+from .workbench_evidence import (acceptance_digest, attestation_key, canonical, key_id, record_of, request_key,
+                                 test_evidence_problems)
+from .workbench_scope import check_path
 
 router = APIRouter()
 MAX_ARTIFACT = 256 * 1024
@@ -35,7 +46,10 @@ def lease_seconds():
         return LEASE_SECONDS
 MAX_ATTEMPTS = 3
 DEFAULT_MINUTES = 30
-PREVIEWABLE = ("changes.diff", "qa-run.json", "qa-test.log", "baseline-test.log")
+PREVIEWABLE = ("changes.diff", "qa-run.json", "qa-test.log", "baseline-test.log", "regression-test.log",
+               "acceptance-test.log", "acceptance-baseline-test.log")
+PACKAGE_SCHEMA, APPROVAL_SCHEMA = "ayven.review-package/v1", "ayven.approval/v1"
+MAX_ACCEPTANCE_BYTES = 32000
 FINAL_STATES = ("awaiting_approval", "completed", "rejected", "failed", "simulated", "needs_clarification",
                 "cancelled")
 
@@ -43,7 +57,21 @@ FINAL_STATES = ("awaiting_approval", "completed", "rejected", "failed", "simulat
 def worker_authorized(request):
     secret = os.environ.get("AYVEN_WORKER_TOKEN", "")
     supplied = request.headers.get("Authorization", "")
+    from .access import token as owner_token
+    # A worker token equal to the owner's key would make every worker an owner: refused outright.
+    if secret and hmac.compare_digest(secret.encode(), owner_token().encode()):
+        return False
     return len(secret) >= 32 and supplied.startswith("Bearer ") and hmac.compare_digest(supplied[7:].encode(), secret.encode())
+
+
+def owner_identity(request):
+    """Who made an owner decision, as far as Campus can tell. The Milo server signs the owner in (Google) and
+    passes the owner's address in X-Ayven-Owner over its bearer-authenticated call; Campus records both."""
+    supplied = request.headers.get("Authorization", "")
+    principal = "bearer" if supplied.startswith("Bearer ") else "session" if request.cookies.get("ayven_session") \
+        else "local"
+    asserted = request.headers.get("X-Ayven-Owner", "").strip()[:200]
+    return {"principal": principal, "owner": asserted or None}
 
 
 def require_worker(request):
@@ -55,6 +83,9 @@ COLUMNS = {   # added after the first release; NULL/defaults for older rows
     "allowed_json": "TEXT", "revision": "INTEGER NOT NULL DEFAULT 0", "revisions_json": "TEXT NOT NULL DEFAULT '[]'",
     "max_minutes": "INTEGER", "token_cap": "INTEGER", "allow_clarification": "INTEGER NOT NULL DEFAULT 0",
     "started_at": "INTEGER", "usage_json": "TEXT", "question": "TEXT", "updated_at": "INTEGER",
+    "acceptance_json": "TEXT", "superseded_json": "TEXT", "removals_json": "TEXT", "package_json": "TEXT",
+    "package_sha256": "TEXT", "decision_json": "TEXT", "claimed_at": "INTEGER", "heartbeat_at": "INTEGER",
+    "finished_at": "INTEGER",
 }
 
 
@@ -72,6 +103,15 @@ def ensure_tables(c):
     c.execute("""CREATE TABLE IF NOT EXISTS workbench_events (
         order_id TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER NOT NULL, revision INTEGER NOT NULL,
         kind TEXT NOT NULL, actor TEXT NOT NULL, text TEXT NOT NULL, PRIMARY KEY(order_id,seq))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS workbench_decisions (
+        order_id TEXT NOT NULL, seq INTEGER NOT NULL, revision INTEGER NOT NULL, decision TEXT NOT NULL,
+        reason TEXT NOT NULL, package_sha256 TEXT NOT NULL, owner_json TEXT NOT NULL, approval_json TEXT,
+        at INTEGER NOT NULL, PRIMARY KEY(order_id,seq))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS workbench_applies (
+        order_id TEXT NOT NULL, revision INTEGER NOT NULL, approval_id TEXT NOT NULL, package_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL, worker TEXT, fence INTEGER NOT NULL DEFAULT 0, lease_until INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0, requested_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        outcome_json TEXT, PRIMARY KEY(order_id,revision))""")
     c.execute("""CREATE TABLE IF NOT EXISTS workbench_history (
         order_id TEXT NOT NULL, revision INTEGER NOT NULL, state TEXT NOT NULL, result_json TEXT,
         artifacts_json TEXT NOT NULL, archived_at INTEGER NOT NULL, PRIMARY KEY(order_id,revision))""")
@@ -92,6 +132,11 @@ def event(c, order_id, kind, actor, text, revision=None):
               (order_id, seq, int(time.time()), revision or 0, kind, actor, str(text)[:2000]))
 
 
+class AcceptanceTestIn(BaseModel):
+    path: str = Field(min_length=1, max_length=255)
+    content: str = Field(min_length=1, max_length=MAX_ACCEPTANCE_BYTES)
+
+
 class ExecutionIn(BaseModel):
     objective: str = Field(min_length=1, max_length=12000)
     project_alias: str = "cloud-demo"
@@ -102,6 +147,11 @@ class ExecutionIn(BaseModel):
     max_minutes: int = Field(default=DEFAULT_MINUTES, ge=1, le=240)      # wall clock per revision
     token_cap: int | None = Field(default=None, ge=500, le=5_000_000)    # model tokens per revision
     allow_clarification: bool = False                                    # may the agent pause with a question?
+    # Owner-written tests the worker never sees; Workbench runs them on the patched code (verification v2).
+    acceptance_tests: list[AcceptanceTestIn] = Field(default_factory=list, max_length=10)
+    # Original tests the owner says this change may retire, and public definitions it may remove ("path::name").
+    superseded_tests: list[str] = Field(default_factory=list, max_length=50)
+    allowed_removals: list[str] = Field(default_factory=list, max_length=50)
 
 
 class ClaimIn(BaseModel):
@@ -148,10 +198,37 @@ class ResultIn(LeaseIn):
 def _fingerprint(body):
     payload = body.model_dump() if hasattr(body, "model_dump") else body.dict()
     # Fields added later are left out at their defaults, so replays of older orders keep their fingerprint.
-    for name, default in (("max_minutes", DEFAULT_MINUTES), ("token_cap", None), ("allow_clarification", False)):
+    for name, default in (("max_minutes", DEFAULT_MINUTES), ("token_cap", None), ("allow_clarification", False),
+                          ("acceptance_tests", []), ("superseded_tests", []), ("allowed_removals", [])):
         if payload.get(name) == default:
             payload.pop(name, None)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _check_acceptance(body, allowed):
+    """Owner acceptance tests: Python test files at fresh exact paths the worker may not change."""
+    total, seen = 0, set()
+    for test in body.acceptance_tests:
+        try:
+            path = check_path(test.path)
+        except ScopeError as exc:
+            raise HTTPException(400, f"Acceptance test path: {exc}")
+        name = path.rsplit("/", 1)[-1]
+        in_tests_dir = bool({"tests", "test"} & set(path.split("/")[:-1]))
+        if not path.endswith(".py") or name in ("conftest.py", "__init__.py") or \
+                not (name.startswith("test_") or name.endswith("_test.py") or in_tests_dir):
+            raise HTTPException(400, f"Acceptance test {path} must be a Python test file (test_*.py or under tests/)")
+        if path.casefold() in {a.casefold() for a in allowed}:
+            raise HTTPException(400, f"Acceptance test {path} is on the allowed-files list, so the worker could change it")
+        if path.casefold() in seen:
+            raise HTTPException(400, "Acceptance test paths must be distinct")
+        seen.add(path.casefold())
+        total += len(test.content.encode())
+    if total > MAX_ACCEPTANCE_BYTES:
+        raise HTTPException(400, f"Acceptance tests total {total} bytes, over the {MAX_ACCEPTANCE_BYTES}-byte limit")
+    for name in body.superseded_tests + body.allowed_removals:
+        if not name.strip() or len(name) > 300 or not name.isprintable():
+            raise HTTPException(400, "superseded_tests and allowed_removals take short printable names")
 
 
 def _duplicate(existing, fingerprint, key):
@@ -175,6 +252,7 @@ def enqueue(body: ExecutionIn, request: Request):
     except ScopeError as exc:
         raise HTTPException(400, str(exc))
     body.allowed_files = allowed
+    _check_acceptance(body, allowed)
     from .main import _admit_budget, ObjectiveIn, _attach_goal
     objective = ObjectiveIn(objective=body.objective, acceptance_criteria=body.acceptance_criteria,
         constraints=body.constraints, job_cap_gbp=body.job_cap_gbp)
@@ -215,11 +293,14 @@ def enqueue(body: ExecutionIn, request: Request):
         try:
             c.execute("""INSERT INTO workbench_orders
               (id,project_id,objective,project_alias,criteria_json,constraints_json,budget_gbp,state,request_digest,
-               created_at,allowed_json,max_minutes,token_cap,allow_clarification,updated_at)
-              VALUES(?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?)""",
+               created_at,allowed_json,max_minutes,token_cap,allow_clarification,updated_at,acceptance_json,
+               superseded_json,removals_json)
+              VALUES(?,?,?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?)""",
               (key, result["project_id"], body.objective, body.project_alias, json.dumps(body.acceptance_criteria),
                json.dumps(body.constraints), body.job_cap_gbp, fingerprint, now, json.dumps(allowed),
-               body.max_minutes, body.token_cap, int(body.allow_clarification), now))
+               body.max_minutes, body.token_cap, int(body.allow_clarification), now,
+               json.dumps([t.model_dump() for t in body.acceptance_tests]),
+               json.dumps(sorted(set(body.superseded_tests))), json.dumps(sorted(set(body.allowed_removals)))))
         except sqlite3.IntegrityError:
             c.rollback()
             c.close()
@@ -229,7 +310,8 @@ def enqueue(body: ExecutionIn, request: Request):
                 return _duplicate(existing, fingerprint, key)
             raise HTTPException(409, "Order conflicts with an existing project")
         event(c, key, "created", "owner", f"Order created; allowed files: {', '.join(allowed)}; "
-              f"limits: {body.max_minutes} min" + (f", {body.token_cap} tokens" if body.token_cap else ""), 0)
+              f"limits: {body.max_minutes} min" + (f", {body.token_cap} tokens" if body.token_cap else "") +
+              (f"; {len(body.acceptance_tests)} owner acceptance test file(s)" if body.acceptance_tests else ""), 0)
         c.commit()
         return {"project_id": result["project_id"], "order_id": key, "duplicate": False, "mode": "PENDING_REAL",
                 "state": "queued"}
@@ -274,8 +356,8 @@ def claim(body: ClaimIn, request: Request):
             return {"job": None}
         fence = r["fence"] + 1
         c.execute("""UPDATE workbench_orders SET state='running',worker=?,fence=?,lease_until=?,attempts=attempts+1,
-            started_at=COALESCE(started_at,?),updated_at=? WHERE id=?""",
-            (body.worker_id, fence, now + lease_seconds(), now, now, r["id"]))
+            started_at=COALESCE(started_at,?),claimed_at=?,heartbeat_at=?,updated_at=? WHERE id=?""",
+            (body.worker_id, fence, now + lease_seconds(), now, now, now, now, r["id"]))
         event(c, r["id"], "claimed", "worker", f"Claimed by {body.worker_id} (attempt {r['attempts'] + 1}, fence {fence})")
         c.commit()
         started = r["started_at"] or now
@@ -287,9 +369,15 @@ def claim(body: ClaimIn, request: Request):
            "revisions": json.loads(r["revisions_json"] or "[]"), "request_key": request_key(r["id"], r["revision"] or 0),
            "max_minutes": r["max_minutes"] or DEFAULT_MINUTES,
            "deadline": started + 60 * (r["max_minutes"] or DEFAULT_MINUTES),
-           "token_cap": r["token_cap"], "allow_clarification": bool(r["allow_clarification"])}}
+           "token_cap": r["token_cap"], "allow_clarification": bool(r["allow_clarification"]),
+           "acceptance_tests": _loads(r["acceptance_json"]), "superseded_tests": _loads(r["superseded_json"]),
+           "allowed_removals": _loads(r["removals_json"])}}
     finally:
         c.close()
+
+
+def _loads(text, default=None):
+    return json.loads(text) if text else ([] if default is None else default)
 
 
 def locked(c, order_id, body):
@@ -334,7 +422,8 @@ def heartbeat(order_id: str, body: HeartbeatIn, request: Request):
             if p.stage and (not last or last["text"] != p.stage):
                 event(c, order_id, "progress", "worker", p.stage)
             c.execute("UPDATE workbench_orders SET usage_json=? WHERE id=?", (json.dumps(usage), order_id))
-        c.execute("UPDATE workbench_orders SET lease_until=?,updated_at=? WHERE id=?", (now + lease_seconds(), now, order_id))
+        c.execute("UPDATE workbench_orders SET lease_until=?,heartbeat_at=?,updated_at=? WHERE id=?",
+                  (now + lease_seconds(), now, now, order_id))
         c.commit()
         return {"ok": True, "deadline": (r["started_at"] or now) + limit}
     finally:
@@ -392,7 +481,10 @@ def result(order_id: str, body: ResultIn, request: Request):
             allowed = json.loads(r["allowed_json"]) if r["allowed_json"] else None
             files = {n: raw for n, raw, _ in artifacts}
             scope = verify_patch(allowed, files)
-            tests = test_evidence_problems(files, order_id=order_id, revision=r["revision"] or 0, allowed=allowed)
+            tests = test_evidence_problems(files, order_id=order_id, revision=r["revision"] or 0, allowed=allowed,
+                                           acceptance=_loads(r["acceptance_json"]),
+                                           superseded=_loads(r["superseded_json"]),
+                                           allowed_removals=_loads(r["removals_json"]))
             if scope or tests:
                 result_data.update(verdict="FAIL", worker_verdict="PASS", campus_rejected=True,
                                    defects=["Campus scope check: " + p for p in scope] +
@@ -410,12 +502,19 @@ def result(order_id: str, body: ResultIn, request: Request):
             state = "simulated"
         else:
             state = "awaiting_approval"
+        package, package_sha = (None, None)
+        if state == "awaiting_approval":
+            package, package_sha = review_package(r, {n: raw for n, raw, _ in artifacts})
+            result_data["coverage"] = package["coverage"]
+            result_data["package_sha256"] = package_sha
         usage = body.usage.model_dump() if body.usage else None
         # The digest is of what the worker sent, so an identical replay stays idempotent after a downgrade.
         c.execute("""UPDATE workbench_orders SET state=?,result_json=?,result_digest=?,lease_until=0,question=?,
-            usage_json=COALESCE(?,usage_json),updated_at=? WHERE id=?""",
+            usage_json=COALESCE(?,usage_json),updated_at=?,finished_at=?,package_json=?,package_sha256=?,
+            decision_json=NULL WHERE id=?""",
             (state, json.dumps(result_data), digest, body.question if state == "needs_clarification" else None,
-             json.dumps(usage) if usage else None, int(time.time()), order_id))
+             json.dumps(usage) if usage else None, int(time.time()), int(time.time()),
+             json.dumps(package) if package else None, package_sha, order_id))
         event(c, order_id, "result", "worker", f"{body.verdict} ({body.execution_mode}) -> {state}" +
               (": " + "; ".join(result_data.get("defects") or [])[:600] if result_data.get("defects") else "") +
               (": " + body.question if state == "needs_clarification" else ""))
@@ -426,7 +525,52 @@ def result(order_id: str, body: ResultIn, request: Request):
         c.close()
 
 
-def _view(r):
+def review_package(r, files):
+    """The exact thing the owner decides on. Frozen when the verified PASS arrives; its sha256 is what an owner
+    decision, the signed approval and the apply all name."""
+    record = record_of(files)
+    envelope = json.loads(files["qa-run.json"].decode("utf-8"))
+    package = {
+        "schema": PACKAGE_SCHEMA, "order_id": r["id"], "revision": r["revision"] or 0,
+        "request_key": request_key(r["id"], r["revision"] or 0), "project_alias": r["project_alias"],
+        "objective": r["objective"], "acceptance_criteria": _loads(r["criteria_json"]),
+        "allowed_files": _loads(r["allowed_json"]), "base_revision": record.get("base_revision"),
+        "patch_sha256": record.get("patch_sha256"), "patch_bytes": record.get("patch_bytes"),
+        "changed_files": record.get("changed_files"), "execution_mode": "REAL",
+        "artifacts": {n: {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)} for n, raw in sorted(files.items())},
+        "verification": {"schema": record.get("schema"), "verdict": record.get("verdict"),
+                         "record_sha256": hashlib.sha256(canonical(record)).hexdigest(),
+                         "key_id": (envelope.get("signature") or {}).get("key_id")},
+        "acceptance_tests": record.get("acceptance_tests"), "superseded_tests": record.get("superseded_tests"),
+        "allowed_removals": record.get("allowed_removals"), "removed_definitions": record.get("removed_definitions"),
+        "signature_changes": record.get("signature_changes"), "tests_modified": record.get("tests_modified"),
+        "coverage": record.get("coverage"),
+    }
+    return package, hashlib.sha256(canonical(package)).hexdigest()
+
+
+def _intact(c, order_id, package):
+    """Are the stored artifacts still byte-for-byte the ones in the package? (Refuses a changed database row.)"""
+    stored = {a["name"]: a["content"] for a in
+              c.execute("SELECT name,content FROM workbench_artifacts WHERE order_id=?", (order_id,)).fetchall()}
+    want = package.get("artifacts") or {}
+    return set(stored) == set(want) and all(
+        hashlib.sha256(stored[n]).hexdigest() == m["sha256"] and len(stored[n]) == m["bytes"] for n, m in want.items())
+
+
+def _apply_view(c, r):
+    if c is None:
+        return None
+    a = c.execute("SELECT * FROM workbench_applies WHERE order_id=? AND revision=?",
+                  (r["id"], r["revision"] or 0)).fetchone()
+    if not a:
+        return None
+    return {"state": a["state"], "attempts": a["attempts"], "requested_at": a["requested_at"],
+            "updated_at": a["updated_at"], "approval_id": a["approval_id"], "package_sha256": a["package_sha256"],
+            "outcome": _loads(a["outcome_json"], {}) or None}
+
+
+def _view(r, c=None):
     report = json.loads(r["result_json"]) if r["result_json"] else None
     verified = bool(report and report.get("verdict") == "PASS" and report.get("scope_verified") is True
                     and report.get("tests_verified") is True)
@@ -438,7 +582,25 @@ def _view(r):
             "limits": {"max_minutes": r["max_minutes"] or DEFAULT_MINUTES, "token_cap": r["token_cap"],
                        "job_cap_gbp": r["budget_gbp"]},
             "verification": "VERIFIED" if verified else "UNVERIFIED",
-            "result": report, "owner_accepted": r["state"] == "completed"}
+            "result": report, "owner_accepted": r["state"] == "completed",
+            "acceptance_criteria": _loads(r["criteria_json"]), "constraints": _loads(r["constraints_json"]),
+            "job_cap_gbp": r["budget_gbp"],
+            "acceptance_tests": [{"path": t["path"]} for t in _loads(r["acceptance_json"])] + [],
+            "superseded_tests": _loads(r["superseded_json"]), "allowed_removals": _loads(r["removals_json"]),
+            "worker_id": r["worker"], "claimed_at": r["claimed_at"], "last_heartbeat_at": r["heartbeat_at"],
+            "lease_until": r["lease_until"] or None, "finished_at": r["finished_at"],
+            "review": {"package_sha256": r["package_sha256"],
+                       "coverage": (_loads(r["package_json"], {}) or {}).get("coverage")} if r["package_sha256"] else None,
+            "decision": _decision_public(r["decision_json"]),
+            "apply": _apply_view(c, r)}
+
+
+def _decision_public(text):
+    d = _loads(text, {})
+    if not d:
+        return None
+    return {k: d.get(k) for k in ("decision", "reason", "owner", "decided_at", "package_sha256", "revision",
+                                  "approval_id", "acknowledged_coverage")}
 
 
 @router.get("/milo/executions")
@@ -463,6 +625,10 @@ def list_executions(limit: int = 50):
                 "scope_verified": verdict.get("scope_verified") is True,
                 "tests_verified": verdict.get("tests_verified") is True,
                 "defects": verdict.get("defects", [])[:10], "artifacts": verdict.get("artifacts", []),
+                "updated_at": r["updated_at"], "finished_at": r["finished_at"], "worker_id": r["worker"],
+                "last_heartbeat_at": r["heartbeat_at"], "acceptance_criteria": v["acceptance_criteria"],
+                "constraints": v["constraints"], "job_cap_gbp": r["budget_gbp"], "review": v["review"],
+                "decision": v["decision"], "apply": _apply_view(c, r),
             })
         return {"executions": result}
     finally:
@@ -477,7 +643,7 @@ def execution_status(order_id: str):
         r = c.execute("SELECT * FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
         if not r:
             raise HTTPException(404, "Unknown execution")
-        return _view(r)
+        return _view(r, c)
     finally:
         c.close()
 
@@ -542,7 +708,24 @@ def revise_execution(order_id: str, body: ReviseIn, request: Request):
     Idempotency-Key makes a lost reply safe to repeat."""
     if body.kind not in ("rework", "clarification"):
         raise HTTPException(400, "kind must be rework or clarification")
-    key = request.headers.get("Idempotency-Key", "").strip()[:200]
+    return _revise(order_id, body, request.headers.get("Idempotency-Key", "").strip()[:200])
+
+
+class ClarificationIn(BaseModel):
+    answer: str = Field(default="", max_length=4000)
+
+
+@router.post("/milo/executions/{order_id}/clarification")
+def answer_clarification(order_id: str, body: ClarificationIn, request: Request):
+    """Milo's clarification route (docs/integration/milo-connected-journey.md, D1): the same order resumes as a new
+    revision whose brief carries the question and this answer. 400 empty answer; 409 not waiting for an answer."""
+    if not body.answer.strip():
+        raise HTTPException(400, "Write an answer")
+    return _revise(order_id, ReviseIn(kind="clarification", text=body.answer.strip()),
+                   request.headers.get("Idempotency-Key", "").strip()[:200])
+
+
+def _revise(order_id, body, key):
     c = connect()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -570,7 +753,8 @@ def revise_execution(order_id: str, body: ReviseIn, request: Request):
                           "key": key or None, "at": int(time.time())})
         c.execute("""UPDATE workbench_orders SET state='queued',revision=?,revisions_json=?,result_json=NULL,
             result_digest=NULL,attempts=0,started_at=NULL,question=NULL,worker=NULL,lease_until=0,usage_json=NULL,
-            updated_at=? WHERE id=?""", (revision, json.dumps(revisions), int(time.time()), order_id))
+            package_json=NULL,package_sha256=NULL,decision_json=NULL,claimed_at=NULL,heartbeat_at=NULL,
+            finished_at=NULL,updated_at=? WHERE id=?""", (revision, json.dumps(revisions), int(time.time()), order_id))
         event(c, order_id, "revised", "owner", f"{body.kind}: {body.text}", revision)
         c.commit()
         return {"state": "queued", "revision": revision, "duplicate": False}
@@ -580,15 +764,44 @@ def revise_execution(order_id: str, body: ReviseIn, request: Request):
 
 class DecisionIn(BaseModel):
     decision: str
-    reason: str = ""
+    reason: str = Field(default="", max_length=2000)
+    # The exact review package the owner looked at (GET .../review) and its revision. Required: a decision is
+    # about one frozen version, never "whatever the result is now".
+    package_sha256: str = Field(default="", max_length=64)
+    revision: int | None = None
+    # Required to accept when coverage.level is "worker-tests-only" (no original or owner tests ran).
+    acknowledge_coverage: bool = False
+
+
+@router.get("/milo/executions/{order_id}/review")
+def review_package_view(order_id: str):
+    """The exact review package: what was verified, on which base, with which patch hash, what the tests did and
+    did not cover. Decide by quoting package_sha256 and revision."""
+    c = connect()
+    try:
+        ensure_tables(c)
+        r = c.execute("SELECT * FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Unknown execution")
+        if not r["package_sha256"]:
+            raise HTTPException(409, f"Execution is {r['state']}: there is no verified result to review")
+        package = json.loads(r["package_json"])
+        return {"order_id": order_id, "state": r["state"], "revision": r["revision"] or 0,
+                "package_sha256": r["package_sha256"], "package": package, "intact": _intact(c, order_id, package),
+                "decision": _decision_public(r["decision_json"]), "apply": _apply_view(c, r)}
+    finally:
+        c.close()
 
 
 @router.post("/milo/executions/{order_id}/decision")
-def owner_decision(order_id: str, body: DecisionIn):
+def owner_decision(order_id: str, body: DecisionIn, request: Request):
     if body.decision not in ("accept", "reject"):
         raise HTTPException(400, "Expected accept or reject")
     if body.decision == "reject" and not body.reason.strip():
         raise HTTPException(400, "Rejection reason required")
+    if not body.package_sha256 or body.revision is None:
+        raise HTTPException(400, "package_sha256 and revision are required: decide on the review package you read "
+                                 "(GET /milo/executions/{id}/review)")
     c = connect()
     try:
         c.execute("BEGIN IMMEDIATE")
@@ -596,10 +809,33 @@ def owner_decision(order_id: str, body: DecisionIn):
         r = c.execute("SELECT * FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
         if not r:
             raise HTTPException(404, "Unknown execution")
+        prior = _loads(r["decision_json"], {})
+        if prior:
+            # Idempotent: the same decision on the same package is a duplicate; anything else is refused.
+            if prior.get("decision") == body.decision and prior.get("package_sha256") == body.package_sha256 and \
+                    prior.get("revision") == body.revision:
+                c.commit()
+                return {"state": r["state"], "decision": prior["decision"], "reason": prior.get("reason"),
+                        "approval_id": prior.get("approval_id"), "package_sha256": prior["package_sha256"],
+                        "duplicate": True}
+            raise HTTPException(409, f"This result was already {prior.get('decision')}ed; a decision cannot be changed")
         if r["state"] == "simulated":
             raise HTTPException(409, "Simulated or sample work cannot be approved or rejected; it is a record only")
         if r["state"] != "awaiting_approval":
             raise HTTPException(409, "Execution not awaiting approval")
+        if body.revision != (r["revision"] or 0):
+            raise HTTPException(409, f"You reviewed revision {body.revision}; the execution is at revision "
+                                     f"{r['revision'] or 0}. Review the current result.")
+        if not r["package_sha256"]:
+            # Includes results recorded before exact-version review, or never verified by Campus.
+            raise HTTPException(409, "This result has no verified review package (its files and test run were not "
+                                     "verified by Campus); it cannot be decided on as a deliverable")
+        if not hmac.compare_digest(body.package_sha256, r["package_sha256"]):
+            raise HTTPException(409, "The result is not the version you reviewed (review package hash differs). "
+                                     "Review it again.")
+        package = json.loads(r["package_json"])
+        if not _intact(c, order_id, package):
+            raise HTTPException(409, "Stored artifacts no longer match the review package; nothing can be decided")
         report = json.loads(r["result_json"] or "{}")
         if report.get("verdict") != "PASS":
             raise HTTPException(409, "Only QA PASS may be accepted")
@@ -611,11 +847,190 @@ def owner_decision(order_id: str, body: DecisionIn):
         if body.decision == "accept" and report.get("tests_verified") is not True:
             # Includes results recorded before the signed verification: their tests were only claimed.
             raise HTTPException(409, "Campus has not verified the test run for this result; it cannot be accepted")
+        level = (package.get("coverage") or {}).get("level")
+        if body.decision == "accept" and level == "worker-tests-only" and not body.acknowledge_coverage:
+            raise HTTPException(409, "Only tests the worker wrote ran on this change (no original or owner tests). "
+                                     "Accept only with acknowledge_coverage=true, or ask for rework with acceptance tests.")
+        now = int(time.time())
+        owner = owner_identity(request)
+        decision = {"decision": body.decision, "reason": body.reason.strip(), "owner": owner, "decided_at": now,
+                    "package_sha256": r["package_sha256"], "revision": r["revision"] or 0,
+                    "acknowledged_coverage": bool(body.acknowledge_coverage), "approval_id": None, "approval": None}
+        if body.decision == "accept":
+            key = attestation_key()
+            if not key:
+                raise HTTPException(503, "Campus has no attestation key; it cannot sign an approval")
+            approval = {"schema": APPROVAL_SCHEMA, "approval_id": uuid.uuid4().hex, "decision": "accept",
+                        "order_id": order_id, "revision": r["revision"] or 0,
+                        "request_key": request_key(order_id, r["revision"] or 0),
+                        "package_sha256": r["package_sha256"], "patch_sha256": package["patch_sha256"],
+                        "base_revision": package["base_revision"], "allowed_files": package["allowed_files"],
+                        "project_alias": package["project_alias"], "owner": owner, "decided_at": now}
+            decision["approval_id"] = approval["approval_id"]
+            decision["approval"] = {"record": approval, "signature": {
+                "alg": "HMAC-SHA256", "key_id": key_id(key),
+                "value": hmac.new(key, canonical(approval), hashlib.sha256).hexdigest()}}
         state = "completed" if body.decision == "accept" else "rejected"
-        c.execute("UPDATE workbench_orders SET state=?,updated_at=? WHERE id=?", (state, int(time.time()), order_id))
-        event(c, order_id, "decision", "owner", body.decision + (": " + body.reason if body.reason else ""))
+        c.execute("UPDATE workbench_orders SET state=?,decision_json=?,updated_at=? WHERE id=?",
+                  (state, json.dumps(decision), now, order_id))
+        seq = c.execute("SELECT COALESCE(MAX(seq),0)+1 FROM workbench_decisions WHERE order_id=?", (order_id,)).fetchone()[0]
+        c.execute("INSERT INTO workbench_decisions VALUES(?,?,?,?,?,?,?,?,?)",
+                  (order_id, seq, r["revision"] or 0, body.decision, decision["reason"], r["package_sha256"],
+                   json.dumps(owner), json.dumps(decision["approval"]) if decision["approval"] else None, now))
+        event(c, order_id, "decision", "owner", f"{body.decision} of package {r['package_sha256'][:16]} "
+              f"(revision {r['revision'] or 0}) by {owner.get('owner') or owner['principal']}" +
+              (": " + decision["reason"] if decision["reason"] else ""))
         c.commit()
-        return {"state": state}
+        return {"state": state, "decision": body.decision, "reason": decision["reason"],
+                "approval_id": decision["approval_id"], "package_sha256": r["package_sha256"], "duplicate": False}
+    finally:
+        c.close()
+
+
+class ApplyIn(BaseModel):
+    package_sha256: str = Field(min_length=64, max_length=64)
+
+
+@router.post("/milo/executions/{order_id}/apply")
+def request_apply(order_id: str, body: ApplyIn):
+    """Owner asks for an accepted package to be applied to the project on the Workbench host. Never automatic.
+    Idempotent: a repeat while queued or after success reports the same apply; after a refusal it re-queues."""
+    c = connect()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        ensure_tables(c)
+        r = c.execute("SELECT * FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Unknown execution")
+        decision = _loads(r["decision_json"], {})
+        if r["state"] == "rejected" or decision.get("decision") == "reject":
+            raise HTTPException(409, "A rejected result is never applied")
+        if r["state"] != "completed" or decision.get("decision") != "accept" or not decision.get("approval"):
+            raise HTTPException(409, "Accept the result before applying it")
+        if not hmac.compare_digest(body.package_sha256, decision["package_sha256"]):
+            raise HTTPException(409, "That is not the package you accepted")
+        if not _intact(c, order_id, json.loads(r["package_json"])):
+            raise HTTPException(409, "Stored artifacts no longer match the accepted package; it cannot be applied")
+        now = int(time.time())
+        a = c.execute("SELECT * FROM workbench_applies WHERE order_id=? AND revision=?",
+                      (order_id, r["revision"] or 0)).fetchone()
+        if a and a["state"] in ("requested", "claimed", "applied"):
+            c.commit()
+            return {"apply_state": a["state"], "duplicate": True, "outcome": _loads(a["outcome_json"], {}) or None}
+        if a:
+            c.execute("UPDATE workbench_applies SET state='requested',attempts=0,lease_until=0,worker=NULL,"
+                      "updated_at=? WHERE order_id=? AND revision=?", (now, order_id, r["revision"] or 0))
+        else:
+            c.execute("INSERT INTO workbench_applies (order_id,revision,approval_id,package_sha256,state,"
+                      "requested_at,updated_at) VALUES(?,?,?,?,'requested',?,?)",
+                      (order_id, r["revision"] or 0, decision["approval_id"], decision["package_sha256"], now, now))
+        event(c, order_id, "apply_requested", "owner", f"Apply requested for package {decision['package_sha256'][:16]}")
+        c.commit()
+        return {"apply_state": "requested", "duplicate": False}
+    finally:
+        c.close()
+
+
+@router.get("/milo/executions/{order_id}/apply")
+def apply_status(order_id: str):
+    c = connect()
+    try:
+        ensure_tables(c)
+        r = c.execute("SELECT * FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Unknown execution")
+        return {"order_id": order_id, "apply": _apply_view(c, r)}
+    finally:
+        c.close()
+
+
+@router.post("/internal/workbench/apply/claim")
+def claim_apply(body: ClaimIn, request: Request):
+    require_worker(request)
+    c = connect()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        ensure_tables(c)
+        now = int(time.time())
+        for a in c.execute("SELECT * FROM workbench_applies WHERE state='claimed' AND lease_until<?", (now,)).fetchall():
+            failed = a["attempts"] >= MAX_ATTEMPTS
+            c.execute("UPDATE workbench_applies SET state=?,lease_until=0,updated_at=?,outcome_json=? "
+                      "WHERE order_id=? AND revision=?",
+                      ("failed" if failed else "requested", now,
+                       json.dumps({"outcome": "failed", "detail": "Worker lease expired"}) if failed else a["outcome_json"],
+                       a["order_id"], a["revision"]))
+            event(c, a["order_id"], "apply_lease_expired", "campus",
+                  "Apply worker stopped heartbeating" + ("; apply failed" if failed else "; re-queued"))
+        a = c.execute("SELECT * FROM workbench_applies WHERE state='requested' ORDER BY requested_at LIMIT 1").fetchone()
+        if not a:
+            c.commit()
+            return {"apply": None}
+        r = c.execute("SELECT * FROM workbench_orders WHERE id=?", (a["order_id"],)).fetchone()
+        decision = _loads(r["decision_json"], {}) if r else {}
+        files = {x["name"]: x["content"] for x in
+                 c.execute("SELECT name,content FROM workbench_artifacts WHERE order_id=?", (a["order_id"],)).fetchall()}
+        if not r or r["state"] != "completed" or decision.get("approval_id") != a["approval_id"] or \
+                not _intact(c, a["order_id"], json.loads(r["package_json"])):
+            c.execute("UPDATE workbench_applies SET state='refused',updated_at=?,outcome_json=? WHERE order_id=? AND revision=?",
+                      (now, json.dumps({"outcome": "refused", "detail": "The accepted package no longer matches"}),
+                       a["order_id"], a["revision"]))
+            event(c, a["order_id"], "apply_refused", "campus", "The accepted package no longer matches; not applied")
+            c.commit()
+            return {"apply": None}
+        fence = a["fence"] + 1
+        c.execute("UPDATE workbench_applies SET state='claimed',worker=?,fence=?,lease_until=?,attempts=attempts+1,"
+                  "updated_at=? WHERE order_id=? AND revision=?",
+                  (body.worker_id, fence, now + lease_seconds(), now, a["order_id"], a["revision"]))
+        event(c, a["order_id"], "apply_claimed", "worker", f"Apply claimed by {body.worker_id} (fence {fence})")
+        c.commit()
+        return {"apply": {"order_id": a["order_id"], "revision": a["revision"], "fence": fence,
+                          "lease_seconds": lease_seconds(), "project_alias": r["project_alias"],
+                          "approval": decision["approval"], "package_sha256": a["package_sha256"],
+                          "patch": files["changes.diff"].decode("utf-8", "surrogateescape"),
+                          "record": json.loads(files["qa-run.json"].decode("utf-8"))}}
+    finally:
+        c.close()
+
+
+class ApplyResultIn(LeaseIn):
+    outcome: str
+    commit: str | None = Field(default=None, max_length=40)
+    detail: str = Field(default="", max_length=2000)
+
+
+@router.post("/internal/workbench/apply/{order_id}/result")
+def apply_result(order_id: str, body: ApplyResultIn, request: Request):
+    require_worker(request)
+    if body.outcome not in ("applied", "refused"):
+        raise HTTPException(400, "outcome must be applied or refused")
+    if body.outcome == "applied" and not (body.commit and len(body.commit) == 40 and
+                                          all(ch in "0123456789abcdef" for ch in body.commit)):
+        raise HTTPException(400, "An applied result names the 40-character commit it created")
+    c = connect()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        ensure_tables(c)
+        a = c.execute("SELECT * FROM workbench_applies WHERE order_id=? ORDER BY revision DESC LIMIT 1",
+                      (order_id,)).fetchone()
+        if not a:
+            raise HTTPException(404, "No apply for this order")
+        outcome = {"outcome": body.outcome, "commit": body.commit, "detail": body.detail, "worker": body.worker_id}
+        if a["state"] in ("applied", "refused", "failed"):
+            if a["worker"] == body.worker_id and a["fence"] == body.fence and _loads(a["outcome_json"], {}) == outcome:
+                c.commit()
+                return {"ok": True, "duplicate": True, "apply_state": a["state"]}
+            raise HTTPException(409, "Apply already finished")
+        if a["state"] != "claimed" or a["worker"] != body.worker_id or a["fence"] != body.fence or \
+                a["lease_until"] < int(time.time()):
+            raise HTTPException(409, "Stale apply lease")
+        state = "applied" if body.outcome == "applied" else "refused"
+        c.execute("UPDATE workbench_applies SET state=?,lease_until=0,updated_at=?,outcome_json=? "
+                  "WHERE order_id=? AND revision=?", (state, int(time.time()), json.dumps(outcome), order_id, a["revision"]))
+        event(c, order_id, "applied" if state == "applied" else "apply_refused", "worker",
+              (f"Applied as commit {body.commit}" if state == "applied" else "Workbench refused to apply") +
+              (": " + body.detail if body.detail else ""))
+        c.commit()
+        return {"ok": True, "duplicate": False, "apply_state": state}
     finally:
         c.close()
 

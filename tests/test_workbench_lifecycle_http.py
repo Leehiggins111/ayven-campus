@@ -122,8 +122,7 @@ class Lifecycle(Orders):
         self.assertIn("cancelled", hb.text)
         self.assertEqual(self.post(job, artifacts=self.signed(job)).status_code, 409)
         self.assertEqual(self.status(job)["state"], "cancelled")
-        self.assertEqual(self.client.post("/milo/executions/life/decision", headers=self.owner,
-                                          json={"decision": "accept"}).status_code, 409)
+        self.assertEqual(self.decide("/milo/executions/life/decision", {"decision": "accept"}).status_code, 409)
 
     def test_cancel_is_refused_once_a_result_exists(self):
         self.order()
@@ -172,8 +171,7 @@ class Lifecycle(Orders):
         milo = self.client.get("/milo/jobs/" + status["project_id"], headers=self.owner).json()
         self.assertTrue(milo["waiting_for_lee"])
         self.assertIn("25 pounds", milo["question"])
-        self.assertEqual(self.client.post("/milo/executions/life/decision", headers=self.owner,
-                                          json={"decision": "accept"}).status_code, 409)
+        self.assertEqual(self.decide("/milo/executions/life/decision", {"decision": "accept"}).status_code, 409)
         h = {**self.owner, "Idempotency-Key": "answer-1"}
         a = self.client.post("/milo/executions/life/revise", headers=h, json={"kind": "clarification", "text": "Yes."})
         self.assertEqual(a.json(), {"state": "queued", "revision": 1, "duplicate": False})

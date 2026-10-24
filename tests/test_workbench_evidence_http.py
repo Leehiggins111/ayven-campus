@@ -25,8 +25,7 @@ class TestEvidence(Orders):
         self.assertEqual(reply["state"], "failed", result)
         self.assertFalse(result["tests_verified"])
         self.assertTrue(any(reason in d for d in result["defects"]), result["defects"])
-        accept = self.client.post("/milo/executions/%s/decision" % job["order_id"], headers=self.owner,
-                                  json={"decision": "accept"})
+        accept = self.decide("/milo/executions/%s/decision" % job["order_id"], {"decision": "accept"})
         self.assertEqual(accept.status_code, 409)
         return result
 
@@ -38,8 +37,7 @@ class TestEvidence(Orders):
         job, reply, result = self.submit("good", self.good)
         self.assertEqual(reply["state"], "awaiting_approval", result)
         self.assertTrue(result["tests_verified"] and result["scope_verified"])
-        self.assertEqual(self.client.post("/milo/executions/%s/decision" % job["order_id"], headers=self.owner,
-                                          json={"decision": "accept"}).status_code, 200)
+        self.assertEqual(self.decide("/milo/executions/%s/decision" % job["order_id"], {"decision": "accept"}).status_code, 200)
 
     def test_a_bare_pass_claim_is_refused(self):
         self.assert_refused("bare", lambda o: [patch_for("calc.py")], "missing verification evidence")
@@ -118,9 +116,9 @@ class TestEvidence(Orders):
                                "defects": [], "artifacts": [], "scope_verified": True}), "legacy-tests"))
         c.commit()
         c.close()
-        r = self.client.post("/milo/executions/legacy-tests/decision", headers=self.owner, json={"decision": "accept"})
+        r = self.decide("/milo/executions/legacy-tests/decision", {"decision": "accept"})
         self.assertEqual(r.status_code, 409)
-        self.assertIn("test run", r.text)
+        self.assertIn("no verified review package", r.text)
 
 
 class SampleWork(Orders):
@@ -132,7 +130,7 @@ class SampleWork(Orders):
                             evidence=False)
         self.assertEqual(reply.json()["state"], "simulated", reply.text)
         for decision in ({"decision": "accept"}, {"decision": "reject", "reason": "sample"}):
-            r = self.client.post("/milo/executions/%s/decision" % job["order_id"], headers=self.owner, json=decision)
+            r = self.decide("/milo/executions/%s/decision" % job["order_id"], decision)
             self.assertEqual(r.status_code, 409, (decision, r.text))
         self.assertEqual(self.status(job)["state"], "simulated")
         self.assertFalse(self.status(job)["owner_accepted"])

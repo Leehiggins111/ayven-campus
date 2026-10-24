@@ -86,6 +86,14 @@ class Orders(Base):
     def claim(self):
         return self.client.post("/internal/workbench/claim", headers=self.worker, json={"worker_id": "w1"}).json()["job"]
 
+    def decide(self, path, body):
+        """An owner decision on the review package the owner read (package hash + revision, as Milo sends it)."""
+        order = path.split("/")[3]
+        review = self.client.get("/milo/executions/%s/review" % order, headers=self.owner)
+        extra = ({"package_sha256": review.json()["package_sha256"], "revision": review.json()["revision"]}
+                 if review.status_code == 200 else {"package_sha256": "0" * 64, "revision": 0})
+        return self.client.post(path, headers=self.owner, json={**extra, **body})
+
     def report(self, job, artifacts, verdict="PASS", mode="REAL", evidence=True):
         patches = [a for a in artifacts if a["name"] == "changes.diff"]
         if verdict == "PASS" and evidence and patches:      # a genuine passing test run of this patch
@@ -140,8 +148,7 @@ class AllowList(Orders):
         self.assertEqual(result["verdict"], "FAIL")
         self.assertEqual(result["worker_verdict"], "PASS")
         self.assertIn("Campus scope check: Unauthorised change: test_calculator.py", result["defects"])
-        self.assertEqual(self.client.post("/milo/executions/%s/decision" % job["order_id"], headers=self.owner,
-                                          json={"decision": "accept"}).status_code, 409)
+        self.assertEqual(self.decide("/milo/executions/%s/decision" % job["order_id"], {"decision": "accept"}).status_code, 409)
         self.assertEqual(self.client.get("/milo/executions/%s/artifacts/changes.diff" % job["order_id"],
                                          headers=self.owner).status_code, 409)
 
@@ -151,8 +158,7 @@ class AllowList(Orders):
         reply = self.report(job, [patch_for("calc.py", "test_calc.py")])
         self.assertEqual(reply.json()["state"], "awaiting_approval", reply.text)
         self.assertTrue(self.status(job)["result"]["scope_verified"])
-        self.assertEqual(self.client.post("/milo/executions/%s/decision" % job["order_id"], headers=self.owner,
-                                          json={"decision": "accept"}).status_code, 200)
+        self.assertEqual(self.decide("/milo/executions/%s/decision" % job["order_id"], {"decision": "accept"}).status_code, 200)
 
     def test_pass_without_a_verifiable_patch_is_not_accepted(self):
         self.assertEqual(self.enqueue("no-patch", ["calc.py"]).status_code, 200)
@@ -187,9 +193,9 @@ class AllowList(Orders):
                                "artifacts": []}), "legacy"))
         c.commit()
         c.close()
-        r = self.client.post("/milo/executions/legacy/decision", headers=self.owner, json={"decision": "accept"})
+        r = self.decide("/milo/executions/legacy/decision", {"decision": "accept"})
         self.assertEqual(r.status_code, 409)
-        self.assertIn("not verified", r.text)
+        self.assertIn("not verified by Campus", r.text)
 
 
 class HonestModes(Orders):

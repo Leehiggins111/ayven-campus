@@ -45,6 +45,14 @@ class BridgeHTTP(unittest.TestCase):
         reset_connection_state()
         self.tmp.cleanup()
 
+    def decide(self, path, body):
+        """An owner decision on the review package the owner read (package hash + revision, as Milo sends it)."""
+        order = path.split("/")[3]
+        review = self.client.get("/milo/executions/%s/review" % order, headers=self.owner)
+        extra = ({"package_sha256": review.json()["package_sha256"], "revision": review.json()["revision"]}
+                 if review.status_code == 200 else {"package_sha256": "0" * 64, "revision": 0})
+        return self.client.post(path, headers=self.owner, json={**extra, **body})
+
     def enqueue(self,key="key-one",objective="Create hello.py",allowed=("hello.py","fixture.py")):
         return self.client.post("/milo/executions",headers={**self.owner,"Idempotency-Key":key},
             json={"objective":objective,"project_alias":"cloud-demo",
@@ -136,8 +144,7 @@ class BridgeHTTP(unittest.TestCase):
         self.assertEqual(self.client.post(path,headers=self.worker,json=body).status_code,200)
         download="/milo/executions/"+order+"/artifacts/hello.py"
         self.assertEqual(self.client.get(download,headers=self.owner).status_code,409)
-        self.assertEqual(self.client.post("/milo/executions/"+order+"/decision",
-            headers=self.owner,json={"decision":"accept"}).status_code,200)
+        self.assertEqual(self.decide("/milo/executions/"+order+"/decision", {"decision":"accept"}).status_code,200)
         self.assertEqual(self.client.get(download,headers=self.owner).content,b"print('hello')\n")
         self.assertEqual(self.client.post(path,headers=self.worker,json=body).status_code,200)
         self.assertTrue(self.client.post(path,headers=self.worker,json=body).json()["duplicate"])
@@ -160,8 +167,7 @@ class BridgeHTTP(unittest.TestCase):
                   "execution_mode":"SIMULATED","evidence":["fixture"],
                   "artifacts":[self.patch_artifact("hello.py"),
                                *evidence_for(self.patch_artifact("hello.py"))]}).status_code,200)
-        self.assertEqual(self.client.post("/milo/executions/"+job["order_id"]+"/decision",
-            headers=self.owner,json={"decision":"accept"}).status_code,409)
+        self.assertEqual(self.decide("/milo/executions/"+job["order_id"]+"/decision", {"decision":"accept"}).status_code,409)
 
     def test_duplicate_after_claim(self):
         self.assertEqual(self.enqueue().status_code, 200)
@@ -205,12 +211,10 @@ class BridgeHTTP(unittest.TestCase):
         self.assertFalse(state.json()["waiting_for_lee"])
         self.assertIsNone(state.json()["approval"])
         self.assertEqual(state.json()["mode"],"SIMULATED")
-        self.assertEqual(self.client.post("/milo/executions/"+job["order_id"]+"/decision",
-            headers=self.owner,json={"decision":"accept"}).status_code,409)
+        self.assertEqual(self.decide("/milo/executions/"+job["order_id"]+"/decision", {"decision":"accept"}).status_code,409)
         self.assertEqual(self.client.get("/milo/executions/"+job["order_id"]+
             "/artifacts/fixture.py",headers=self.owner).status_code,409)
-        rejected=self.client.post("/milo/executions/"+job["order_id"]+"/decision",
-            headers=self.owner,json={"decision":"reject","reason":"Simulation is not a deliverable"})
+        rejected=self.decide("/milo/executions/"+job["order_id"]+"/decision", {"decision":"reject","reason":"Simulation is not a deliverable"})
         self.assertEqual(rejected.status_code,409,rejected.text)
         self.assertEqual(self.client.get("/milo/jobs/"+project_id,headers=self.owner).json()["status"],"simulated")
 
