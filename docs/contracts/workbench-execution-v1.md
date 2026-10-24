@@ -1,4 +1,5 @@
 # Campus ⇄ Workbench execution contract (v1, 23 Oct 2026)
+n> **Superseded by `workbench-execution-v2.md` (24 Oct 2026)**: verification v2, review packages, signed approvals, apply queue. The decision route now requires `package_sha256` and `revision`.
 
 This is the agreed API for one coding job, from Milo through Campus to the Workbench and back to the owner. It
 extends the endpoints Milo already calls (`integration/milo-work-submission-recovery-20261023`). Nothing in it
