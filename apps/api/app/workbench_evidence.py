@@ -55,6 +55,22 @@ def attestation_key():
     return value.encode() if len(value) >= 32 else None
 
 
+def verification_keys(key=None):
+    """The current key plus AYVEN_ATTESTATION_KEY_PREVIOUS during a rotation (verification only)."""
+    keys = [key or attestation_key()]
+    previous = os.environ.get("AYVEN_ATTESTATION_KEY_PREVIOUS", "")
+    if len(previous) >= 32:
+        keys.append(previous.encode())
+    return [k for k in keys if k]
+
+
+def signature_valid(record, signature, key=None) -> bool:
+    if not isinstance(signature, dict) or not isinstance(signature.get("value"), str):
+        return False
+    return any(signature.get("key_id") == key_id(k) and hmac.compare_digest(
+        signature["value"], hmac.new(k, canonical(record), hashlib.sha256).hexdigest()) for k in verification_keys(key))
+
+
 def canonical(record) -> bytes:
     """Matches the Workbench's verify.canonical."""
     return json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
@@ -97,8 +113,7 @@ def test_evidence_problems(artifacts: dict, *, order_id=None, revision=0, allowe
         return ["Campus has no attestation key configured, so it cannot verify who ran the tests"]
     if not isinstance(signature, dict) or not isinstance(signature.get("value"), str):
         return ["The verification record is not signed by the Workbench"]
-    expected = hmac.new(key, canonical(record), hashlib.sha256).hexdigest()
-    if signature.get("key_id") != key_id(key) or not hmac.compare_digest(signature["value"], expected):
+    if not signature_valid(record, signature, key):
         return ["The verification record's signature is invalid (forged, altered or signed with another key)"]
     problems = []
     if record.get("schema") != SCHEMA:

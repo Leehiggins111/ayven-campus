@@ -368,6 +368,25 @@ class Approval(Orders):
             r = self.client.post("/internal/workbench/claim", headers=self.owner, json={"worker_id": "x"})
         self.assertEqual(r.status_code, 401)
 
+    def test_key_reuse_refuses_to_start(self):
+        import os
+        from unittest import mock
+        from apps.api.app.access import validate_public_configuration
+        for env in ({"AYVEN_ATTESTATION_KEY": os.environ["AYVEN_WORKER_TOKEN"]},
+                    {"AYVEN_ATTESTATION_KEY": os.environ["AYVEN_API_TOKEN"]},
+                    {"AYVEN_WORKER_TOKEN": os.environ["AYVEN_API_TOKEN"]}):
+            with mock.patch.dict(os.environ, env), self.assertRaisesRegex(RuntimeError, "own secret|must differ"):
+                validate_public_configuration()
+
+    def test_a_signature_from_the_previous_key_verifies_during_rotation(self):
+        import os
+        from unittest import mock
+        self.assertEqual(self.order("rot").status_code, 200)
+        job = self.claim()
+        with mock.patch.dict(os.environ, {"AYVEN_ATTESTATION_KEY": "n" * 40, "AYVEN_ATTESTATION_KEY_PREVIOUS": KEY}):
+            r = self.post(job, artifacts=self.evidence(job))
+        self.assertEqual(r.json()["state"], "awaiting_approval", r.text)
+
     def test_case_variant_git_paths_are_prohibited(self):
         for path in (".GIT/config", ".Git/hooks/pre-commit", "src/.GIT/config", ".git./config", ".GITMODULES",
                      ".GitAttributes", ".GITHUB/workflows/x.yml"):

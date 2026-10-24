@@ -210,6 +210,8 @@ the panel at all.
 | I8 | `.git` in any letter case, traversal, symlinks and submodules never pass the scope checks | `allowlist.check_path`, `workbench_scope.check_path` | both suites |
 | I9 | The worker token cannot act as owner, and the owner key cannot serve as the worker token | `access.boundary`, `worker_authorized` | `test_workbench_approval_http`, `test_workbench_lifecycle_http` |
 | I10 | Failed and blocked runs keep every log, exit code and the exact patch | `campus_worker.failure_export`, previews in the failed state | drills |
+| I11 | Jailed code has no capabilities (even when Workbench runs as root), no network, and only its workspace writable; symlink patches are refused before any host-side read | `team.sandbox_argv` (`--cap-drop ALL`), `verify.verify` | `test_sandbox`, `test_execution_safety` |
+| I12 | The signing key is never held by the worker or reused as an access token | `campus_worker` start-up check, `access.validate_public_configuration` | both suites |
 
 ## Residual risks
 - **Test runner forgery.** Code under test runs in the same process as the runner, so deliberate introspection
