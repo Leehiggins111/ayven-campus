@@ -56,7 +56,7 @@ SCENARIO = "\n".join([
 
 
 def test_supervisor_accepts_a_sound_scenario():
-    assert authoritative_decision(SCENARIO, "internal_door_quote", "scenarios", 1) == "ACCEPT"
+    assert authoritative_decision(SCENARIO, "internal_door_quote", "scenarios", 1, quote=quote_internal_doors(TRADES)) == "ACCEPT"
 
 
 def test_supervisor_returns_unsupported_and_arithmetic_and_missing():
@@ -80,7 +80,7 @@ def test_model_accept_cannot_outvote_a_deterministic_return():
 
 def test_model_return_cannot_outvote_sound_evidence():
     advisory = advisory_decision("RETURN\nI dislike the tone")
-    deterministic = authoritative_decision(SCENARIO, "internal_door_quote", "scenarios", 1)
+    deterministic = authoritative_decision(SCENARIO, "internal_door_quote", "scenarios", 1, quote=quote_internal_doors(TRADES))
     assert advisory == "RETURN"
     assert deterministic == "ACCEPT"
 

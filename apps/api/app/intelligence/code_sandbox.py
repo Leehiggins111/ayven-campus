@@ -14,8 +14,10 @@ to a host shell string.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -83,7 +85,15 @@ def status() -> dict:
         "network": "off" if level == "unshare-user-net-pid" else "not-namespaced",
         "filesystem": "host-visible",
         "timeout": "parent timeout(1)",
-        "note": "Calculator remains the benchmark arithmetic tool.",
+        "note": "Calculator remains the benchmark arithmetic tool. rlimit alone is not a production sandbox and is not used to execute code.",
+        "evaluated": {
+            "daytonaio/daytona": "REJECTED",
+            "gvisor": "OPTIONAL",
+            "nsjail": "OPTIONAL",
+            "firecracker": "OPTIONAL",
+            "bubblewrap": "ADAPTED",
+            "docker": "OPTIONAL",
+        },
     }
 
 
@@ -129,11 +139,205 @@ def run_code(agent_id: str, source: str, approved: bool = False, timeout: int = 
     )
 
 
+def _safe_filename(name: str) -> str:
+    cleaned = (name or "").strip().replace("\\", "/").split("/")[-1]
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,40}\.py", cleaned or ""):
+        return ""
+    return cleaned
+
+
+def _stub_main(test_source: str, function: str = "") -> str:
+    """The same names the test calls, returning nothing so a real assert fails."""
+    names = re.findall(r"\bmain\.([A-Za-z_][A-Za-z0-9_]*)\s*\(", test_source or "")
+    if function and function not in names:
+        names.insert(0, function)
+    lines = []
+    seen: list[str] = []
+    for name in names:
+        if name in seen:
+            continue
+        seen.append(name)
+        lines.append(f"def {name}(*args, **kwargs):\n    return None\n")
+    if not lines:
+        lines.append("def _unused(*args, **kwargs):\n    return None\n")
+    return "\n".join(lines)
+
+
+def tests_fail_against_stub(test_source: str, function: str = "") -> dict:
+    """True when the test fails on a function that returns nothing."""
+    return run_files({"main.py": _stub_main(test_source, function), "test_main.py": test_source or ""})
+
+
+def _tests_are_meaningful(source: str) -> bool:
+    """A test that cannot fail is not a test."""
+    text = source or ""
+    asserts = re.findall(r"^\s*assert\s+(.+)$", text, re.M)
+    if not asserts:
+        import ast
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            return False
+        return any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr in {"assertEqual", "assertNotEqual", "assertRaises", "assertIn", "assertNotIn"}
+                   and any(isinstance(child, ast.Call) for arg in node.args for child in ast.walk(arg))
+                   for node in ast.walk(tree))
+    if all(re.fullmatch(r"True|1|''|\"\"", item.strip()) for item in asserts):
+        return False
+    if all("__file__" in item or "__dict__" in item for item in asserts):
+        return False
+    return True
+
+
+def run_files(files: dict[str, str], test_name: str = "test_main.py", timeout: int = 20, main_name: str = "main.py") -> dict:
+    """Run a generated test file.
+
+    Namespace isolation is used when this host has it. A host without unshare
+    or bwrap, including the Windows runner, uses a timeout-bounded python -I
+    in a temporary directory. That weaker level is recorded. General run_code
+    still refuses to execute at that level.
+    """
+    if os.environ.get("AYVEN_ALLOW_CODE", "0") != "1":
+        return {
+            "status": "disabled",
+            "passed": False,
+            "stdout": "",
+            "stderr": "AYVEN_ALLOW_CODE=0",
+            "sandbox": "disabled",
+            "exit_code": None,
+        }
+    safe: dict[str, str] = {}
+    for name, source in (files or {}).items():
+        cleaned = _safe_filename(name)
+        if not cleaned or not source or len(source) > _MAX_BYTES:
+            continue
+        safe[cleaned] = source if source.endswith("\n") else source + "\n"
+    if test_name not in safe or main_name not in safe:
+        return {
+            "status": "error",
+            "passed": False,
+            "stdout": "",
+            "stderr": "The model did not write main.py and test_main.py.",
+            "sandbox": "not-run",
+            "exit_code": None,
+        }
+    if not _tests_are_meaningful(safe[test_name]):
+        return {
+            "status": "error",
+            "passed": False,
+            "stdout": "",
+            "stderr": "The test does not check the program.",
+            "sandbox": "not-run",
+            "exit_code": None,
+        }
+    level, executable = isolation_choice(_unshare_works(), _bwrap_works())
+    recorded = level if executable else "timeout-subprocess-tempdir"
+    try:
+        stdout, stderr, code = _execute_files(safe, test_name, timeout=timeout, level=level if executable else recorded)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "passed": False,
+            "stdout": "",
+            "stderr": f"{type(exc).__name__}: {exc}"[:500],
+            "sandbox": recorded,
+            "exit_code": None,
+        }
+    passed = code == 0
+    return {
+        "status": "ok" if passed else "error",
+        "passed": passed,
+        "stdout": (stdout or "")[:4000],
+        "stderr": (stderr or "")[:2000],
+        "sandbox": recorded,
+        "exit_code": code,
+    }
+
+
+def _sandbox_interpreter() -> str:
+    """The interpreter that can start on this host. Windows has python.exe, not python3."""
+    override = (os.environ.get("AYVEN_SANDBOX_PYTHON") or "").strip()
+    if override:
+        return override
+    if os.name == "nt":
+        return sys.executable
+    return shutil.which("python3") or shutil.which("python") or sys.executable
+
+
+def _child_env(folder: str) -> dict:
+    """A small environment. Windows needs SYSTEMROOT or python.exe does not start."""
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUTF8": "1",
+        "HOME": folder,
+    }
+    if os.name == "nt":
+        for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SYSTEMDRIVE", "TEMP", "TMP"):
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
+        env["USERPROFILE"] = folder
+        env["TEMP"] = env.get("TEMP") or folder
+        env["TMP"] = env.get("TMP") or folder
+    else:
+        env["LANG"] = "C.UTF-8"
+    return env
+
+
+def _python_on_path(folder: str, env: dict) -> None:
+    """A test that runs `python main.py` still runs where the executable is python3."""
+    path = env.get("PATH", "")
+    if shutil.which("python", path=path):
+        return
+    executable = _sandbox_interpreter()
+    if not executable:
+        return
+    if os.name == "nt":
+        wrapper = Path(folder) / "python.cmd"
+        wrapper.write_text(f'@echo off\r\n"{executable}" %*\r\n', encoding="utf-8")
+    else:
+        wrapper = Path(folder) / "python"
+        wrapper.write_text(f"#!/bin/sh\nexec {executable} \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+    env["PATH"] = folder + os.pathsep + path
+
+
+def _execute_files(files: dict[str, str], test_name: str, timeout: int, level: str) -> tuple[str, str, int]:
+    module = test_name[:-3]
+    runner = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).resolve().parent))\n"
+        f"import {module}\n"
+        "import unittest\n"
+        f"suite = unittest.defaultTestLoader.loadTestsFromModule({module})\n"
+        "if suite.countTestCases():\n"
+        "    result = unittest.TextTestRunner().run(suite)\n"
+        "    if not result.wasSuccessful(): sys.exit(1)\n"
+    )
+    with tempfile.TemporaryDirectory(prefix="ayven-sandbox-") as folder:
+        for name, source in files.items():
+            (Path(folder) / name).write_text(source, encoding="utf-8")
+        (Path(folder) / "run_check.py").write_text(runner, encoding="utf-8")
+        python = _sandbox_interpreter()
+        cmd = [python, "-I", "run_check.py"]
+        if level == "unshare-user-net-pid":
+            cmd = ["unshare", "--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc", *cmd]
+        elif level == "bubblewrap-unshare-net":
+            cmd = ["bwrap", "--unshare-net", "--unshare-pid", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib", "--proc", "/proc", "--dev", "/dev", "--", *cmd]
+        env = _child_env(folder)
+        _python_on_path(folder, env)
+        proc = subprocess.run(cmd, cwd=folder, capture_output=True, text=True, timeout=timeout + 3, env=env, check=False)
+        return proc.stdout or "", proc.stderr or "", proc.returncode
+
+
 def _execute(source: str, timeout: int, level: str) -> tuple[str, str, int]:
     with tempfile.TemporaryDirectory(prefix="ayven-sandbox-") as folder:
         path = Path(folder) / "main.py"
         path.write_text(source, encoding="utf-8")
-        python = os.environ.get("AYVEN_SANDBOX_PYTHON", "python3")
+        python = _sandbox_interpreter()
         cmd = [python, "-I", str(path)]
         if level == "unshare-user-net-pid":
             cmd = ["timeout", str(timeout), "unshare", "--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc", *cmd]
@@ -141,12 +345,6 @@ def _execute(source: str, timeout: int, level: str) -> tuple[str, str, int]:
             cmd = ["timeout", str(timeout), "bwrap", "--unshare-net", "--unshare-pid", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin", "--ro-bind", "/lib", "/lib", "--proc", "/proc", "--dev", "/dev", "--", *cmd]
         else:
             cmd = ["timeout", str(timeout), *cmd]
-        env = {
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "HOME": folder,
-            "LANG": "C.UTF-8",
-        }
+        env = _child_env(folder)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 3, env=env, check=False)
         return proc.stdout or "", proc.stderr or "", proc.returncode

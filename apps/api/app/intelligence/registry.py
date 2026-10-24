@@ -28,10 +28,29 @@ class ModelSpec:
     enabled: bool = True
 
 
+def gpu_usd_per_hour() -> float:
+    """Secure 4090 is the conservative default. Community is selected explicitly."""
+    explicit = os.environ.get("AYVEN_GPU_USD_PER_HOUR", "").strip()
+    if explicit:
+        return float(explicit)
+    if os.environ.get("AYVEN_GPU_TIER", "secure").lower() == "community":
+        return 0.34
+    return 0.89
+
+
+def escalation_prices() -> tuple[float | None, float | None]:
+    raw_in = os.environ.get("AYVEN_ESCALATION_USD_PER_MTOK_IN", "").strip()
+    raw_out = os.environ.get("AYVEN_ESCALATION_USD_PER_MTOK_OUT", "").strip()
+    if not raw_in or not raw_out:
+        return None, None
+    return float(raw_in), float(raw_out)
+
+
 def _escalation_enabled() -> bool:
     allow = os.environ.get("AYVEN_ALLOW_ESCALATION", "0") == "1"
     key = os.environ.get("AYVEN_LLM_API_KEY") or os.environ.get("XAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    return bool(allow and key)
+    priced = escalation_prices() != (None, None)
+    return bool(allow and key and priced)
 
 
 def registry() -> list[ModelSpec]:

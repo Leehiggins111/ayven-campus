@@ -50,6 +50,9 @@ def status() -> dict:
         "servers_configured": len(servers),
         "posture": posture,
         "note": "Connections are opened per call from AYVEN_MCP_SERVERS. Action tools stay approval-gated.",
+        "transports": ["stdio", "streamable-http"],
+        "sdk_generation": "v2 client surface; this install is the version pinned beside browser-use",
+        "exposure": "A tool enters the registry only after discovery. It is not given to every employee.",
     }
 
 
@@ -75,12 +78,19 @@ def prepare_call(agent_id: str, tool_name: str, approved: bool = False) -> dict:
     if not sdk_installed():
         return {"ok": False, "status": "OPTIONAL_NOT_INSTALLED", "kind": kind}
     tool_cap = _ACTION_CAP if kind == "action" else _READ_CAP
+    # C12: pass the real approval state. Previously every action was presented to authorize() as
+    # approved and the approval was enforced separately below, which was misleading.
+    if kind == "action" and not approved:
+        try:
+            authorize(agent_id, tool_cap, approved=False)
+        except Exception as exc:
+            if not str(getattr(exc, "capability", "")).endswith("_APPROVAL_REQUIRED"):
+                return {"ok": False, "status": "denied", "kind": kind, "error": str(exc)}
+        return {"ok": False, "status": "approval_required", "kind": kind}
     try:
-        authorize(agent_id, tool_cap, approved=True if kind == "action" else approved)
+        authorize(agent_id, tool_cap, approved=approved)
     except Exception as exc:
         return {"ok": False, "status": "denied", "kind": kind, "error": str(exc)}
-    if kind == "action" and not approved:
-        return {"ok": False, "status": "approval_required", "kind": kind}
     if not configured_servers():
         return {"ok": False, "status": "NO_SERVERS", "kind": kind}
     return {"ok": True, "status": "ready", "kind": kind}

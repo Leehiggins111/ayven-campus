@@ -12,6 +12,7 @@ import os
 import re
 from typing import Any, Callable
 
+from .boundary import extract_executable, validate_tool_call
 from .permissions import authorize
 from .think import strip_think
 
@@ -69,15 +70,14 @@ def _version() -> str:
 
 
 def parse_tool_lines(text: str) -> tuple[list[dict], str]:
-    calls: list[dict] = []
-    prose: list[str] = []
-    for line in (text or "").splitlines():
-        match = TOOL_LINE.match(line.strip())
-        if not match:
-            prose.append(line)
-            continue
-        calls.append({"name": match.group(1), "arguments": match.group(2)})
-    return calls, strip_think("\n".join(prose).strip())
+    """Tool calls are taken from the executable channel only. Reasoning never matches."""
+    calls, prose = extract_executable(text or "")
+    accepted = []
+    for call in calls:
+        gate = validate_tool_call(call)
+        if gate.ok:
+            accepted.append({"name": gate.call.get("name") or call["name"], "arguments": gate.call.get("arguments") or call["arguments"]})
+    return accepted, strip_think(prose)
 
 
 def strip_tool_lines(text: str) -> str:
@@ -115,22 +115,37 @@ def run_tool_loop(
             args = self._verify_json_format_args(params)
             tool_name = str(args.get("tool") or "")
             payload = str(args.get("payload") or "")
+            gate = validate_tool_call({"name": "ayven_tool", "arguments": json.dumps({"tool": tool_name, "payload": payload})})
+            if not gate.ok:
+                invoked.append({"tool": tool_name, "status": "rejected", "error": gate.error})
+                return f"rejected: {gate.error}"
+            payload = str(gate.call.get("payload") or payload)
             try:
                 authorize(agent_id, tool_name, approved=approved)
             except Exception as exc:
                 invoked.append({"tool": tool_name, "status": "denied", "error": str(exc)})
                 return f"denied: {exc}"
-            if handler is not None:
-                output = handler(tool_name, payload)
-            else:
-                output = _default_handler(agent_id, package_id, tool_name, payload, approved=approved)
-            invoked.append({"tool": tool_name, "status": "ok", "payload": payload[:180]})
-            try:
-                from .toolkit import ToolResult, now, record_tool_call
+            if tool_name == "record_review":
+                from .toolkit import record_review_once
 
-                record_tool_call(package_id, agent_id, ToolResult(tool=tool_name, status="ok", query=payload[:200], extracted_content=str(output)[:500], timestamp=now(), metadata={"runtime": "qwen-agent"}))
-            except Exception:
-                pass
+                def _effect():
+                    if handler is not None:
+                        return handler(tool_name, payload)
+                    return _default_handler(agent_id, package_id, tool_name, payload, approved=approved)
+
+                output = record_review_once(package_id, agent_id, payload, "review noted", effect=_effect)
+            else:
+                if handler is not None:
+                    output = handler(tool_name, payload)
+                else:
+                    output = _default_handler(agent_id, package_id, tool_name, payload, approved=approved)
+                try:
+                    from .toolkit import ToolResult, now, record_tool_call
+
+                    record_tool_call(package_id, agent_id, ToolResult(tool=tool_name, status="ok", query=payload[:200], extracted_content=str(output)[:500], timestamp=now(), metadata={"runtime": "qwen-agent"}))
+                except Exception:
+                    pass
+            invoked.append({"tool": tool_name, "status": "ok", "payload": payload[:180]})
             return output
 
     calls = list(scripted_calls or [])
@@ -327,15 +342,40 @@ def employee_turn(
     handler: Callable[[str, str], str] | None = None,
     approved: bool = False,
     scripted_calls: list[dict] | None = None,
+    max_tokens: int = 2048,
 ) -> dict:
-    """Best-effort employee turn. Falls back to native text when Qwen-Agent fails."""
+    """Best-effort employee turn. Falls back to native text when Qwen-Agent fails.
+
+    A live local model is asked through Ayven's Ollama client, which closes qwen3
+    thinking before the answer. Qwen-Agent then only runs the tool loop. It does
+    not call Ollama's OpenAI route, which leaves content empty.
+    """
     meta: dict = {}
     mode = choose_qwen_mode(session=session, preset_text=preset_text, scripted_calls=scripted_calls)
     text = preset_text
-    if mode != "live" and text is None and not scripted_calls:
+    tool_mode = mode
+    if mode == "live" and session is None and text is None and not scripted_calls:
         from ..models import complete_role
 
-        text, tokens, meta = complete_role("EMPLOYEE", system, user, max_tokens=320)
+        try:
+            text, tokens, meta = complete_role("EMPLOYEE", system, user, max_tokens=max_tokens)
+        except Exception as exc:
+            return {
+                "text": "",
+                "tools": [],
+                "runtime": "native",
+                "qwen_mode": "live",
+                "system_seen": system,
+                "fallback": f"{type(exc).__name__}: {exc}",
+                "meta": {"error": f"{type(exc).__name__}: {exc}", "completion_tokens": 0},
+            }
+        meta = dict(meta)
+        meta["completion_tokens"] = tokens
+        tool_mode = "replay"
+    elif mode != "live" and text is None and not scripted_calls:
+        from ..models import complete_role
+
+        text, tokens, meta = complete_role("EMPLOYEE", system, user, max_tokens=max_tokens)
         meta = dict(meta)
         meta["completion_tokens"] = tokens
     if runtime_mode() != "qwen-agent":
@@ -346,11 +386,11 @@ def employee_turn(
             user=user,
             agent_id=agent_id,
             package_id=package_id,
-            preset_text="" if mode == "live" else (text or ""),
+            preset_text="" if tool_mode == "live" else (text or ""),
             session=session,
             handler=handler,
             approved=approved,
-            scripted_calls=None if mode == "live" else scripted_calls,
+            scripted_calls=None if tool_mode == "live" else scripted_calls,
         )
         result["meta"] = meta
         result["qwen_mode"] = mode

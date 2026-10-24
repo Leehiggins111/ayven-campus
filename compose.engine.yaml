@@ -1,0 +1,18 @@
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env.engine
+    environment:
+      AYVEN_DURABLE: "1"
+      AYVEN_DB: /data/ayven.sqlite
+      PYTHONPATH: /app/apps/api
+    volumes:
+      - ayven-engine-data:/data
+    restart: unless-stopped
+volumes:
+  ayven-engine-data:

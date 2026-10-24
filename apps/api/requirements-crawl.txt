@@ -1,0 +1,2 @@
+# Optional. Crawl4AI pulls click via huggingface-hub. Reapply constraints.txt after install.
+crawl4ai==0.7.4

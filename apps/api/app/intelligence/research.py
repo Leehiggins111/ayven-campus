@@ -83,12 +83,11 @@ def rank_source(url: str, text: str = "", query: str = "", title: str = "") -> s
         return "PRIMARY_OFFICIAL"
     tokens = [tok for tok in re.findall(r"[a-z0-9]{4,}", (query or "").lower()) if tok not in _QUERY_STOP]
     label = _registrable_label(host)
-    if any(tok in label for tok in tokens):
+    if any(len(tok) >= 4 and tok in label for tok in tokens):
         return "PRIMARY_OFFICIAL"
     blob = f"{title}\n{text}".lower()
-    if any(stem in blob for stem in SELF_ID_STEMS):
-        return "PRIMARY_OFFICIAL"
-    if any(len(tok) >= 5 and tok in blob for tok in tokens):
+    # "official" on its own is not authority. The site's own name has to appear with that wording.
+    if label and len(label) >= 3 and label in blob and any(stem in blob for stem in SELF_ID_STEMS):
         return "PRIMARY_OFFICIAL"
     return "OTHER_SECONDARY"
 
@@ -101,26 +100,91 @@ def load_fixtures() -> list[dict]:
     return pages
 
 
+def _drop_low_score(hit: dict, objective: str, *, strict: bool) -> bool:
+    """A weak snippet score still opens a hit that names this objective."""
+    if not strict or float(hit.get("rerank_score") or 0) >= 0.2:
+        return False
+    from .deliverable import _blob_has_term, distinctive_terms
+
+    terms = [term for term in distinctive_terms(objective) if len(term) >= 5]
+    if not terms:
+        return True
+    blob = " ".join([
+        str(hit.get("url") or ""),
+        str(hit.get("title") or ""),
+        str(hit.get("snippet") or ""),
+    ]).lower()
+    return not any(_blob_has_term(term, blob) for term in terms)
+
+
+def _queries_cover_anchor(queries: list[str], objective: str) -> bool:
+    from .deliverable import _blob_has_term, anchor_terms
+
+    anchors = anchor_terms(objective)
+    if not anchors:
+        return True
+    blob = " ".join(queries).lower()
+    return any(_blob_has_term(term, blob) for term in anchors)
+
+
+def _stamp_region(queries: list[str], objective: str) -> list[str]:
+    """A UK request keeps UK on every search. The model does not get to drop the place."""
+    from .deliverable import region_token
+
+    region = region_token(objective)
+    if not region:
+        return list(queries or [])
+    stamped = []
+    for query in queries or []:
+        text = (query or "").strip()
+        if not text:
+            continue
+        if region.lower() not in text.lower():
+            text = f"{text} {region}".strip()[:180]
+        if text not in stamped:
+            stamped.append(text)
+    return stamped
+
+
+def _location_dump(text: str) -> bool:
+    """A places payload is not a business page. Latitude fields are the signal."""
+    raw = text or ""
+    if raw.count("{") < 2:
+        return False
+    return bool(re.search(r'"(?:lat|lng|latitude|longitude)"\s*:', raw, re.I))
+
+
 def generic_from_objective(objective: str) -> list[str]:
-    """Queries from the brief only. No task-class table and no exam seed list."""
+    """Queries from the brief only. No task-class table and no exam seed list.
+
+    Requester names, pronouns, and instruction words such as cover or website
+    are not searches.
+    """
+    from .deliverable import reject_search_query, targeted_queries
+
     entities: list[str] = []
     for match in re.finditer(r"\b([A-Z][A-Za-z0-9'’\-]+(?:\s+[A-Z][A-Za-z0-9'’\-]+){0,3})\b", objective or ""):
         name = match.group(1).strip(" -")
         if len(name) < 3 or name.lower() in _QUERY_STOP:
             continue
+        if reject_search_query(name, objective):
+            continue
         if name not in entities:
             entities.append(name)
-    queries = [f"{name} official site" for name in entities[:6]]
-    words: list[str] = []
-    for word in re.findall(r"[A-Za-z]{4,}", (objective or "").lower()):
-        if word in _QUERY_STOP or word in words:
+    queries = []
+    for name in entities[:6]:
+        query = f"{name} official site"
+        if reject_search_query(query, objective):
             continue
-        words.append(word)
-    if words:
-        queries.append(" ".join(words[:10]))
+        queries.append(query)
+    for query in targeted_queries(objective):
+        if query not in queries:
+            queries.append(query)
     if not queries and (objective or "").strip():
-        queries.append(objective.strip()[:160])
-    return queries[:8]
+        fallback = objective.strip()[:160]
+        if not reject_search_query(fallback, objective):
+            queries.append(fallback)
+    return _stamp_region(queries[:8], objective)
 
 
 def _normalise_queries(raw) -> list[str]:
@@ -137,9 +201,28 @@ def _normalise_queries(raw) -> list[str]:
         text = line.strip().lstrip("-*0123456789.) ").strip()
         if not text or text.lower().startswith(("query", "objective", "skill")):
             continue
+        from .boundary import reject_reasoning_query
+
+        if reject_reasoning_query(text):
+            continue
         if text not in cleaned:
             cleaned.append(text[:180])
     return cleaned[:8]
+
+
+def _put_service_queries_first(planned: list[str], objective: str) -> None:
+    """The company search runs first, then the price search, before other queries fill the page budget."""
+    from .deliverable import targeted_queries
+
+    wanted = [
+        extra for extra in targeted_queries(objective)
+        if "company" in extra.lower() or "price" in extra.lower()
+    ]
+    wanted.sort(key=lambda extra: 0 if "company" in extra.lower() else 1)
+    for extra in reversed(wanted):
+        if extra in planned:
+            planned.remove(extra)
+        planned.insert(0, extra)
 
 
 def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str], str]:
@@ -154,28 +237,74 @@ def plan_queries(task_class: str, objective: str, skills=None) -> tuple[list[str
     stub = os.environ.get("AYVEN_LLM_STUB", "1") != "0"
     if not stub and _PLANNER is not None:
         try:
-            planned = _normalise_queries(_PLANNER(objective, guidance))
+            from .boundary import queries_from_plan_text
+
+            raw = _PLANNER(objective, guidance)
+            from .deliverable import targeted_queries, usable_search_queries
+
+            planned = usable_search_queries(
+                queries_from_plan_text(raw if isinstance(raw, str) else "\n".join(str(item) for item in raw)),
+                objective,
+            )
+            if planned and not _queries_cover_anchor(planned, objective):
+                for extra in targeted_queries(objective):
+                    if extra not in planned:
+                        planned.append(extra)
             if planned:
-                return planned, "model"
+                _put_service_queries_first(planned, objective)
+                return _stamp_region(planned[:8], objective), "model"
+            return generic_from_objective(objective), "objective-fallback"
         except Exception:
-            pass
+            return generic_from_objective(objective), "objective-fallback"
     if not stub:
         from .. import models as model_mod
         from ..models import complete_role, local_base
 
         if local_base() or model_mod._GENERATOR is not None:
             user = (
-                "Plan the first web searches for this objective. "
-                "Use the objective and the skill guidance. "
-                "One query per line, each starting with '- '. "
-                "Do not invent entities that are not in the objective.\n\n"
+                "Write 4 to 6 web search queries for this objective. "
+                "Use the service words from the objective. "
+                "Search for named UK businesses that sell the service, and for their prices. "
+                "Do not search for market size, CAGR, or an industry report. "
+                "Each query names the service, the place, or a price. "
+                "Do not name a trade the objective does not name. "
+                "Do not search the requester's name. Do not search pronouns. "
+                "Do not search instruction words such as cover, website, create, or plan on their own. "
+                "One query per line, each starting with '- '.\n\n"
                 f"Objective:\n{(objective or '')[:1200]}\n\nSkill guidance:\n{guidance}"
             )
             try:
-                text, _tokens, _meta = complete_role("EMPLOYEE", "You plan searches. You do not answer the task.", user, max_tokens=180)
-                planned = _normalise_queries(text)
-                if planned:
-                    return planned, "model"
+                from .boundary import queries_from_plan_text
+                from .deliverable import targeted_queries, usable_search_queries
+                from .recovery import run_retries
+                from .schemas import ResearchPlan
+
+                def attempt(_number: int):
+                    try:
+                        text, _tokens, _meta = complete_role(
+                            "EMPLOYEE",
+                            "You plan searches. Return one search per line, or a JSON object with a queries array. Do not answer the task.",
+                            user,
+                            max_tokens=220,
+                            schema=ResearchPlan,
+                        )
+                    except Exception as exc:
+                        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+                    planned = usable_search_queries(queries_from_plan_text(text), objective)
+                    if not planned:
+                        return {"ok": False, "error": "malformed_queries"}
+                    return {"ok": True, "planned": planned}
+
+                outcome = run_retries(attempt, stage="search-plan", project_id="")
+                if outcome["ok"]:
+                    planned = outcome["result"]["planned"]
+                    if planned and not _queries_cover_anchor(planned, objective):
+                        for extra in targeted_queries(objective):
+                            if extra not in planned:
+                                planned.append(extra)
+                    if planned:
+                        _put_service_queries_first(planned, objective)
+                        return _stamp_region(planned[:8], objective), "model"
             except Exception:
                 pass
     return generic_from_objective(objective), "objective-fallback"
@@ -343,6 +472,24 @@ def _link_relevant(url: str, anchor: str) -> bool:
     return any(word in blob for word in ("facilit", "ticket", "leisure", "vending", "pool", "gym", "hospital", "station", "billet", "kaart"))
 
 
+def _shorter_query(query: str, objective: str) -> str:
+    """A shorter search when the first query returns no links. Same subject, fewer words."""
+    from .deliverable import distinctive_terms, region_token, reject_search_query
+
+    terms = distinctive_terms(objective)[:4]
+    region = region_token(objective)
+    short = " ".join(terms + ([region] if region else [])).strip()
+    if not short or short.lower() == (query or "").strip().lower():
+        words = [word for word in re.findall(r"[A-Za-z0-9]{4,}", query or "")][:4]
+        short = " ".join(words)
+    short = re.sub(r"\s+", " ", short).strip()[:180]
+    if not short or short.lower() == (query or "").strip().lower():
+        return ""
+    if reject_search_query(short, objective):
+        return ""
+    return short
+
+
 def research(
     task_class: str,
     objective: str,
@@ -357,18 +504,20 @@ def research(
     reviewer=None,
     browse_fn=None,
     skills=None,
+    sink: dict | None = None,
 ) -> dict:
     mode = research_mode()
     rounds = max_rounds if max_rounds is not None else int(os.environ.get("AYVEN_MAX_RESEARCH_ROUNDS", "2"))
     max_searches = int(os.environ.get("AYVEN_MAX_SEARCHES", "12"))
     max_pages = int(os.environ.get("AYVEN_MAX_PAGES", "16"))
     max_browser = int(os.environ.get("AYVEN_MAX_BROWSER_ACTIONS", "2"))
-    deadline = time.monotonic() + int(os.environ.get("AYVEN_MAX_RESEARCH_SECONDS", "120"))
     browser_left = [max_browser]
     if queries is not None:
         planned, query_source = list(queries), "provided"
     else:
         planned, query_source = plan_queries(task_class, objective, skills)
+    # Query planning can consume minutes on CPU. The fetch budget starts after it.
+    deadline = time.monotonic() + int(os.environ.get("AYVEN_MAX_RESEARCH_SECONDS", "300"))
     evidence: list[dict] = []
     failures: list[dict] = []
     duplicates: list[str] = []
@@ -389,7 +538,30 @@ def research(
     review_text = ""
     review_mode = "not-run"
     review_gaps: list[str] = []
-    pending = [{"kind": "search", "query": query, "depth": 1, "origin": "seed"} for query in planned]
+    from .boundary import is_noise_hit
+    from .entity import extract_entities
+    from .rerank import rerank
+
+    targets = extract_entities(objective)
+    strict_seed = query_source == "model"
+    pending = [{"kind": "search", "query": query, "depth": 1, "origin": "seed", "strict": strict_seed} for query in planned]
+    retried_search: set[str] = set()
+    service_fallback = False
+    filtered: list[dict] = []
+    if sink is not None:
+        sink.clear()
+        sink.update({
+            "mode": mode,
+            "queries": searched,
+            "query_source": query_source,
+            "evidence": evidence,
+            "failures": failures,
+            "duplicates": duplicates,
+            "gaps": review_gaps,
+            "filtered": filtered,
+            "skipped": False,
+            "memory_fallback_used": False,
+        })
     round_no = 0
     while pending and round_no < rounds and not budget_hit:
         round_no += 1
@@ -412,44 +584,84 @@ def research(
             depth = job["depth"]
             if depth > rounds:
                 continue
+            noise = _reject_query(query, objective, task_class, provided=query_source == "provided")
+            if noise:
+                failures.append({"query": "[rejected-query]", "stage": "query", "error": noise})
+                filtered.append({"query": "[rejected-query]", "reason": noise})
+                continue
             if job["kind"] == "search":
                 if query in searched:
                     continue
+
+                def _run_search(q, d):
+                    box: dict = {}
+
+                    def _search(qq=q, dd=d):
+                        try:
+                            from .leases import perform_side_effect
+                            found = perform_side_effect(
+                                project_id or package_id or "unscoped",
+                                "research",
+                                "web_search",
+                                qq,
+                                lambda query=qq: search_impl(query, limit=8),
+                            ) or []
+                        except Exception as exc:
+                            box["hits"] = []
+                            return ToolResult(tool="web_search", status="error", query=qq, error=str(exc)[:300], timestamp=now(), metadata={"mode": mode, "round": dd})
+                        box["hits"] = found or []
+                        if not found or (len(found) == 1 and (found[0].get("title") in ("search_error", "no_results"))):
+                            return ToolResult(tool="web_search", status="empty", query=qq, error=(found[0].get("snippet") if found else "no_results") or "no_results", timestamp=now(), metadata={"mode": mode, "evidence_level": "none"})
+                        return ToolResult(
+                            tool="web_search",
+                            status="ok",
+                            query=qq,
+                            timestamp=now(),
+                            extracted_content="\n".join(f"{h.get('title')} {h.get('url')}" for h in found)[:1500],
+                            metadata={"mode": mode, "evidence_level": "snippet", "hit_count": len(found), "round": dd},
+                        )
+
+                    outcome = invoke(agent_id, "web_search", package_id, _search)
+                    _emit_tool(project_id, agent_id, "web_search", f"Searching: {q[:120]}")
+                    return outcome, box.get("hits") or []
+
                 searched.append(query)
-                captured: dict = {}
-
-                def _search(q=query, d=depth):
-                    try:
-                        hits = search_impl(q, limit=8)
-                    except Exception as exc:
-                        captured["hits"] = []
-                        return ToolResult(tool="web_search", status="error", query=q, error=str(exc)[:300], timestamp=now(), metadata={"mode": mode, "round": d})
-                    captured["hits"] = hits or []
-                    if not hits or (len(hits) == 1 and (hits[0].get("title") in ("search_error", "no_results"))):
-                        return ToolResult(tool="web_search", status="empty", query=q, error=(hits[0].get("snippet") if hits else "no_results") or "no_results", timestamp=now(), metadata={"mode": mode, "evidence_level": "none"})
-                    return ToolResult(
-                        tool="web_search",
-                        status="ok",
-                        query=q,
-                        timestamp=now(),
-                        extracted_content="\n".join(f"{h.get('title')} {h.get('url')}" for h in hits)[:1500],
-                        metadata={"mode": mode, "evidence_level": "snippet", "hit_count": len(hits), "round": d},
-                    )
-
-                search_result = invoke(agent_id, "web_search", package_id, _search)
-                _emit_tool(project_id, agent_id, "web_search", f"Searching: {query[:120]}")
+                search_result, raw_hits = _run_search(query, depth)
+                if search_result.status == "empty":
+                    shorter = _shorter_query(query, objective)
+                    if shorter and shorter not in searched and len(searched) < max_searches:
+                        failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
+                        query = shorter
+                        searched.append(query)
+                        search_result, raw_hits = _run_search(query, depth)
+                if search_result.status != "ok" and not evidence and query not in retried_search:
+                    retried_search.add(query)
+                    err = (search_result.error or search_result.status or "").lower()
+                    if any(token in err for token in ("timeout", "timed out", "429", "503")):
+                        time.sleep(1)
+                    search_result, raw_hits = _run_search(query, depth)
                 if search_result.status != "ok":
                     failures.append({"query": query, "stage": "search", "error": search_result.error or search_result.status})
                     continue
-                hits = sorted(
-                    captured.get("hits") or [],
-                    key=lambda hit: 0 if rank_source(hit.get("url") or "", text=hit.get("snippet") or "", query=query, title=hit.get("title") or "") == "PRIMARY_OFFICIAL" else 1,
-                )
+                hits = rerank(query, raw_hits, objective)
                 opened_any = False
                 for hit in hits:
+                    if is_noise_hit(hit.get("url") or "", hit.get("title") or "", hit.get("snippet") or ""):
+                        filtered.append({"url": hit.get("url"), "reason": "noise", "rerank_score": hit.get("rerank_score")})
+                        failures.append({"query": query, "stage": "relevance", "url": hit.get("url") or "", "error": "noise_rejected"})
+                        continue
+                    from .deliverable import listing_page, market_report_page
+
+                    if market_report_page(hit.get("url") or "", hit.get("title") or "") or listing_page(hit.get("url") or ""):
+                        filtered.append({"url": hit.get("url"), "reason": "market_report", "rerank_score": hit.get("rerank_score")})
+                        failures.append({"query": query, "stage": "relevance", "url": hit.get("url") or "", "error": "market_report"})
+                        continue
+                    if _drop_low_score(hit, objective, strict=bool(job.get("strict"))):
+                        filtered.append({"url": hit.get("url"), "reason": "below_relevance_threshold", "rerank_score": hit.get("rerank_score")})
+                        continue
                     opened = _open_hit(
                         hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence,
-                        browse_fn=browse_fn, browser_left=browser_left,
+                        browse_fn=browse_fn, browser_left=browser_left, objective=objective, task_class=task_class,
                     )
                     opened_any = opened_any or opened
                     if opened and followed < 3 and round_no < rounds:
@@ -461,7 +673,10 @@ def research(
                     later.append({"kind": "search", "query": query + " primary official source", "depth": round_no + 1, "origin": "retry"})
             else:
                 hit = {"url": job.get("url") or "", "title": job.get("title") or "", "snippet": ""}
-                _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=browse_fn, browser_left=browser_left)
+                _open_hit(
+                    hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence,
+                    browse_fn=browse_fn, browser_left=browser_left, objective=objective, task_class=task_class,
+                )
         if os.environ.get("AYVEN_AGENTIC_RESEARCH", "1") != "0" and not budget_hit:
             try:
                 review_text, review_mode = _agentic_review(objective, evidence, review_gaps, searched, reviewer)
@@ -475,13 +690,43 @@ def research(
                 if unknown and unknown not in review_gaps:
                     review_gaps.append(unknown)
                 extra = _next_query(review_text)
+                rejected = _reject_query(extra, objective, task_class, provided=query_source == "provided") if extra else ""
+                if extra and rejected:
+                    filtered.append({"query": extra, "reason": rejected})
+                    extra = ""
                 room = round_no < rounds and len(searched) < max_searches and len(evidence) < max_pages and time.monotonic() <= deadline
                 if extra and extra not in searched and room:
-                    later.append({"kind": "search", "query": extra, "depth": round_no + 1, "origin": "review"})
+                    later.append({"kind": "search", "query": extra, "depth": round_no + 1, "origin": "review", "strict": False})
+            if review_mode == "model" and "SUFFICIENT" in (review_text or "").upper() and evidence and not budget_hit:
+                later = [item for item in later if item.get("kind") != "search"]
+                budget_hit = budget_hit or ""
+        # One research round used to stop after an empty or timed-out search. The remaining
+        # time budget is spent on the service query instead of ending with no page.
+        if (
+            not evidence
+            and not service_fallback
+            and query_source == "model"
+            and not budget_hit
+            and time.monotonic() <= deadline
+        ):
+            from .deliverable import targeted_queries
+
+            service_fallback = True
+            for extra in targeted_queries(objective):
+                if extra in searched or any(item.get("query") == extra for item in later):
+                    continue
+                if len(searched) >= max_searches:
+                    budget_hit = "searches"
+                    break
+                later.append({"kind": "search", "query": extra, "depth": 1, "origin": "service-fallback", "strict": False})
+            if any(item.get("origin") == "service-fallback" for item in later) and round_no >= rounds:
+                rounds += 1
         pending = later
 
     gaps = list(review_gaps)
     gaps.extend(_unsupported_requirements(skills, evidence))
+    if any((item.get("error") == "off_topic") or (item.get("reason") == "off_topic") for item in failures + filtered):
+        gaps.append("Off-topic pages were dropped and do not count as evidence.")
     if not evidence:
         gaps.append("Research produced no opened page. No model-memory fallback was used.")
     elif mode == "live" and failures:
@@ -502,17 +747,59 @@ def research(
         "skipped": False,
         "rounds": rounds,
         "rounds_used": round_no,
-        "rounds_exhausted": True,
+        "rounds_exhausted": not (bool(evidence) and review_mode == "model" and "SUFFICIENT" in (review_text or "").upper() and not budget_hit),
         "followed_links": followed,
         "memory_fallback_used": False,
         "review": review_text,
         "review_mode": review_mode,
+        "targets": targets,
+        "filtered": filtered,
+        "stopped_for_coverage": bool(evidence) and review_mode == "model" and "SUFFICIENT" in (review_text or "").upper() and not budget_hit,
         "budget": {"max_rounds": rounds, "max_searches": max_searches, "max_pages": max_pages, "max_browser_actions": max_browser, "hit": budget_hit},
         "browser_actions": max_browser - browser_left[0],
     }
 
 
-def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=None, browser_left=None) -> bool:
+def _injection(text: str) -> list[str]:
+    from .security import injection_signals
+
+    return injection_signals(text)
+
+
+def _plain_text(text: str) -> str:
+    """Drop tags, stylesheets, and reasoning-media URLs before a page becomes a claim."""
+    from .boundary import is_noise_hit
+
+    raw = text or ""
+    raw = re.sub(r"(?is)<(script|style|noscript)\b[^>]*>.*?</\1>", " ", raw)
+    raw = re.sub(r"(?is)<[^>]+>", " ", raw)
+
+    def _keep(match: re.Match) -> str:
+        url = match.group(0).rstrip(".,")
+        if is_noise_hit(url) or url.lower().split("?")[0].endswith(_MEDIA_NOISE):
+            return " "
+        return url
+
+    raw = re.sub(r"https?://[^\s)>\"]+", _keep, raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+_MEDIA_NOISE = (".mp3", ".wav", ".ogg", ".css", ".js", ".woff", ".woff2", ".svg", ".mp4")
+
+
+def _reject_query(query: str, objective: str, task_class: str, provided: bool) -> str:
+    """A supplied fixture key is searched as given. A model query has to stay on this brief."""
+    from .boundary import reject_reasoning_query
+    from .deliverable import reject_search_query
+
+    reason = reject_reasoning_query(query or "")
+    if reason:
+        return reason
+    brief = "" if provided or task_class not in {"business_research", "web_research"} else objective
+    return reject_search_query(query, brief)
+
+
+def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id, seen, failures, duplicates, evidence, browse_fn=None, browser_left=None, objective: str = "", task_class: str = "") -> bool:
     url = hit.get("url") or ""
     if url in seen:
         duplicates.append(url)
@@ -528,10 +815,18 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
     seen.add(url)
 
     def _fetch(u=url, h=hit):
-        page = open_fn(u)
+        from .leases import perform_side_effect
+
+        job = project_id or package_id or "unscoped"
+
+        def _open_once(target, fn):
+            opened = perform_side_effect(job, "research", "fetch_page", target, fn)
+            return opened if isinstance(opened, dict) else {"error": "fetch_unavailable", "url": u}
+
+        page = _open_once(u, lambda: open_fn(u))
         attempts = 1
         if page.get("error"):
-            retried = open_fn(u)
+            retried = _open_once(u + "#retry", lambda: open_fn(u))
             attempts = 2
             retried = dict(retried)
             retried["retried"] = True
@@ -542,7 +837,29 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 error=str(page.get("error"))[:300], timestamp=now(),
                 metadata={"mode": mode, "attempts": attempts, "round": depth},
             )
-        text = page.get("text") or ""
+        raw_text = page.get("text") or ""
+        text = raw_text
+        looks_html = "<" in raw_text and ">" in raw_text
+        from .crawl_adapter import crawl_live, extract as crawl_extract, route_fetch
+
+        route = route_fetch(html=raw_text if looks_html else "", javascript_wall=_js_wall(_plain_text(raw_text)))
+        page = dict(page)
+        page["fetch_route"] = route
+        if route == "crawl4ai_live":
+            crawled = crawl_live(page.get("url") or u)
+            if crawled.get("ok") and crawled.get("text"):
+                text = crawled["text"]
+                page["text"] = text
+                page["via_crawl"] = crawled.get("engine") or True
+            else:
+                page["fetch_route"] = "browser_use"
+        elif looks_html or (mode == "live" and len(raw_text) < 40 and not page.get("error")):
+            crawled = crawl_extract(page.get("url") or u, raw_text)
+            if crawled.get("ok") and crawled.get("text"):
+                text = crawled["text"]
+                page["text"] = text
+                page["via_crawl"] = crawled.get("engine") or True
+        text = _plain_text(text)
         if _js_wall(text):
             from .fallbacks import on_http_result
 
@@ -573,6 +890,18 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 timestamp=page.get("retrieved_at") or now(),
                 metadata={"mode": mode, "evidence_level": "unusable", "attempts": attempts, "js_only": True, "browser": decision["action"]},
             )
+        if _location_dump(text):
+            return ToolResult(
+                tool="fetch_page",
+                status="error",
+                query=query,
+                source_url=page.get("url") or u,
+                source_title=page.get("title") or h.get("title") or "",
+                error="location_dump",
+                extracted_content="",
+                timestamp=page.get("retrieved_at") or now(),
+                metadata={"mode": mode, "evidence_level": "none", "relevant": False, "freshness": "UNRESOLVED", "round": depth},
+            )
         extract = _relevant(text, query)
         tokens = re.findall(r"[a-z0-9]{4,}", query.lower())
         relevant = any(tok in (extract + " " + (page.get("title") or "")).lower() for tok in tokens) if tokens else True
@@ -582,6 +911,22 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
         ]
         final_url = page.get("url") or u
         page_title = page.get("title") or h.get("title") or ""
+        if task_class == "business_research":
+            from .deliverable import relevance_reason
+
+            reason = relevance_reason(objective, page_title, text, final_url)
+            if not reason:
+                return ToolResult(
+                    tool="fetch_page",
+                    status="error",
+                    query=query,
+                    source_url=final_url,
+                    source_title=page_title,
+                    error="off_topic",
+                    extracted_content="",
+                    timestamp=page.get("retrieved_at") or now(),
+                    metadata={"mode": mode, "evidence_level": "none", "relevant": False, "freshness": "UNRESOLVED", "round": depth},
+                )
         return ToolResult(
             tool="fetch_page",
             status="ok",
@@ -604,8 +949,15 @@ def _open_hit(hit, query, depth, mode, open_fn, agent_id, package_id, project_id
                 "conflict_key": page.get("conflict_key") or "",
                 "conflict_value": page.get("conflict_value") or "",
                 "relevant": relevant,
+                "relevance_reason": relevance_reason(objective, page_title, text, final_url) if task_class == "business_research" else "",
                 "round": depth,
                 "unsupported_reseller": unsupported_reseller_claim(final_url, text, query=query, title=page_title),
+                "authority_class": _authority(final_url, text, page_title),
+                "rerank_score": (h.get("rerank_score") if isinstance(h, dict) else None),
+                "injection_signals": _injection(text),
+                "action_from_web": False,
+                "via_crawl": bool(page.get("via_crawl")),
+                "fetch_route": page.get("fetch_route") or "",
             },
         )
 
@@ -670,7 +1022,22 @@ def _agentic_review(objective: str, evidence: list, gaps: list, searched: list, 
         return "SUFFICIENT\nreviewer: stub", "stub"
     from ..models import complete_role
 
-    text, _tokens, meta = complete_role("EMPLOYEE", "You are reviewing research coverage.", user, max_tokens=120)
+    from .recovery import run_retries
+
+    def attempt(_number: int):
+        try:
+            text, _tokens, meta = complete_role("EMPLOYEE", "You are reviewing research coverage.", user, max_tokens=120)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if not (text or "").strip():
+            return {"ok": False, "error": "empty_review"}
+        return {"ok": True, "text": text, "meta": meta}
+
+    outcome = run_retries(attempt, stage="research-review", project_id="")
+    if not outcome["ok"]:
+        raise RuntimeError("reviewer returned nothing")
+    text = outcome["result"]["text"]
+    meta = outcome["result"]["meta"]
     if not text:
         raise RuntimeError("reviewer returned nothing")
     if (meta or {}).get("backend") == "stub" or "reviewer: stub" in text.lower():
@@ -693,6 +1060,12 @@ def _next_query(text: str) -> str:
         if stripped.upper().startswith("NEXT:"):
             return stripped.split(":", 1)[1].strip()[:180]
     return ""
+
+
+def _authority(url: str, text: str, title: str) -> str:
+    from .authority import classify_authority
+
+    return classify_authority(url, text=text, title=title)
 
 
 def is_availability_text(text: str) -> bool:

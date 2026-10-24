@@ -84,7 +84,7 @@
     "match": ["adversarial-primary-secondary"],
     "freshness": "FIXTURE_SNAPSHOT",
     "retrieved_at": "2026-09-25T22:40:00+00:00",
-    "text": "Official club ticket page for the adversarial primary check."
+    "text": "Official club ticket page for the adversarial primary check on bvb.de."
   },
   {
     "url": "https://www.bbc.co.uk/adversarial-secondary",

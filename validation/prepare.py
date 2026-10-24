@@ -91,7 +91,18 @@ def preflight():
     return info
 
 def main() -> int:
-    print("============================================================"); print("BILLABLE GPU TIME if this is RunPod. Stop the pod when done."); print("============================================================")
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from validation.banner import collect, render
+    info_banner = collect(ROOT)
+    print(render(info_banner))
+    if info_banner["gpu"] != "none" and info_banner["components"].get("llguidance") != "ACTIVE":
+        log("Aborting before download: llguidance is not active.")
+        return 2
+    if not info_banner["dependencies"]["ok"]:
+        log("Aborting before download: dependency health failed.")
+        return 2
+    print("BILLABLE GPU TIME if this is RunPod. Do not stop the pod until export is VERIFIED.")
     info = preflight(); dest = Path(os.environ.get("AYVEN_MODEL_DIR", "/workspace/models"))
     try: dest.mkdir(parents=True, exist_ok=True)
     except Exception: dest = Path.home()/"models"; dest.mkdir(parents=True, exist_ok=True)
@@ -122,7 +133,7 @@ def main() -> int:
         f"export AYVEN_LLM_STUB={'0' if info['cuda'] else '1'}\n"
         "export AYVEN_ALLOW_ESCALATION=0\n"
         f"export AYVEN_RESEARCH_MODE={research_mode}\n"
-        "export AYVEN_GPU_USD_PER_HOUR=\"${AYVEN_GPU_USD_PER_HOUR:-2.00}\"\n"
+        "export AYVEN_GPU_USD_PER_HOUR=\"${AYVEN_GPU_USD_PER_HOUR:-0.89}\"\n"
     )
     (ROOT/"validation"/".last_prepare.json").write_text(json.dumps(info, indent=2)); log("PREFLIGHT")
     for k,v in info.items(): log(f"  {k}: {v}")

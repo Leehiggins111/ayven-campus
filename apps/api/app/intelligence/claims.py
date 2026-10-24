@@ -27,6 +27,12 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _current_trace() -> str:
+    from .observability import current_trace
+
+    return current_trace()
+
+
 def confidence_for(source_type: str, freshness: str, evidence_level: str) -> tuple[float, str]:
     base = _RANK_CONFIDENCE.get(source_type, 0.2)
     status = "SUPPORTED"
@@ -57,6 +63,12 @@ def add_claim(
     source_title: str = "",
     status: str | None = None,
     supersedes: str | None = None,
+    origin: str = "evidence",
+    authority: str = "",
+    contradicting_evidence: str = "",
+    locator: str = "",
+    file_hash: str = "",
+    trace_id: str = "",
 ) -> dict:
     text = strip_think(claim_text)
     evidence = strip_think(evidence_text)
@@ -93,18 +105,29 @@ def add_claim(
         "status": status,
         "created_at": ts,
         "updated_at": ts,
+        "origin": origin,
+        "contradicting_evidence": contradicting_evidence,
+        "authority": authority or source_type,
+        "repair_history": "[]",
+        "verification_history": "[]",
+        "locator": locator,
+        "file_hash": file_hash,
+        "trace_id": trace_id or _current_trace(),
     }
     conn = connect()
     conn.execute(
         """INSERT INTO claims(
             id,package_id,agent_id,claim_text,claim_type,source_id,evidence_text,source_url,
             source_type,retrieved_at,freshness,verification_status,confidence,challenged_by,
-            challenge_reason,supersedes,status,created_at,updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            challenge_reason,supersedes,status,created_at,updated_at,origin,contradicting_evidence,
+            authority,repair_history,verification_history,locator,file_hash,trace_id
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [row[k] for k in (
             "id", "package_id", "agent_id", "claim_text", "claim_type", "source_id", "evidence_text",
             "source_url", "source_type", "retrieved_at", "freshness", "verification_status", "confidence",
             "challenged_by", "challenge_reason", "supersedes", "status", "created_at", "updated_at",
+            "origin", "contradicting_evidence", "authority", "repair_history", "verification_history",
+            "locator", "file_hash", "trace_id",
         )],
     )
     if evidence or source_url:
@@ -146,6 +169,22 @@ def challenge(claim_id: str, challenger: str, reason: str, new_status: str) -> N
     conn.close()
 
 
+def update_claim(claim_id: str, **fields) -> None:
+    allowed = {
+        "claim_text", "claim_type", "evidence_text", "source_url", "source_type",
+        "freshness", "status", "confidence", "authority", "origin", "verification_status",
+    }
+    chosen = {key: value for key, value in fields.items() if key in allowed}
+    if not chosen:
+        return
+    chosen["updated_at"] = now()
+    conn = connect()
+    sets = ", ".join(f"{key}=?" for key in chosen)
+    conn.execute(f"UPDATE claims SET {sets} WHERE id=?", [*chosen.values(), claim_id])
+    conn.commit()
+    conn.close()
+
+
 def mark_verified(claim_id: str, status: str) -> None:
     conn = connect()
     conn.execute(
@@ -160,7 +199,12 @@ def claims_from_evidence(package_id: str, agent_id: str, evidence: list[dict]) -
     created = []
     for item in evidence:
         passage = (item.get("extracted_content") or "").strip()
-        if not passage:
+        if not passage or passage.count("<") >= 2:
+            continue
+        from .boundary import is_noise_hit
+        from .deliverable import clip_at_boundary
+
+        if is_noise_hit(item.get("source_url") or "", item.get("source_title") or "", passage[:240]):
             continue
         meta = item.get("metadata") or {}
         freshness = meta.get("freshness") or "UNKNOWN"
@@ -168,9 +212,9 @@ def claims_from_evidence(package_id: str, agent_id: str, evidence: list[dict]) -
         claim = add_claim(
             package_id,
             agent_id,
-            passage[:500],
+            clip_at_boundary(passage, 2000),
             "ROUTE" if meta.get("channel") else "FACT",
-            evidence_text=passage[:1200],
+            evidence_text=clip_at_boundary(passage, 4000),
             source_url=item.get("source_url") or "",
             source_type=source_type,
             retrieved_at=item.get("timestamp") or "",
