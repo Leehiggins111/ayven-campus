@@ -34,7 +34,9 @@ def check_path(path):
     parts = path.split("/")
     if any(part in ("", ".", "..") for part in parts):
         raise ScopeError(f'path must not contain empty, "." or ".." parts: {path!r}')
-    if _PROHIBITED_NAMES.intersection(parts) or parts[0] in _PROHIBITED_TOP:
+    # D9: case-insensitive, because Windows/macOS filesystems resolve .GIT/config to .git/config.
+    folded = [part.casefold() for part in parts]
+    if _PROHIBITED_NAMES.intersection(folded) or folded[0] in _PROHIBITED_TOP:
         raise ScopeError(f"path is prohibited: {path!r}")
     return path
 

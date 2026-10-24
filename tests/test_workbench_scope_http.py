@@ -118,6 +118,13 @@ class AllowList(Orders):
             r = self.enqueue("deceptive-%d" % i, bad)
             self.assertEqual(r.status_code, 400, (ascii(bad), r.text))
 
+    def test_case_variant_protected_paths_are_refused(self):
+        # D9: .GIT/.GitHub/.GITATTRIBUTES/.GITMODULES are the protected files on a case-insensitive filesystem.
+        for i, bad in enumerate((".GIT/config", "sub/.Git/HEAD", ".GitHub/workflows/ci.yml", ".GITATTRIBUTES",
+                                 ".GITMODULES", "a/.GitModules")):
+            r = self.enqueue("d9-%d" % i, [bad])
+            self.assertEqual(r.status_code, 400, (bad, r.text))
+
     def test_patch_paths_that_are_deceptive_or_case_variants_are_rejected(self):
         for key, path in (("homo", "calculаtor.py"), ("case", "Calculator.py")):
             self.assertEqual(self.enqueue("patch-" + key, ["calculator.py"]).status_code, 200)
