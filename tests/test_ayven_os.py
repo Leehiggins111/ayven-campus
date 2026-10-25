@@ -133,7 +133,8 @@ class TestAudit(OSBase):
     def test_every_invocation_is_audited_with_actor_and_outcome(self):
         self.invoke("agent.create", {"name": "Audited", "role": "A", "department_id": "research"},
                     headers={**self.owner, "X-Ayven-Owner": "lee@example.invalid"})
-        self.invoke("agent.get", {"id": "ag-missing"})                     # refused (404)
+        self.invoke("agent.get", {"id": "ag-missing"})                            # not_found (404)
+        self.invoke("agent.create", {"name": "x", "role": "y", "department_id": "nope"})  # bad_request (400)
         entries = self.client.get("/os/audit", headers=self.owner).json()["entries"]
         by_action = {}
         for e in entries:
@@ -141,7 +142,9 @@ class TestAudit(OSBase):
         created = next(e for e in by_action["agent.create"] if e["outcome"] == "ok")
         assert created["actor"] == "lee@example.invalid" and created["mutates"] == 1
         assert len(created["input_sha256"]) == 64 and "name=Audited" in created["input_summary"]
-        assert any(e["outcome"] == "refused" for e in by_action["agent.get"])
+        # Refusals carry the documented outcome, not a catch-all, so the audit matches the contract.
+        assert any(e["outcome"] == "not_found" for e in by_action["agent.get"])
+        assert any(e["outcome"] == "bad_request" for e in by_action["agent.create"])
         # Filterable, and never records a raw value beyond a short summary.
         filtered = self.client.get("/os/audit?action=agent.create", headers=self.owner).json()["entries"]
         assert filtered and all(e["action"] == "agent.create" for e in filtered)

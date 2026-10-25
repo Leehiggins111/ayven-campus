@@ -1,0 +1,81 @@
+{
+ "base": "http://127.0.0.1:8801",
+ "steps": [
+  {
+   "step": "gui_create",
+   "status": 200,
+   "id": "ag-62122c9f5cf6",
+   "ok": true
+  },
+  {
+   "step": "milo_create",
+   "status": 200,
+   "id": "ag-c5e5f6aab7ed",
+   "ok": true,
+   "managed_by": "ayven-os"
+  },
+  {
+   "step": "milo_list_research",
+   "status": 200,
+   "has_gui": true,
+   "has_milo": true
+  },
+  {
+   "step": "state_before_restart",
+   "status": 200,
+   "has_gui": true,
+   "has_milo": true
+  },
+  {
+   "step": "rejected_unknown_department",
+   "status": 400,
+   "detail": "Unknown department_id 'does-not-exist'; create it first or use an existing one"
+  },
+  {
+   "step": "readonly_cannot_invoke",
+   "status": 401
+  },
+  {
+   "step": "unauthenticated_refused",
+   "status": 401
+  },
+  {
+   "step": "retire_busy_blocked",
+   "status": 409,
+   "detail": "Agent is working; it can be retired only when idle"
+  },
+  {
+   "step": "retire_missing_404",
+   "status": 404
+  },
+  {
+   "step": "retire_idle_ok",
+   "status": 200,
+   "new_status": "retired"
+  },
+  {
+   "step": "audit",
+   "total": 7,
+   "gui_actor": "owner:bearer",
+   "milo_actor": "lee@ayven.local",
+   "outcomes": [
+    "bad_request",
+    "not_found",
+    "ok",
+    "refused"
+   ]
+  },
+  {
+   "step": "state_after_restart",
+   "status": 200,
+   "has_gui": true,
+   "has_milo": true
+  },
+  {
+   "step": "audit_after_restart",
+   "total": 7
+  }
+ ],
+ "gui_id": "ag-62122c9f5cf6",
+ "milo_id": "ag-c5e5f6aab7ed"
+}

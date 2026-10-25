@@ -275,7 +275,11 @@ async def invoke_action(action_id: str, request: Request):
         try:
             result = a.handler(c, data, request)
         except HTTPException as exc:
-            audit(c, actor, a.id, a.mutates, data, "refused", f"{exc.status_code}: {exc.detail}")
+            # Record the documented outcome, not a catch-all, so the audit matches the published
+            # contract's enum (ok | refused | forbidden | bad_request | not_found). Anything else
+            # (e.g. a 409 guard) stays "refused" with the status preserved in the detail.
+            outcome = {400: "bad_request", 404: "not_found", 403: "forbidden"}.get(exc.status_code, "refused")
+            audit(c, actor, a.id, a.mutates, data, outcome, f"{exc.status_code}: {exc.detail}")
             c.commit()
             raise
         audit_id = audit(c, actor, a.id, a.mutates, data, "ok")
