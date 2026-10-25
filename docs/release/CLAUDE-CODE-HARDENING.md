@@ -119,7 +119,7 @@ and specialist proxy routes.
 
 ## Exact commits and how to reproduce
 - Milo `security/release-hardening-20261024` @ `c3d56dc`
-- Campus `security/release-hardening-20261024` @ `14201b9`
+- Campus `security/release-hardening-20261024` @ `6b4aa5a`
 ```
 # Workbench (Milo checkout)
 cd workbench/src && python3 -m unittest checks && python3 -m unittest discover -s tests
