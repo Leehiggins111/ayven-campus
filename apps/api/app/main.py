@@ -30,6 +30,8 @@ from .milo_bridge import router as milo_router
 app.include_router(milo_router)
 from .workbench_bridge import router as workbench_router
 app.include_router(workbench_router)
+from .ayven_os import router as ayven_os_router
+app.include_router(ayven_os_router)
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
 
 def _campus_index() -> Path:

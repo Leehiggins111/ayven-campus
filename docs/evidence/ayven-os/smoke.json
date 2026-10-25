@@ -1,0 +1,299 @@
+{
+ "manifest": {
+  "schema": "ayven.os/v1",
+  "actions": [
+   {
+    "id": "agent.list",
+    "title": "List agents",
+    "category": "agents",
+    "mutates": false,
+    "auth": "owner",
+    "method": "POST",
+    "path": "/os/actions/agent.list",
+    "input_schema": {
+     "department_id": "string (optional filter)"
+    },
+    "example_input": {}
+   },
+   {
+    "id": "agent.get",
+    "title": "Get an agent",
+    "category": "agents",
+    "mutates": false,
+    "auth": "owner",
+    "method": "POST",
+    "path": "/os/actions/agent.get",
+    "input_schema": {
+     "id": "string (required)"
+    },
+    "example_input": {
+     "id": "ag-000000000000"
+    }
+   },
+   {
+    "id": "agent.create",
+    "title": "Create an agent",
+    "category": "agents",
+    "mutates": true,
+    "auth": "owner",
+    "method": "POST",
+    "path": "/os/actions/agent.create",
+    "input_schema": {
+     "name": "string (required)",
+     "role": "string (required)",
+     "department_id": "string (required)"
+    },
+    "example_input": {
+     "name": "Grace Researcher",
+     "role": "Research analyst",
+     "department_id": "research"
+    }
+   },
+   {
+    "id": "agent.retire",
+    "title": "Retire an idle agent",
+    "category": "agents",
+    "mutates": true,
+    "auth": "owner",
+    "method": "POST",
+    "path": "/os/actions/agent.retire",
+    "input_schema": {
+     "id": "string (required)"
+    },
+    "example_input": {
+     "id": "ag-000000000000"
+    }
+   },
+   {
+    "id": "department.list",
+    "title": "List departments",
+    "category": "agents",
+    "mutates": false,
+    "auth": "owner",
+    "method": "POST",
+    "path": "/os/actions/department.list",
+    "input_schema": {},
+    "example_input": {}
+   },
+   {
+    "id": "project.list",
+    "title": "List projects",
+    "category": "projects",
+    "mutates": false,
+    "auth": "owner",
+    "method": "POST",
+    "path": "/os/actions/project.list",
+    "input_schema": {
+     "limit": "integer 1-200 (optional, default 50)"
+    },
+    "example_input": {
+     "limit": 20
+    }
+   },
+   {
+    "id": "project.get",
+    "title": "Get a project and its tasks",
+    "category": "projects",
+    "mutates": false,
+    "auth": "owner",
+    "method": "POST",
+    "path": "/os/actions/project.get",
+    "input_schema": {
+     "id": "string (required)"
+    },
+    "example_input": {
+     "id": "proj-..."
+    }
+   },
+   {
+    "id": "execution.list",
+    "title": "List Workbench coding executions",
+    "category": "executions",
+    "mutates": false,
+    "auth": "owner",
+    "method": "POST",
+    "path": "/os/actions/execution.list",
+    "input_schema": {
+     "limit": "integer 1-100 (optional, default 25)"
+    },
+    "example_input": {
+     "limit": 25
+    }
+   }
+  ]
+ },
+ "create": {
+  "action": "agent.create",
+  "ok": true,
+  "audit_id": "242d8ca1a6f94e90a71a7f38bb93e635",
+  "result": {
+   "agent": {
+    "id": "ag-5bbb15689229",
+    "name": "Grace Researcher",
+    "role": "Research analyst",
+    "department_id": "research",
+    "status": "idle",
+    "current_task_id": null,
+    "progress": 0.0,
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "created_at": "2026-10-25T18:44:41Z",
+    "created_by": "lee@example.invalid",
+    "managed_by": "ayven-os"
+   }
+  }
+ },
+ "in_state": true,
+ "agent_list_research": {
+  "agents": [
+   {
+    "id": "research-sup",
+    "name": "Eden Shah",
+    "role": "Research Supervisor",
+    "department_id": "research",
+    "status": "idle",
+    "current_task_id": null,
+    "progress": 0.0,
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "created_at": null,
+    "created_by": null,
+    "managed_by": null
+   },
+   {
+    "id": "ag-5bbb15689229",
+    "name": "Grace Researcher",
+    "role": "Research analyst",
+    "department_id": "research",
+    "status": "idle",
+    "current_task_id": null,
+    "progress": 0.0,
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "created_at": "2026-10-25T18:44:41Z",
+    "created_by": "lee@example.invalid",
+    "managed_by": "ayven-os"
+   },
+   {
+    "id": "research-e1",
+    "name": "Ivy Chen",
+    "role": "Research Employee 01",
+    "department_id": "research",
+    "status": "idle",
+    "current_task_id": null,
+    "progress": 0.0,
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "created_at": null,
+    "created_by": null,
+    "managed_by": null
+   },
+   {
+    "id": "web-researcher",
+    "name": "Ivy Chen",
+    "role": "Web Researcher",
+    "department_id": "research",
+    "status": "idle",
+    "current_task_id": null,
+    "progress": 0.0,
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "created_at": null,
+    "created_by": null,
+    "managed_by": null
+   },
+   {
+    "id": "research-e2",
+    "name": "Noah Hale",
+    "role": "Research Employee 02",
+    "department_id": "research",
+    "status": "idle",
+    "current_task_id": null,
+    "progress": 0.0,
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "created_at": null,
+    "created_by": null,
+    "managed_by": null
+   },
+   {
+    "id": "verifier",
+    "name": "Noah Hale",
+    "role": "Verification Agent",
+    "department_id": "research",
+    "status": "idle",
+    "current_task_id": null,
+    "progress": 0.0,
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "created_at": null,
+    "created_by": null,
+    "managed_by": null
+   },
+   {
+    "id": "research-mgr",
+    "name": "Rowan Vale",
+    "role": "Research Manager",
+    "department_id": "research",
+    "status": "idle",
+    "current_task_id": null,
+    "progress": 0.0,
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "created_at": null,
+    "created_by": null,
+    "managed_by": null
+   },
+   {
+    "id": "research-e3",
+    "name": "Sam Okoye",
+    "role": "Research Employee 03",
+    "department_id": "research",
+    "status": "idle",
+    "current_task_id": null,
+    "progress": 0.0,
+    "tokens": 0,
+    "cost_usd": 0.0,
+    "created_at": null,
+    "created_by": null,
+    "managed_by": null
+   }
+  ]
+ },
+ "refused_unknown_dept": 400,
+ "audit": [
+  {
+   "id": "a714d7b042a34bd2a4a593d02dce7a97",
+   "ts": 1792953881,
+   "actor": "owner:bearer",
+   "action": "agent.create",
+   "mutates": 1,
+   "input_sha256": "2c8bcccf92763c7e711583429f55754d7e3781b14d000063ecc5153e7bfd149f",
+   "input_summary": "department_id=nope, name=x, role=y",
+   "outcome": "refused",
+   "detail": "400: Unknown department_id 'nope'; create it first or use an existing one"
+  },
+  {
+   "id": "242d8ca1a6f94e90a71a7f38bb93e635",
+   "ts": 1792953881,
+   "actor": "lee@example.invalid",
+   "action": "agent.create",
+   "mutates": 1,
+   "input_sha256": "853c95664d88b8070b195875883993620aaa76827ed5c1d56a7a5af47c16de77",
+   "input_summary": "department_id=research, name=Grace Researcher, role=Research analyst",
+   "outcome": "ok",
+   "detail": ""
+  },
+  {
+   "id": "159219b1c1d746e4b822b0bb2f31e7ad",
+   "ts": 1792953881,
+   "actor": "owner:bearer",
+   "action": "agent.list",
+   "mutates": 0,
+   "input_sha256": "af4e1aed5da8730833a432f25a7d96e568ae0cab0491cf7971262c29998cb5db",
+   "input_summary": "department_id=research",
+   "outcome": "ok",
+   "detail": ""
+  }
+ ]
+}
