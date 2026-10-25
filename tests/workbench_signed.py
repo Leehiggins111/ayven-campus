@@ -17,6 +17,14 @@ def artifact(name, content):
     return {"name": name, "content": content, "sha256": hashlib.sha256(content.encode()).hexdigest()}
 
 
+# A verified local Ollama model (D12): what Workbench signs when the endpoint and every reply identify themselves.
+OLLAMA_PROVENANCE = {"kind": "ollama", "endpoint": "http://127.0.0.1:11434", "model": "qwen3:4b-instruct",
+                     "ollama_version": "0.40.2", "digest": "sha256:" + "d" * 64, "size": 2500000000,
+                     "parameter_size": "4.0B", "quantization": "Q4_K_M", "calls": 3,
+                     "served_models": ["qwen3:4b-instruct"], "fingerprints": ["fp_ollama"],
+                     "prompt_tokens": 3000, "completion_tokens": 400, "problems": [], "probed_at": 1}
+
+
 def record_for(patch, order_id, allowed, revision=0, log=PASS_LOG, base_log=BASE_LOG, outcomes=None):
     diff = patch["content"].encode()
     named, _ = patch_paths(patch["content"])
@@ -30,6 +38,7 @@ def record_for(patch, order_id, allowed, revision=0, log=PASS_LOG, base_log=BASE
     return {"schema": SCHEMA, "goal": "g1", "task": "qa1", "order_key": request_key(order_id, revision),
             "base_revision": "a" * 40, "started_at": 1, "finished_at": 2, "runner_sha256": "r" * 64,
             "allowed_files": sorted(allowed), "verdict": "PASS", "reasons": [], "tamper_findings": [], "removed_symbols": [],
+            "model_provenance": dict(OLLAMA_PROVENANCE),
             "changed_files": [{"path": p, "status": "M"} for p in sorted(set(named))],
             "patch_sha256": hashlib.sha256(diff).hexdigest(), "patch_bytes": len(diff),
             "baseline": run(base_log, {t: "failed" for t in TESTS}, 1),

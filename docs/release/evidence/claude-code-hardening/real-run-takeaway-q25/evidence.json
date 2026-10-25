@@ -1,0 +1,152 @@
+{
+ "model": "qwen2.5-coder:3b",
+ "endpoint": "http://127.0.0.1:11434/v1",
+ "mode": "REAL (local model, no paid API)",
+ "started": "2026-10-25T18:32:55+0000",
+ "work_dir": "/tmp/ayven-stack-kvbh97ih",
+ "order": {
+  "project_id": "b8ece0a5-6cc7-5ed7-9af4-7c1b640d470a",
+  "order_id": "takeaway-real-1",
+  "duplicate": false,
+  "mode": "PENDING_REAL",
+  "state": "queued"
+ },
+ "state": "failed",
+ "verification": "UNVERIFIED",
+ "result": {
+  "verdict": "BLOCKED",
+  "execution_mode": "NONE",
+  "evidence": [],
+  "defects": [
+   "Job is not ready for owner review: Test suite fails (exit 2). Failing: collect::test_pricing.py; Trusted verification FAIL: No tests ran; Trusted verification FAIL: 8 test(s) present at the base revision no longer run: test_pricing.py::test_delivery_fee_added_below_threshold, test_pricing.py::test_delivery_waived_above_threshold, test_pricing.py::test_delivery_waived_at_exact_threshold, test_pricing.py::test_empty_order_is_zero, test_pricing.py::test_negative_quantity_raises, test_pricing.py::test_no_fee_when_collection, test_pricing.py::test_result_is_integer_pence, test_pricing.py::test_subtotal_multiplies_price_by_quantity"
+  ],
+  "artifacts": [
+   {
+    "name": "log-dev-2e8c87dcdb-a1.log",
+    "sha256": "ff8cc0581e171ea2ba095ab93e0328e1b55772819051fa2b84d2f0394f4fe1d9"
+   },
+   {
+    "name": "log-dev-811780ab6a-a1.log",
+    "sha256": "33238462987793b3151c4b5b1020b2f3f783a9f2b628b20ff1e0a0233b5b38ee"
+   },
+   {
+    "name": "log-model-calls.jsonl",
+    "sha256": "8006de7219617907551f00ca2e870749705e39af3fc613ff5780f8fc822eeb28"
+   },
+   {
+    "name": "log-verify__b9a51fd0c9__baseline-test.log",
+    "sha256": "568a9d1a304ec1e9aa2a9551a4f74119d47274320529e960db8b1a5bc6afce26"
+   },
+   {
+    "name": "log-verify__b9a51fd0c9__qa-run.json",
+    "sha256": "72b823da3d5e6023f193525e070cefe4b81fac7e6755b20d47277c0708274d55"
+   },
+   {
+    "name": "log-verify__b9a51fd0c9__qa-test.log",
+    "sha256": "c2d29d4ed9a374be7b82ea91df2576dc1b780d3839851b237288597329868d8e"
+   },
+   {
+    "name": "logs-manifest.json",
+    "sha256": "b2e2d3fb59e397acda06c740b6a4880bee9453f404c77030ea1972d279085f82"
+   }
+  ],
+  "scope_verified": false,
+  "tests_verified": false,
+  "revision": 0
+ },
+ "usage": {
+  "tokens": 39513,
+  "cost_gbp": 0.0
+ },
+ "events": [
+  {
+   "seq": 1,
+   "ts": 1792953176,
+   "revision": 0,
+   "kind": "created",
+   "actor": "owner",
+   "text": "Order created; allowed files: pricing.py; limits: 40 min"
+  },
+  {
+   "seq": 2,
+   "ts": 1792953176,
+   "revision": 0,
+   "kind": "claimed",
+   "actor": "worker",
+   "text": "Claimed by worker-7acd45 (attempt 1, fence 1)"
+  },
+  {
+   "seq": 3,
+   "ts": 1792953176,
+   "revision": 0,
+   "kind": "progress",
+   "actor": "worker",
+   "text": "plan"
+  },
+  {
+   "seq": 4,
+   "ts": 1792953181,
+   "revision": 0,
+   "kind": "progress",
+   "actor": "worker",
+   "text": "team working"
+  },
+  {
+   "seq": 5,
+   "ts": 1792953232,
+   "revision": 0,
+   "kind": "progress",
+   "actor": "worker",
+   "text": "done"
+  },
+  {
+   "seq": 6,
+   "ts": 1792953232,
+   "revision": 0,
+   "kind": "result",
+   "actor": "worker",
+   "text": "BLOCKED (NONE) -> failed: Job is not ready for owner review: Test suite fails (exit 2). Failing: collect::test_pricing.py; Trusted verification FAIL: No tests ran; Trusted verification FAIL: 8 test(s) present at the base revision no longer run: test_pricing.py::test_delivery_fee_added_below_threshold, test_pricing.py::test_delivery_waived_above_threshold, test_pricing.py::test_delivery_waived_at_exact_threshold, test_pricing.py::test_empty_order_is_zero, test_pricing.py::test_negative_quantity_raises, test_pricing.py::test_no_fee_when_collection, test_pricing.py::test_result_is_integer_pence, test_pricing.py::test_subt"
+  }
+ ],
+ "finished": "18:33:57",
+ "artifacts_sha256": {},
+ "project_test_file_sha256_after": "83a1d03938817bd18d40cf9fe1815a741af91949828c1e32ae20a0a74f8dbb94",
+ "project_untouched": true,
+ "workbench_tasks": [
+  {
+   "role": "director",
+   "title": "Plan and assign the goal",
+   "status": "done",
+   "attempt": 1,
+   "metrics": "{}"
+  },
+  {
+   "role": "dev",
+   "title": "Implement the brief",
+   "status": "done",
+   "attempt": 1,
+   "metrics": "{\"calls\": 9, \"prompt_tokens\": 22746, \"completion_tokens\": 848, \"model_seconds\": 26.121137142181396, \"first_prompt_tokens\": 1371, \"system_chars\": 787, \"actions\": [\"replace\", \"write\", \"write\", \"finish\", \"replace\", \"write\", \"finish\", \"replace\", \"finish\"], \"finish_rejected\": 2}"
+  },
+  {
+   "role": "qa",
+   "title": "Independent QA of Implement the brief",
+   "status": "failed",
+   "attempt": 1,
+   "metrics": "{}"
+  },
+  {
+   "role": "dev",
+   "title": "Correct: Implement the brief",
+   "status": "failed",
+   "attempt": 1,
+   "metrics": "{\"calls\": 6, \"prompt_tokens\": 14916, \"completion_tokens\": 1003, \"model_seconds\": 23.216320753097534, \"first_prompt_tokens\": 1560, \"system_chars\": 1202, \"actions\": [\"replace\", \"write\", \"replace\", \"replace\", \"finish\", \"replace\"], \"finish_rejected\": 1}"
+  },
+  {
+   "role": "qa",
+   "title": "Independent QA of correction",
+   "status": "blocked",
+   "attempt": 0,
+   "metrics": "{}"
+  }
+ ]
+}

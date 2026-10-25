@@ -1,0 +1,5 @@
+test_qa_campus_faults.py flakiness on the UNMODIFIED release base 056e52b vs this branch (3 runs each):
+base: 10 failed, 10 failed, 8 failed (of 108)
+new : 9 failed, 3 failed, 6 failed (of 108)
+The failing set changes run-to-run in BOTH trees => timing/concurrency flakiness in that one HTTP job-fault file,
+not a regression. The hardened Workbench lane suites are fully green.

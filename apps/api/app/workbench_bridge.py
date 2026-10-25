@@ -14,6 +14,7 @@ A worker can only act while it holds the current fence of a live lease; anything
 import hashlib
 import hmac
 import json
+import re
 import os
 import re
 import sqlite3
@@ -22,7 +23,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from .db import connect
 from .workbench_scope import ScopeError, normalize as normalize_scope, verify_patch
-from .workbench_evidence import test_evidence_problems, request_key
+from .workbench_evidence import (TEST_OVERRIDE, provenance_mode, request_key, signed_record, test_evidence_problems,
+                                 unverified_model_test_override)
 
 router = APIRouter()
 MAX_ARTIFACT = 256 * 1024
@@ -36,7 +38,9 @@ def lease_seconds():
         return LEASE_SECONDS
 MAX_ATTEMPTS = 3
 DEFAULT_MINUTES = 30
-PREVIEWABLE = ("changes.diff", "qa-run.json", "qa-test.log", "baseline-test.log")
+PREVIEWABLE = ("changes.diff", "qa-run.json", "qa-test.log", "baseline-test.log", "logs-manifest.json")
+# Failure logs exported by the worker (every task's turns, tool results and exit codes; verification logs).
+LOG_ARTIFACT = re.compile(r"log-[A-Za-z0-9._-]{1,160}")
 FINAL_STATES = ("awaiting_approval", "completed", "rejected", "failed", "simulated", "needs_clarification",
                 "cancelled")
 
@@ -402,6 +406,23 @@ def result(order_id: str, body: ResultIn, request: Request):
                                    defects=["Campus scope check: " + p for p in scope] +
                                            ["Campus test-evidence check: " + p for p in tests])
             result_data.update(scope_verified=not scope, tests_verified=not tests)
+        # D12: REAL or SIMULATED comes from the Workbench-signed model provenance, never from the worker's label.
+        record = signed_record({n: raw for n, raw, _ in artifacts})
+        if record is not None:
+            mode = provenance_mode(record)
+            result_data["model_provenance"] = record.get("model_provenance")
+            if mode != "REAL" and unverified_model_test_override():
+                mode = "REAL"
+                result_data["test_override"] = TEST_OVERRIDE + " (scripted-model drill; not a real model)"
+            elif body.execution_mode == "SIMULATED":
+                mode = "SIMULATED"          # a worker may always claim less (sample work), never more
+            if body.execution_mode != mode:
+                result_data["worker_execution_mode"] = body.execution_mode
+            if body.execution_mode != "NONE":
+                result_data["execution_mode"] = mode
+        elif body.execution_mode == "REAL":
+            # No signed provenance: a REAL label cannot be checked, so it is not kept.
+            result_data.update(execution_mode="NONE", worker_execution_mode="REAL")
         if body.verdict == "CLARIFY":
             state = "needs_clarification" if r["allow_clarification"] else "failed"
             if state == "failed":
@@ -409,7 +430,7 @@ def result(order_id: str, body: ResultIn, request: Request):
                                                             "allow clarification: " + body.question])
         elif result_data["verdict"] != "PASS":
             state = "failed"
-        elif body.execution_mode != "REAL":
+        elif result_data["execution_mode"] != "REAL":
             # Simulated or sample work is recorded and shown, but it never waits for, or accepts, approval.
             state = "simulated"
         else:
@@ -667,7 +688,7 @@ def preview_evidence(order_id: str, name: str):
     Preview does NOT mean owner acceptance; other deliverables stay locked.
     """
     from fastapi.responses import Response
-    if name not in PREVIEWABLE:
+    if name not in PREVIEWABLE and not LOG_ARTIFACT.fullmatch(name):
         raise HTTPException(404, "Only read-only QA evidence can be previewed")
     c = connect()
     try:
