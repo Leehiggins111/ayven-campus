@@ -128,10 +128,18 @@ def h_agent_list(c, data, request):
 
 
 def h_agent_get(c, data, request):
-    r = c.execute("SELECT * FROM agents WHERE id=?", (_str(data, "id", maxlen=64),)).fetchone()
+    agent_id = _str(data, "id", maxlen=64)
+    r = c.execute("SELECT * FROM agents WHERE id=?", (agent_id,)).fetchone()
     if not r:
         raise HTTPException(404, "No such agent")
-    return {"agent": _agent_view(r)}
+    from . import agent_worker as aw
+    aw.ensure_tables(c)
+    view = _agent_view(r)
+    # Distinguish a registered profile from an active worker, and say what it is actually permitted
+    # to do — so "what can this worker do?" has a real answer.
+    view["active"] = aw.is_active(c, agent_id)
+    view["permitted_task_kinds"] = aw.permitted_kinds(agent_id)
+    return {"agent": view}
 
 
 def h_agent_create(c, data, request):
@@ -190,6 +198,65 @@ def h_execution_list(c, data, request):
     return {"executions": [dict(r) for r in rows]}
 
 
+# ---------------------------------------------------------------- agent worker tasks
+def _bool(data, field, default):
+    v = data.get(field, default)
+    if not isinstance(v, bool):
+        raise HTTPException(400, f"{field} must be a boolean")
+    return v
+
+
+def h_agent_assign(c, data, request):
+    from . import agent_worker as aw
+    agent_id = _str(data, "agent_id", maxlen=64)
+    kind = _str(data, "kind", maxlen=64)
+    objective = _str(data, "objective", maxlen=aw.MAX_OBJECTIVE)
+    start = _bool(data, "start", True)
+    try:
+        task = aw.assign(c, owner=actor_of(request), agent_id=agent_id, kind=kind, objective=objective, start=start)
+    except aw.TaskError as exc:
+        raise HTTPException(exc.status, exc.message)
+    return {"task": task}
+
+
+def h_task_get(c, data, request):
+    from . import agent_worker as aw
+    aw.ensure_tables(c)
+    task = aw.get(c, _str(data, "id", maxlen=64))
+    if not task:
+        raise HTTPException(404, "No such task")
+    return {"task": task}
+
+
+def h_task_list(c, data, request):
+    from . import agent_worker as aw
+    aw.ensure_tables(c)
+    agent_id = data.get("agent_id")
+    status = data.get("status")
+    if agent_id is not None and not isinstance(agent_id, str):
+        raise HTTPException(400, "agent_id must be a string")
+    if status is not None and not isinstance(status, str):
+        raise HTTPException(400, "status must be a string")
+    limit = _int(data, "limit", lo=1, hi=200, default=50)
+    return {"tasks": aw.list_tasks(c, agent_id=agent_id, status=status, limit=limit)}
+
+
+def h_task_cancel(c, data, request):
+    from . import agent_worker as aw
+    try:
+        return {"task": aw.cancel(c, _str(data, "id", maxlen=64))}
+    except aw.TaskError as exc:
+        raise HTTPException(exc.status, exc.message)
+
+
+def h_task_retry(c, data, request):
+    from . import agent_worker as aw
+    try:
+        return {"task": aw.retry(c, _str(data, "id", maxlen=64))}
+    except aw.TaskError as exc:
+        raise HTTPException(exc.status, exc.message)
+
+
 # ---------------------------------------------------------------- the registry
 class Action:
     def __init__(self, id, title, category, mutates, handler, schema, example):
@@ -226,6 +293,20 @@ _register("project.get", "Get a project and its tasks", "projects", False, h_pro
           {"id": "string (required)"}, {"id": "proj-..."})
 _register("execution.list", "List Workbench coding executions", "executions", False, h_execution_list,
           {"limit": "integer 1-100 (optional, default 25)"}, {"limit": 25})
+_register("agent.assign", "Assign a task to a registered agent", "workforce", True, h_agent_assign,
+          {"agent_id": "string (required)", "kind": "string (required: research_brief)",
+           "objective": "string (required)", "start": "boolean (optional, default true: run it now)"},
+          {"agent_id": "research-e1", "kind": "research_brief",
+           "objective": "Summarise the UK market for independent coffee shops in 2026."})
+_register("task.get", "Get an agent task and its evidence", "workforce", False, h_task_get,
+          {"id": "string (required)"}, {"id": "tk-000000000000"})
+_register("task.list", "List agent tasks", "workforce", False, h_task_list,
+          {"agent_id": "string (optional)", "status": "string (optional: queued|running|completed|failed|cancelled)",
+           "limit": "integer 1-200 (optional, default 50)"}, {"status": "failed", "limit": 20})
+_register("task.cancel", "Cancel a queued agent task", "workforce", True, h_task_cancel,
+          {"id": "string (required)"}, {"id": "tk-000000000000"})
+_register("task.retry", "Retry a failed agent task", "workforce", True, h_task_retry,
+          {"id": "string (required)"}, {"id": "tk-000000000000"})
 
 
 def manifest():

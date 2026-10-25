@@ -1,0 +1,59 @@
+{
+ "base": "http://127.0.0.1:8803",
+ "model_config": {
+  "AYVEN_LOCAL_LLM_BASE_URL": "http://127.0.0.1:11434/v1",
+  "AYVEN_EMPLOYEE_MODEL": "qwen2.5-coder:3b",
+  "AYVEN_LLM_STUB": "0"
+ },
+ "steps": [
+  {
+   "step": "assign_real",
+   "status": 200,
+   "task_status": "completed",
+   "mode": "REAL",
+   "model": "qwen2.5-coder:3b",
+   "tokens": 94,
+   "result_len": 565,
+   "result_preview": "An API contract is a formal agreement between two systems that defines how they can interact with each other. It outlines the data formats, protocols, and security requirements for communication betwe"
+  },
+  {
+   "step": "unauthorised_refused",
+   "status": 403,
+   "detail": "Agent compliance is not permitted to perform research_brief (needs READ_WEB)"
+  },
+  {
+   "step": "inspect",
+   "status": 200,
+   "has_evidence": true
+  },
+  {
+   "step": "audit",
+   "total": 2,
+   "actors": [
+    "lee@ayven.local"
+   ],
+   "outcomes": [
+    "forbidden",
+    "ok"
+   ]
+  },
+  {
+   "step": "after_restart",
+   "status": 200,
+   "task_status": "completed",
+   "mode": "REAL",
+   "result_persisted": true
+  }
+ ],
+ "task_id": "tk-13402840a22b",
+ "result_preview": "An API contract is a formal agreement between two systems that defines how they can interact with each other. It outlines the data formats, protocols, and security requirements for communication between the systems. API contracts are crucial for integration because they ensure that the systems can communicate effectively and securely, reducing the risk of errors and downtime. They also provide a c",
+ "evidence": {
+  "execution_mode": "REAL",
+  "model": "qwen2.5-coder:3b",
+  "tokens": 94,
+  "finish_reason": "stop",
+  "elapsed_s": 6.102,
+  "tool": "model_gateway",
+  "capability": "READ_WEB"
+ }
+}
