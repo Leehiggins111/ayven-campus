@@ -85,6 +85,62 @@ Every invocation — allowed or refused, ok or failed — is one durable row **b
 `X-Ayven-Owner` Milo forwards) or the principal kind. Only a short `input_summary` and a `input_sha256` are kept,
 never raw secret-bearing payloads. Filter with `?action=agent.create`.
 
+## Through Milo's chat (Stage 3)
+
+The owner can also invoke these actions by **talking to Milo**. Milo understands the request, picks
+the matching action, fills its parameters, and runs it through the exact routes above — it never
+mutates state any other way, and it never decides who the owner is. The safety envelope lives in
+`src/server/os/assistant.js` (Milo):
+
+- **Identity** is the authenticated Milo session (Google browser session or device bearer), read
+  server-side and forwarded as `X-Ayven-Owner`. Owner-bearing fields in the model's tool input are
+  stripped; a chat message can never set the owner.
+- **Mutations are confirmed.** A create/retire is not sent on the first request; Milo asks the owner
+  to confirm and sends it only after an explicit, deterministically-read "yes". "no" abandons it;
+  the pending item expires after 5 minutes.
+- **Reads** run immediately (still through the owner boundary and audit).
+- **Failures are honest.** A Campus `400/401/404/409`/unreachable is reported as a failure; nothing
+  is claimed to have changed.
+- **A question is not an operation.** If the request is not an operation, Milo answers in chat and
+  calls no action.
+
+`POST /chat` (and the browser chat route) return the normal reply plus, when an OS action was
+involved, an `os` block and a `refresh` hint for the UI:
+
+```json
+{"reply": "Done — create an agent \"Grace Researcher\" (Research analyst) in research. (ag-1a2b…)",
+ "route": "os", "backend": "ayven-os",
+ "os": {"ok": true, "status": "ok", "action": "agent.create", "audit_id": "9f…",
+        "result": {"agent": {"id": "ag-1a2b…", "status": "idle", "managed_by": "ayven-os"}},
+        "refresh": ["agents"]}}
+```
+
+`os.status` ∈ `ok | confirm_required | cancelled | bad_request | not_found | conflict | unauthorized
+| unavailable | model_error | model_unavailable`. On `confirm_required`, `os.needs_confirmation` is
+true and `os.summary` describes what will happen; the next message decides it.
+
+Example conversations:
+
+```
+Owner: create an agent called Grace Researcher, a research analyst, in research
+Milo:  This will create an agent "Grace Researcher" (Research analyst) in research. Shall I go ahead? (yes/no)
+Owner: yes
+Milo:  Done — create an agent "Grace Researcher" (Research analyst) in research. (ag-1a2b3c4d5e6f)   [refresh: agents]
+
+Owner: list the agents in research
+Milo:  You have 2 agents:
+       • Grace Researcher (Research analyst) — idle
+       • GUI Agent (Ops lead) — idle
+
+Owner: retire agent ag-1a2b3c4d5e6f
+Milo:  This will retire agent ag-1a2b3c4d5e6f. Shall I go ahead? (yes/no)
+Owner: no
+Milo:  Okay — I won't retire agent ag-1a2b3c4d5e6f. Nothing was changed.
+
+Owner: create an agent in the marketing department        (no such department)
+Milo:  (after confirmation) I couldn't do that: Unknown department_id 'marketing'; create it first or use an existing one.
+```
+
 ## Guarantees and limits
 - **Persistence** is the real Campus SQLite database; there is no mock.
 - **Authorisation** is the existing Campus owner boundary; nothing here lowers it.
