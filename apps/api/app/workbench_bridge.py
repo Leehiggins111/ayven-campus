@@ -1,4 +1,9 @@
-"""Version 1 pull-only Campus/Workbench bridge. No execution occurs in Campus."""
+"""Version 1 pull-only Campus/Workbench bridge. No execution occurs in Campus.
+
+The work runs on an external Workbench worker, but the order belongs to a Campus
+project, so each state change is mirrored onto the Campus records Lee monitors:
+the project row, a registered ``workbench`` agent and the events stream.
+"""
 import hashlib
 import hmac
 import json
@@ -39,6 +44,38 @@ def ensure_tables(c):
     if "allowed_json" not in columns:
         # Orders created before C3 keep NULL: their scope cannot be verified, so they cannot be accepted.
         c.execute("ALTER TABLE workbench_orders ADD COLUMN allowed_json TEXT")
+
+# The external Workbench worker is a registered Campus agent, so its orders show on the campus.
+AGENT = ("workbench", "Workbench Worker", "External Workbench Worker", "labs")
+# projects.status for each order state. A terminal order must not stay 'running':
+# a running project is reused by submit_job for the same objective, so the job would never run again.
+PROJECT_STATUS = {"queued": "running", "running": "running", "awaiting_approval": "waiting",
+                  "completed": "complete", "rejected": "rejected", "failed": "rejected", "simulated": "unresolved"}
+AGENT_STATE = {
+    "queued": ("waiting", "WAITING", "Order queued for a Workbench worker"),
+    "running": ("working", "WORKING", "Workbench worker claimed the order"),
+    "awaiting_approval": ("needs_approval", "NEEDS_APPROVAL", "Workbench result needs Lee"),
+    "simulated": ("idle", "WAITING", "Simulated Workbench result recorded; not a deliverable"),
+    "failed": ("error", "FAILED", "Workbench order failed"),
+    "rejected": ("idle", "FAILED", "Lee rejected the Workbench result"),
+    "completed": ("idle", "COMPLETED", "Lee accepted the Workbench result"),
+}
+
+def sync_campus(order_id, project_id, state, worker=None, summary=""):
+    """Mirror a committed order state onto the project row, the workbench agent and the events stream."""
+    from . import events
+    c = connect()
+    try:
+        c.execute("INSERT OR IGNORE INTO agents(id,name,role,department_id,status) VALUES(?,?,?,?,'idle')", AGENT)
+        c.execute("UPDATE projects SET status=? WHERE id=?", (PROJECT_STATUS.get(state, "running"), project_id))
+        status, visual, default = AGENT_STATE.get(state, ("idle", "IDLE", state))
+        c.execute("UPDATE agents SET status=?,visual_state=?,current_task_id=?,last_summary=? WHERE id=?",
+                  (status, visual, order_id, summary or default, AGENT[0]))
+        c.commit()
+    finally:
+        c.close()
+    events.emit("workbench." + state, project_id=project_id, agent_id=AGENT[0], department_id=AGENT[3],
+                status=state, summary=summary or default, metadata={"order_id": order_id, "worker": worker})
 
 class ExecutionIn(BaseModel):
     objective: str = Field(min_length=1, max_length=12000)
@@ -124,6 +161,7 @@ def enqueue(body: ExecutionIn, request: Request):
           (key,result["project_id"],body.objective,body.project_alias,json.dumps(body.acceptance_criteria),
            json.dumps(body.constraints),body.job_cap_gbp,fingerprint,int(time.time()),json.dumps(allowed)))
         c.commit()
+        sync_campus(key, result["project_id"], "queued")
         return {"project_id":result["project_id"],"order_id":key,"duplicate":False,"mode":"PENDING_REAL"}
     finally:
         c.close()
@@ -136,6 +174,8 @@ def claim(body: ClaimIn, request: Request):
         c.execute("BEGIN IMMEDIATE")
         ensure_tables(c)
         now=int(time.time())
+        expired=c.execute("""SELECT id,project_id,worker FROM workbench_orders
+            WHERE state='running' AND lease_until < ? AND attempts >= 3""",(now,)).fetchall()
         # Expired final attempts must become terminal, not remain running forever.
         c.execute("""UPDATE workbench_orders SET state='failed',lease_until=0,
             result_json=? WHERE state='running' AND lease_until < ? AND attempts >= 3""",
@@ -146,11 +186,17 @@ def claim(body: ClaimIn, request: Request):
           ORDER BY created_at LIMIT 1""",(now,)).fetchone()
         if not r:
             c.commit()
+            for x in expired:
+                sync_campus(x["id"],x["project_id"],"failed",x["worker"],"Worker lease expired after maximum attempts")
             return {"job":None}
         fence=r["fence"]+1
         c.execute("""UPDATE workbench_orders SET state='running',worker=?,fence=?,lease_until=?,attempts=attempts+1
             WHERE id=?""",(body.worker_id,fence,now+LEASE_SECONDS,r["id"]))
         c.commit()
+        for x in expired:
+            sync_campus(x["id"],x["project_id"],"failed",x["worker"],"Worker lease expired after maximum attempts")
+        sync_campus(r["id"],r["project_id"],"running",body.worker_id,
+                    "Workbench worker %s claimed the order (attempt %d)"%(body.worker_id,r["attempts"]+1))
         return {"job":{"order_id":r["id"],"project_id":r["project_id"],"objective":r["objective"],
            "project_alias":r["project_alias"],"acceptance_criteria":json.loads(r["criteria_json"]),
            "constraints":json.loads(r["constraints_json"]),"budget_gbp":r["budget_gbp"],
@@ -244,6 +290,8 @@ def result(order_id:str,body:ResultIn,request:Request):
             (state,json.dumps(result_data),
              hashlib.sha256(json.dumps(submitted,sort_keys=True).encode()).hexdigest(),order_id))
         c.commit()
+        sync_campus(order_id,r["project_id"],state,body.worker_id,
+                    "Workbench result: %s (%s)"%(result_data["verdict"],body.execution_mode))
         return {"ok":True,"state":state,"owner_accepted":False,
                 "campus_rejected":bool(result_data.get("campus_rejected"))}
     finally:c.close()
@@ -294,6 +342,7 @@ def owner_decision(order_id:str,body:DecisionIn):
         c.execute("UPDATE workbench_orders SET state=? WHERE id=?",
             ("completed" if body.decision=="accept" else "rejected",order_id))
         c.commit()
+        sync_campus(order_id,r["project_id"],"completed" if body.decision=="accept" else "rejected",r["worker"])
         return {"state":"completed" if body.decision=="accept" else "rejected"}
     finally:c.close()
 
