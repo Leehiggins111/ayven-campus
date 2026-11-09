@@ -301,3 +301,37 @@ class RealBrowserReview(Prototypes):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BriefApprovalLifecycle(Prototypes):
+    def test_revision_approval_queues_once_and_enters_existing_review(self):
+        url = "/ayven/prototype-plans"
+        brief = {"brief": "Build the Alba calculator", "request_key": "alba-lifecycle"}
+        with patch("apps.api.app.llm.complete", return_value=(json.dumps(PLAN), 100)):
+            created = self.client.post(url, headers=self.owner, json=brief)
+            self.assertEqual(created.status_code, 200, created.text)
+            first = created.json()
+            self.assertEqual(self.client.post(url, headers=self.owner, json=brief).json(), first)
+            self.assertIsNone(self.claim())
+            self.assertEqual(self.enqueue(plan=first["plan"]).status_code, 409)
+            decision = f"{url}/{first['job_id']}/decision"
+            revised = self.client.post(decision, headers=self.owner, json={
+                "action": "revise", "digest": first["digest"], "notes": "Confirm the two prices",
+            })
+            self.assertEqual(revised.status_code, 200, revised.text)
+        plan = revised.json()
+        self.assertEqual(plan["job_id"], first["job_id"])
+        self.assertEqual(plan["plan"]["revision"], 2)
+        self.assertEqual(self.client.post(decision, headers=self.owner, json={
+            "action": "approve", "digest": first["digest"],
+        }).status_code, 409)
+        self.assertIsNone(self.claim())
+        body = {"action": "approve", "digest": plan["digest"]}
+        queued = self.client.post(decision, headers=self.owner, json=body)
+        self.assertEqual(queued.status_code, 200, queued.text)
+        self.assertEqual(self.client.post(decision, headers=self.owner, json=body).json(), queued.json())
+        job = self.claim()
+        self.assertEqual(job["order_id"], queued.json()["order_id"])
+        self.assertIsNone(self.claim())
+        result = self.post(job, signed_result(job, GOOD))
+        self.assertEqual(result.status_code, 200, result.text)
