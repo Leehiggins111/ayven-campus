@@ -32,6 +32,10 @@ from .workbench_bridge import router as workbench_router
 app.include_router(workbench_router)
 from .ayven_os import router as ayven_os_router
 app.include_router(ayven_os_router)
+from .prototype_review import router as prototype_router
+app.include_router(prototype_router)
+from .teams import router as teams_router
+app.include_router(teams_router)
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
 
 def _campus_index() -> Path:

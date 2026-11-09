@@ -1,0 +1,129 @@
+{
+ "schema": "ayven.plan/v1",
+ "plan_id": "plan-alba-doors-test",
+ "revision": 1,
+ "job_id": "job-alba-doors-test",
+ "title": "Alba door price calculator",
+ "brief": "TEST DATA. Build a clickable price calculator for Alba doors. Six-panel doors cost £85 each and cottage-style doors cost £90 each. The customer enters how many of each door they want, presses Calculate and sees the total in pounds.",
+ "scope": "Clickable offline prototype only. No checkout, payment, accounts, stock or delivery.",
+ "features": [
+  "Quantity input for six-panel doors (£85 each)",
+  "Quantity input for cottage-style doors (£90 each)",
+  "Calculate button that shows the order total in pounds",
+  "Quantities cannot be negative"
+ ],
+ "estimate": {
+  "cost_gbp": 0,
+  "timeline": "Same day (prototype)",
+  "basis": "TEST DATA"
+ },
+ "prototype": {
+  "kind": "offline-browser",
+  "journeys": [
+   {
+    "requirement": "Two six-panel doors and one cottage-style door total £260",
+    "category": "interaction",
+    "steps": [
+     {
+      "action": "fill",
+      "selector": "#six-panel-qty",
+      "value": "2"
+     },
+     {
+      "action": "fill",
+      "selector": "#cottage-qty",
+      "value": "1"
+     },
+     {
+      "action": "click",
+      "selector": "#calculate",
+      "value": ""
+     },
+     {
+      "action": "text",
+      "selector": "#total",
+      "value": "£260"
+     }
+    ]
+   },
+   {
+    "requirement": "One cottage-style door on its own totals £90",
+    "category": "interaction",
+    "steps": [
+     {
+      "action": "fill",
+      "selector": "#six-panel-qty",
+      "value": "0"
+     },
+     {
+      "action": "fill",
+      "selector": "#cottage-qty",
+      "value": "1"
+     },
+     {
+      "action": "click",
+      "selector": "#calculate",
+      "value": ""
+     },
+     {
+      "action": "text",
+      "selector": "#total",
+      "value": "£90"
+     }
+    ]
+   },
+   {
+    "requirement": "A negative quantity is rejected",
+    "category": "validation",
+    "steps": [
+     {
+      "action": "fill",
+      "selector": "#six-panel-qty",
+      "value": "-1"
+     },
+     {
+      "action": "click",
+      "selector": "#calculate",
+      "value": ""
+     },
+     {
+      "action": "invalid",
+      "selector": "#six-panel-qty",
+      "value": ""
+     }
+    ]
+   }
+  ]
+ },
+ "deadline": "2026-11-12",
+ "review": {
+  "checks": [
+   {
+    "requirement": "Three six-panel doors total £255",
+    "category": "interaction",
+    "steps": [
+     {
+      "action": "fill",
+      "selector": "#six-panel-qty",
+      "value": "3"
+     },
+     {
+      "action": "fill",
+      "selector": "#cottage-qty",
+      "value": "0"
+     },
+     {
+      "action": "click",
+      "selector": "#calculate",
+      "value": ""
+     },
+     {
+      "action": "text",
+      "selector": "#total",
+      "value": "£255"
+     }
+    ]
+   }
+  ]
+ }
+}

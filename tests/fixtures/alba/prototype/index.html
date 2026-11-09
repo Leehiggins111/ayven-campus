@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alba door price calculator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1>Alba door price calculator</h1>
+    <form id="calculator" novalidate>
+      <label for="six-panel-qty">Six-panel doors (£85 each)</label>
+      <input id="six-panel-qty" name="six" type="number" min="0" step="1" value="0" inputmode="numeric">
+      <label for="cottage-qty">Cottage-style doors (£90 each)</label>
+      <input id="cottage-qty" name="cottage" type="number" min="0" step="1" value="0" inputmode="numeric">
+      <button id="calculate" type="submit">Calculate</button>
+    </form>
+    <p>Total: <output id="total" for="six-panel-qty cottage-qty">£0</output></p>
+    <p id="error" role="alert"></p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

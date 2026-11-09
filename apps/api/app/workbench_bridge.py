@@ -42,7 +42,7 @@ PREVIEWABLE = ("changes.diff", "qa-run.json", "qa-test.log", "baseline-test.log"
 # Failure logs exported by the worker (every task's turns, tool results and exit codes; verification logs).
 LOG_ARTIFACT = re.compile(r"log-[A-Za-z0-9._-]{1,160}")
 FINAL_STATES = ("awaiting_approval", "completed", "rejected", "failed", "simulated", "needs_clarification",
-                "cancelled")
+                "cancelled", "reviewing", "review_passed", "review_failed", "fix_requested", "closed")
 
 
 def worker_authorized(request):
@@ -62,6 +62,9 @@ COLUMNS = {   # added after the first release; NULL/defaults for older rows
     "started_at": "INTEGER", "usage_json": "TEXT", "question": "TEXT", "updated_at": "INTEGER",
     # release 20261024: progress (G7) and the exact patch digest the owner accepted (hash pinning, G15)
     "last_heartbeat_at": "INTEGER", "accepted_patch_sha256": "TEXT",
+    # first release 20261109: approved-plan prototype orders (prototype_review.py)
+    "kind": "TEXT NOT NULL DEFAULT 'code'", "plan_json": "TEXT", "plan_sha256": "TEXT", "approval_json": "TEXT",
+    "plan_key": "TEXT", "fix_of": "TEXT", "review_json": "TEXT", "decision_json": "TEXT",
 }
 
 
@@ -286,6 +289,12 @@ def claim(body: ClaimIn, request: Request):
         event(c, r["id"], "claimed", "worker", f"Claimed by {body.worker_id} (attempt {r['attempts'] + 1}, fence {fence})")
         c.commit()
         started = r["started_at"] or now
+        if (r["kind"] or "code") == "prototype":
+            from .prototype_review import claim_fields
+            return {"job": {"order_id": r["id"], "project_id": r["project_id"], "objective": r["objective"],
+                            "project_alias": r["project_alias"], "fence": fence, "lease_seconds": lease_seconds(),
+                            "max_minutes": r["max_minutes"] or DEFAULT_MINUTES,
+                            "deadline": started + 60 * (r["max_minutes"] or DEFAULT_MINUTES), **claim_fields(r)}}
         return {"job": {"order_id": r["id"], "project_id": r["project_id"], "objective": r["objective"],
            "project_alias": r["project_alias"], "acceptance_criteria": json.loads(r["criteria_json"]),
            "constraints": json.loads(r["constraints_json"]), "budget_gbp": r["budget_gbp"],
@@ -352,6 +361,14 @@ def heartbeat(order_id: str, body: HeartbeatIn, request: Request):
 @router.post("/internal/workbench/{order_id}/result")
 def result(order_id: str, body: ResultIn, request: Request):
     require_worker(request)
+    c = connect()
+    try:
+        ensure_tables(c)
+        kind = c.execute("SELECT kind FROM workbench_orders WHERE id=?", (order_id,)).fetchone()
+    finally:
+        c.close()
+    if kind and kind["kind"] == "prototype":
+        return prototype_result(order_id, body)
     if body.verdict not in ("PASS", "FAIL", "BLOCKED", "CLARIFY"):
         raise HTTPException(400, "Invalid verdict or mode")
     # NONE means nothing ran (C12): never labelled REAL. Only a PASS must say how it was produced.
@@ -449,6 +466,58 @@ def result(order_id: str, body: ResultIn, request: Request):
                 "campus_rejected": bool(result_data.get("campus_rejected"))}
     finally:
         c.close()
+
+
+def prototype_result(order_id, body):
+    """Prototype orders: same lease/fence/idempotency rules; Campus verifies the signed build and then reviews
+    it itself (prototype_review). FIXTURE is an allowed, honestly labelled mode for test data."""
+    from .prototype_review import accept_result, start_review
+    if body.verdict not in ("PASS", "FAIL", "BLOCKED"):
+        raise HTTPException(400, "Invalid verdict for a prototype build")
+    if body.execution_mode not in ("REAL", "SIMULATED", "FIXTURE", "NONE"):
+        raise HTTPException(400, "Invalid execution mode")
+    if body.verdict == "PASS" and (not body.evidence or body.defects):
+        raise HTTPException(400, "PASS requires evidence and no defects")
+    artifacts = []
+    for a in body.artifacts:
+        if not a.name or "/" in a.name or "\\" in a.name or a.name in (".", ".."):
+            raise HTTPException(400, "Unsafe artifact name")
+        raw = a.content.encode("utf-8", "surrogateescape")
+        if len(raw) > MAX_ARTIFACT or hashlib.sha256(raw).hexdigest() != a.sha256:
+            raise HTTPException(400, "Artifact size/hash mismatch")
+        artifacts.append((a.name, raw, a.sha256))
+    if len(artifacts) > 10 or len({x[0] for x in artifacts}) != len(artifacts):
+        raise HTTPException(400, "Too many or duplicate artifacts")
+    submitted = {"verdict": body.verdict, "execution_mode": body.execution_mode, "evidence": body.evidence,
+                 "defects": body.defects, "artifacts": [{"name": n, "sha256": h} for n, _, h in artifacts]}
+    digest = hashlib.sha256(json.dumps(submitted, sort_keys=True).encode()).hexdigest()
+    c = connect()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        prior = c.execute("SELECT state,worker,fence,result_digest FROM workbench_orders WHERE id=?",
+                          (order_id,)).fetchone()
+        if prior and prior["state"] in FINAL_STATES:
+            if prior["worker"] == body.worker_id and prior["fence"] == body.fence and prior["result_digest"] == digest:
+                c.commit()
+                return {"ok": True, "duplicate": True, "state": prior["state"]}
+            raise HTTPException(409, "Result already finalized or mismatched")
+        r = locked(c, order_id, body)
+        c.execute("DELETE FROM workbench_artifacts WHERE order_id=?", (order_id,))
+        for name, raw, sha in artifacts:
+            c.execute("INSERT INTO workbench_artifacts VALUES(?,?,?,?)", (order_id, name, raw, sha))
+        state, data = accept_result(c, r, body, artifacts)
+        usage = body.usage.model_dump() if body.usage else None
+        c.execute("""UPDATE workbench_orders SET state=?,result_json=?,result_digest=?,lease_until=0,
+            usage_json=COALESCE(?,usage_json),updated_at=? WHERE id=?""",
+                  (state, json.dumps(data), digest, json.dumps(usage) if usage else None, int(time.time()), order_id))
+        event(c, order_id, "result", "worker", f"Prototype build {body.verdict} ({data['execution_mode']}) -> {state}"
+              + (": " + "; ".join((data.get("findings") or {}).get("failed") or [])[:600] if state == "failed" else ""))
+        c.commit()
+    finally:
+        c.close()
+    if state == "reviewing":
+        start_review(order_id)
+    return {"ok": True, "state": state, "campus_rejected": bool(data.get("campus_rejected"))}
 
 
 def _progress(r, c=None):
@@ -601,6 +670,8 @@ def revise_execution(order_id: str, body: ReviseIn, request: Request):
                 raise HTTPException(409, "Idempotency key payload mismatch")
             c.commit()
             return {"state": r["state"], "revision": r["revision"], "duplicate": True}
+        if (r["kind"] or "code") == "prototype":
+            raise HTTPException(409, "Prototype fixes are requested with POST /ayven/prototypes/{id}/decision")
         allowed_from = ("needs_clarification",) if body.kind == "clarification" else ("failed", "rejected")
         if r["state"] not in allowed_from:
             raise HTTPException(409, f"A {body.kind} needs the execution to be {' or '.join(allowed_from)}, "
