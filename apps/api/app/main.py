@@ -34,6 +34,8 @@ from .ayven_os import router as ayven_os_router
 app.include_router(ayven_os_router)
 from .prototype_review import router as prototype_router
 app.include_router(prototype_router)
+from .prototype_planning import router as prototype_planning_router
+app.include_router(prototype_planning_router)
 from .teams import router as teams_router
 app.include_router(teams_router)
 app.mount("/r3f", StaticFiles(directory=str(STATIC / "r3f")), name="r3f")
