@@ -104,6 +104,9 @@ def validate_public_configuration():
     if os.environ.get('AYVEN_ALLOW_ESCALATION', '0') == '1':
         if not os.environ.get('AYVEN_ESCALATION_USD_PER_MTOK_IN') or not os.environ.get('AYVEN_ESCALATION_USD_PER_MTOK_OUT'):
             raise RuntimeError('Paid escalation is armed without prices. Refusing to start.')
+    if os.environ.get('AYVEN_TEST_ACCEPT_UNVERIFIED_MODEL') == '1' and \
+            os.environ.get('AYVEN_ENV', '').strip().lower() != 'test':
+        raise RuntimeError('AYVEN_TEST_ACCEPT_UNVERIFIED_MODEL is a scripted-model drill switch and needs AYVEN_ENV=test')
     if not local_mode():
         if len(token()) < 32:
             raise RuntimeError('Non-local mode refuses to start without AYVEN_ACCESS_KEY or AYVEN_API_TOKEN of at least 32 characters')

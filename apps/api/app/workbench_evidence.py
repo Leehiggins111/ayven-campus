@@ -59,6 +59,41 @@ def _passing(outcome, before):
     return outcome in ("passed", "xfailed") or (outcome == "skipped" and before == "skipped")
 
 
+TEST_OVERRIDE = "AYVEN_TEST_ACCEPT_UNVERIFIED_MODEL"
+
+
+def signed_record(artifacts: dict, key=None):
+    """The verification record in qa-run.json if its Workbench signature verifies with Campus's key, else None."""
+    key = key if key is not None else attestation_key()
+    raw = artifacts.get(RECORD)
+    if not key or raw is None:
+        return None
+    try:
+        envelope = json.loads(raw.decode("utf-8"))
+        record, signature = envelope["record"], envelope.get("signature") or {}
+    except (UnicodeDecodeError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if not isinstance(record, dict) or not isinstance(signature, dict) or not isinstance(signature.get("value"), str):
+        return None
+    expected = hmac.new(key, canonical(record), hashlib.sha256).hexdigest()
+    if signature.get("key_id") != key_id(key) or not hmac.compare_digest(signature["value"], expected):
+        return None
+    return record
+
+
+def provenance_mode(record) -> str:
+    """D12: REAL only when the signed record shows a verified Ollama model produced the change. A missing or
+    unverified provenance is SIMULATED: the worker's own REAL/SIMULATED label is never trusted."""
+    prov = (record or {}).get("model_provenance") or {}
+    return "REAL" if prov.get("kind") == "ollama" and not prov.get("problems") else "SIMULATED"
+
+
+def unverified_model_test_override() -> bool:
+    """Scripted-model drills only: AYVEN_TEST_ACCEPT_UNVERIFIED_MODEL=1 with AYVEN_ENV=test lets a result from an
+    unverified model be treated as REAL, and every such result is marked. Refused at start-up in any other mode."""
+    return os.environ.get(TEST_OVERRIDE) == "1" and os.environ.get("AYVEN_ENV", "").strip().lower() == "test"
+
+
 def test_evidence_problems(artifacts: dict, *, order_id=None, revision=0, allowed=None, key=None) -> list:
     """[] when the artifacts prove a trusted, passing verification of the exported patch, else the reasons."""
     key = key if key is not None else attestation_key()
