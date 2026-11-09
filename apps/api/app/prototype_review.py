@@ -144,6 +144,8 @@ def enqueue(body: PrototypeIn, request: Request):
     from .workbench_bridge import ensure_tables
     if is_read_only(request):
         raise HTTPException(403, "Read-only credential cannot queue builds")
+    if str(body.plan.get("job_id", "")).startswith("ayven-plan-"):
+        raise HTTPException(409, "Use the recorded plan decision to queue this job")
     digest = _validate(body.plan, body.approval)
     key = plan_key(body.plan)
     order_id = "proto-" + hashlib.sha256(key.encode()).hexdigest()[:16]
